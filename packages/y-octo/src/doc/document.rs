@@ -130,7 +130,7 @@ impl Doc {
                 } else {
                     // drain all pending state to pending update for later iteration
                     update.drain_pending_state();
-                    Update::merge_into(&mut update, [&pending_update]);
+                    Update::merge_into(&mut update, [pending_update]);
                 }
             } else {
                 // no pending update at store
