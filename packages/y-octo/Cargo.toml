@@ -1,0 +1,73 @@
+[package]
+name = "y-octo"
+version = "0.1.0"
+authors = [
+    "DarkSky <darksky2048@gmail.com>",
+    "forehalo <forehalo@gmail.com>",
+    "x1a0t <405028157@qq.com>",
+]
+edition = "2021"
+license = "MIT"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+bitvec = "1.0.1"
+byteorder = "1.4.3"
+log = "0.4.20"
+nanoid = "0.4.0"
+nom = "7.1.3"
+ordered-float = "3.8.0"
+rand = "0.8.5"
+rand_chacha = "0.3.1"
+serde = "1.0.183"
+serde_json = "1.0.105"
+thiserror = "1.0.47"
+
+[features]
+bench = []
+
+[target.'cfg(fuzzing)'.dependencies]
+arbitrary = { version = "1.3.0", features = ["derive"] }
+ordered-float = { version = "3.8.0", features = ["arbitrary"] }
+
+[target.'cfg(loom)'.dependencies]
+loom = { version = "0.6", features = ["checkpoint"] }
+
+[dev-dependencies]
+assert-json-diff = "2.0.2"
+criterion = { version = "0.5.1", features = ["html_reports"] }
+lib0 = { version = "0.16.10", features = ["lib0-serde"] }
+ordered-float = { version = "3.8.0", features = ["proptest"] }
+path-ext = "0.1.0"
+proptest = "1.1.0"
+proptest-derive = "0.3.0"
+y-sync = "0.3.1"
+yrs = "0.16.10"
+
+[[bin]]
+name = "memory_leak_test"
+path = "bin/memory_leak_test.rs"
+
+[[bench]]
+name = "array_ops_benchmarks"
+harness = false
+
+[[bench]]
+name = "codec_benchmarks"
+harness = false
+
+[[bench]]
+name = "map_ops_benchmarks"
+harness = false
+
+[[bench]]
+name = "text_ops_benchmarks"
+harness = false
+
+[[bench]]
+name = "update_benchmarks"
+harness = false
+
+[lib]
+bench = true
