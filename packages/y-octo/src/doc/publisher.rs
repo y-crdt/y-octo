@@ -1,6 +1,7 @@
+use log::{debug, trace};
+
 use super::{store::StoreRef, *};
 use crate::sync::{Arc, AtomicBool, Mutex, Ordering, RwLock};
-use log::{debug, trace};
 
 pub type DocSubscriber = Box<dyn Fn(&[u8]) + Sync + Send + 'static>;
 

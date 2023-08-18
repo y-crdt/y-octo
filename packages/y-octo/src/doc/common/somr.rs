@@ -11,7 +11,8 @@ fn is_dangling<T>(ptr: NonNull<T>) -> bool {
     ptr.as_ptr() as usize == DANGLING_PTR
 }
 
-/// Heap data with single owner but multiple refs with dangling checking at runtime.
+/// Heap data with single owner but multiple refs with dangling checking at
+/// runtime.
 pub(crate) enum Somr<T> {
     Owned(Owned<T>),
     Ref(Ref<T>),
@@ -24,7 +25,8 @@ pub(crate) struct Ref<T>(NonNull<SomrInner<T>>);
 
 pub(crate) struct SomrInner<T> {
     data: Option<T>,
-    /// increase the size when we really meet the the secenerio with refs more then u16::MAX(65535) times
+    /// increase the size when we really meet the the secenerio with refs more
+    /// then u16::MAX(65535) times
     refs: AtomicU32,
     _marker: PhantomData<Option<T>>,
 }
@@ -221,8 +223,7 @@ impl<T> FlattenGet<T> for Option<Somr<T>> {
 
 impl<T: PartialEq> PartialEq for Somr<T> {
     fn eq(&self, other: &Self) -> bool {
-        self.ptr() == other.ptr()
-            || !self.dangling() && !other.dangling() && self.inner() == other.inner()
+        self.ptr() == other.ptr() || !self.dangling() && !other.dangling() && self.inner() == other.inner()
     }
 }
 
@@ -305,9 +306,8 @@ impl<T: proptest::arbitrary::Arbitrary> proptest::arbitrary::Arbitrary for Somr<
 
 #[cfg(test)]
 mod tests {
-    use crate::loom_model;
-
     use super::*;
+    use crate::loom_model;
 
     #[test]
     fn basic_example() {
@@ -318,10 +318,7 @@ mod tests {
             let five_ref = five.clone();
             assert!(!five_ref.is_owned());
             assert_eq!(five_ref.get(), Some(&5));
-            assert_eq!(
-                five_ref.ptr().as_ptr() as usize,
-                five.ptr().as_ptr() as usize
-            );
+            assert_eq!(five_ref.ptr().as_ptr() as usize, five.ptr().as_ptr() as usize);
 
             drop(five);
             // owner released

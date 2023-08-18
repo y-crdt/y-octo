@@ -5,24 +5,21 @@ mod protocol;
 mod sync;
 
 pub use codec::{
-    read_var_buffer, read_var_i64, read_var_string, read_var_u64, write_var_buffer, write_var_i64,
-    write_var_string, write_var_u64,
+    read_var_buffer, read_var_i64, read_var_string, read_var_u64, write_var_buffer, write_var_i64, write_var_string,
+    write_var_u64,
 };
 pub use doc::{
-    decode_maybe_update_with_guid, decode_update_with_guid, encode_update_as_message,
-    encode_update_with_guid, merge_updates_v1, Any, Array, Awareness, AwarenessEvent, Client,
-    Clock, CrdtRead, CrdtReader, CrdtWrite, CrdtWriter, Doc, DocOptions, Id, Map, RawDecoder,
-    RawEncoder, StateVector, Text, Update, Value,
+    decode_maybe_update_with_guid, decode_update_with_guid, encode_update_as_message, encode_update_with_guid,
+    merge_updates_v1, Any, Array, Awareness, AwarenessEvent, Client, Clock, CrdtRead, CrdtReader, CrdtWrite,
+    CrdtWriter, Doc, DocOptions, Id, Map, RawDecoder, RawEncoder, StateVector, Text, Update, Value,
 };
 pub(crate) use doc::{Content, Item};
-pub use protocol::{
-    read_sync_message, write_sync_message, AwarenessState, AwarenessStates, DocMessage,
-    SyncMessage, SyncMessageScanner,
-};
-
 use log::{debug, warn};
 use nanoid::nanoid;
 use nom::IResult;
+pub use protocol::{
+    read_sync_message, write_sync_message, AwarenessState, AwarenessStates, DocMessage, SyncMessage, SyncMessageScanner,
+};
 use thiserror::Error;
 
 #[derive(Debug, Error, PartialEq)]

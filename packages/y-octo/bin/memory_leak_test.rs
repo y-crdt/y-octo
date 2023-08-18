@@ -1,6 +1,6 @@
-use y_octo::*;
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha20Rng;
+use y_octo::*;
 
 fn run_text_test(seed: u64) {
     let doc = Doc::with_client(1);

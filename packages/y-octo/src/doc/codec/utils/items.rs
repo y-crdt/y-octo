@@ -1,5 +1,4 @@
-use super::item::item_flags;
-use super::*;
+use super::{item::item_flags, *};
 use crate::sync::Arc;
 
 pub(crate) struct ItemBuilder {
@@ -9,9 +8,7 @@ pub(crate) struct ItemBuilder {
 #[allow(dead_code)]
 impl ItemBuilder {
     pub fn new() -> ItemBuilder {
-        Self {
-            item: Item::default(),
-        }
+        Self { item: Item::default() }
     }
 
     pub fn id(mut self, id: Id) -> ItemBuilder {
@@ -93,10 +90,7 @@ mod tests {
             assert_eq!(item.origin_right_id, Some(Id::new(4, 5)));
             assert!(matches!(item.parent, Some(Parent::String(text)) if text == "test"));
             assert_eq!(item.parent_sub, None);
-            assert_eq!(
-                item.content,
-                Arc::new(Content::Any(vec![Any::String("Hello".into())]))
-            );
+            assert_eq!(item.content, Arc::new(Content::Any(vec![Any::String("Hello".into())])));
         });
     }
 }

@@ -5,12 +5,7 @@ pub mod xml_element;
 pub mod xml_fragment;
 pub mod xml_text;
 
-use super::*;
 use std::collections::HashMap;
-use yrs::{
-    Array, ArrayPrelim, ArrayRef, Doc, GetString, Map, MapPrelim, MapRef, Text, TextPrelim,
-    TextRef, Transact, XmlFragment, XmlTextPrelim,
-};
 
 use array::*;
 use map::*;
@@ -18,6 +13,12 @@ use text::*;
 use xml_element::*;
 use xml_fragment::*;
 use xml_text::*;
+use yrs::{
+    Array, ArrayPrelim, ArrayRef, Doc, GetString, Map, MapPrelim, MapRef, Text, TextPrelim, TextRef, Transact,
+    XmlFragment, XmlTextPrelim,
+};
+
+use super::*;
 
 type TestOp = fn(doc: &Doc, nest_input: &YrsNestType, params: CRDTParam) -> ();
 type TestOps = phf::Map<&'static str, TestOp>;
@@ -65,12 +66,7 @@ impl OpsRegistry<'_> {
         }
     }
 
-    pub fn operate_yrs_nest_type(
-        &self,
-        doc: &yrs::Doc,
-        cur_crdt_nest_type: YrsNestType,
-        crdt_param: CRDTParam,
-    ) {
+    pub fn operate_yrs_nest_type(&self, doc: &yrs::Doc, cur_crdt_nest_type: YrsNestType, crdt_param: CRDTParam) {
         let ops = self.get_ops_from_yrs_nest_type(&cur_crdt_nest_type);
         ops.get(match &crdt_param.nest_data_op_type {
             NestDataOpType::Insert => NEST_DATA_INSERT,
@@ -81,19 +77,13 @@ impl OpsRegistry<'_> {
     }
 }
 
-pub fn yrs_create_nest_type_from_root(
-    doc: &yrs::Doc,
-    target_type: CRDTNestType,
-    key: &str,
-) -> YrsNestType {
+pub fn yrs_create_nest_type_from_root(doc: &yrs::Doc, target_type: CRDTNestType, key: &str) -> YrsNestType {
     match target_type {
         CRDTNestType::Array => YrsNestType::ArrayType(doc.get_or_insert_array(key)),
         CRDTNestType::Map => YrsNestType::MapType(doc.get_or_insert_map(key)),
         CRDTNestType::Text => YrsNestType::TextType(doc.get_or_insert_text(key)),
         CRDTNestType::XMLElement => YrsNestType::XMLElementType(doc.get_or_insert_xml_element(key)),
-        CRDTNestType::XMLFragment => {
-            YrsNestType::XMLFragmentType(doc.get_or_insert_xml_fragment(key))
-        }
+        CRDTNestType::XMLFragment => YrsNestType::XMLFragmentType(doc.get_or_insert_xml_fragment(key)),
         CRDTNestType::XMLText => YrsNestType::XMLTextType(doc.get_or_insert_xml_text(key)),
     }
 }
@@ -139,18 +129,12 @@ pub fn gen_nest_type_from_nest_type(
     nest_type: &mut YrsNestType,
 ) -> Option<YrsNestType> {
     match crdt_param.new_nest_type {
-        CRDTNestType::Array => {
-            yrs_create_array_from_nest_type(doc, nest_type, &crdt_param.insert_pos, crdt_param.key)
-                .map(YrsNestType::ArrayType)
-        }
-        CRDTNestType::Map => {
-            yrs_create_map_from_nest_type(doc, nest_type, &crdt_param.insert_pos, crdt_param.key)
-                .map(YrsNestType::MapType)
-        }
-        CRDTNestType::Text => {
-            yrs_create_text_from_nest_type(doc, nest_type, &crdt_param.insert_pos, crdt_param.key)
-                .map(YrsNestType::TextType)
-        }
+        CRDTNestType::Array => yrs_create_array_from_nest_type(doc, nest_type, &crdt_param.insert_pos, crdt_param.key)
+            .map(YrsNestType::ArrayType),
+        CRDTNestType::Map => yrs_create_map_from_nest_type(doc, nest_type, &crdt_param.insert_pos, crdt_param.key)
+            .map(YrsNestType::MapType),
+        CRDTNestType::Text => yrs_create_text_from_nest_type(doc, nest_type, &crdt_param.insert_pos, crdt_param.key)
+            .map(YrsNestType::TextType),
         _ => None,
     }
 }

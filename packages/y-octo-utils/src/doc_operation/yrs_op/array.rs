@@ -1,5 +1,6 @@
-use super::*;
 use phf::phf_map;
+
+use super::*;
 
 fn insert_op(doc: &yrs::Doc, nest_input: &YrsNestType, params: CRDTParam) {
     let array = match nest_input {
@@ -68,10 +69,7 @@ pub fn yrs_create_array_from_nest_type(
             let str = text.get_string(&trx);
             let len = str.chars().fold(0, |acc, _| acc + 1);
             let index = random_pick_num(len, insert_pos) as usize;
-            let byte_start_offset = str
-                .chars()
-                .take(index)
-                .fold(0, |acc, ch| acc + ch.len_utf8());
+            let byte_start_offset = str.chars().take(index).fold(0, |acc, ch| acc + ch.len_utf8());
 
             Some(
                 text.insert_embed(&mut trx, byte_start_offset as u32, array_prelim)
@@ -82,10 +80,7 @@ pub fn yrs_create_array_from_nest_type(
             let str = xml_text.get_string(&trx);
             let len = str.chars().fold(0, |acc, _| acc + 1);
             let index = random_pick_num(len, insert_pos) as usize;
-            let byte_start_offset = str
-                .chars()
-                .take(index)
-                .fold(0, |acc, ch| acc + ch.len_utf8());
+            let byte_start_offset = str.chars().take(index).fold(0, |acc, ch| acc + ch.len_utf8());
 
             Some(
                 xml_text
@@ -99,8 +94,9 @@ pub fn yrs_create_array_from_nest_type(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use yrs::Doc;
+
+    use super::*;
 
     #[test]
     fn test_gen_array_ref_ops() {
@@ -119,26 +115,14 @@ mod tests {
             nest_data_op_type: NestDataOpType::Insert,
         };
 
-        ops_registry.operate_yrs_nest_type(
-            &doc,
-            YrsNestType::ArrayType(array_ref.clone()),
-            params.clone(),
-        );
+        ops_registry.operate_yrs_nest_type(&doc, YrsNestType::ArrayType(array_ref.clone()), params.clone());
         assert_eq!(array_ref.len(&doc.transact()), 1);
         params.nest_data_op_type = NestDataOpType::Delete;
-        ops_registry.operate_yrs_nest_type(
-            &doc,
-            YrsNestType::ArrayType(array_ref.clone()),
-            params.clone(),
-        );
+        ops_registry.operate_yrs_nest_type(&doc, YrsNestType::ArrayType(array_ref.clone()), params.clone());
         assert_eq!(array_ref.len(&doc.transact()), 0);
 
         params.nest_data_op_type = NestDataOpType::Clear;
-        ops_registry.operate_yrs_nest_type(
-            &doc,
-            YrsNestType::ArrayType(array_ref.clone()),
-            params.clone(),
-        );
+        ops_registry.operate_yrs_nest_type(&doc, YrsNestType::ArrayType(array_ref.clone()), params.clone());
         assert_eq!(array_ref.len(&doc.transact()), 0);
     }
 

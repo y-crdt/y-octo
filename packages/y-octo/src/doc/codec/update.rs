@@ -1,7 +1,10 @@
+use std::{
+    collections::{HashMap, VecDeque},
+    ops::Range,
+};
+
 use super::*;
 use crate::doc::StateVector;
-use std::collections::{HashMap, VecDeque};
-use std::ops::Range;
 
 #[derive(Debug, Default, Clone)]
 pub struct Update {
@@ -9,7 +12,8 @@ pub struct Update {
     pub(crate) delete_set: DeleteSet,
 
     /// all unapplicable items that we can't integrate into doc
-    /// any item with inconsistent id clock or missing dependency will be put here
+    /// any item with inconsistent id clock or missing dependency will be put
+    /// here
     pub(crate) pending_structs: HashMap<Client, VecDeque<Node>>,
     /// missing state vector after applying updates
     pub(crate) missing_state: StateVector,
@@ -41,9 +45,7 @@ impl<R: CrdtReader> CrdtRead<R> for Update {
         let delete_set = DeleteSet::read(decoder)?;
 
         if !decoder.is_empty() {
-            return Err(JwstCodecError::UpdateNotFullyConsumed(
-                decoder.len() as usize
-            ));
+            return Err(JwstCodecError::UpdateNotFullyConsumed(decoder.len() as usize));
         }
 
         Ok(Update {
@@ -134,7 +136,8 @@ impl Update {
         for structs in target.structs.values_mut() {
             structs.make_contiguous().sort_by_key(|s| s.id().clock);
 
-            // insert [Node::Skip] if structs[index].id().clock + structs[index].len() < structs[index + 1].id().clock
+            // insert [Node::Skip] if structs[index].id().clock + structs[index].len() <
+            // structs[index + 1].id().clock
             let mut index = 0;
             while index < structs.len() - 1 {
                 let cur = &structs[index];
@@ -144,10 +147,7 @@ impl Update {
                 let diff = next.id().clock - clock_end;
 
                 if diff > 0 {
-                    structs.insert(
-                        index + 1,
-                        Node::new_skip((cur.id().client, clock_end).into(), diff),
-                    );
+                    structs.insert(index + 1, Node::new_skip((cur.id().client, clock_end).into(), diff));
                     index += 1;
                 }
 
@@ -175,7 +175,8 @@ pub(crate) struct UpdateIterator<'a> {
     client_ids: Vec<Client>,
     /// current id of client of the updates we're processing
     cur_client_id: Option<Client>,
-    /// stack of previous iterating item with higher priority than updates in next iteration
+    /// stack of previous iterating item with higher priority than updates in
+    /// next iteration
     stack: Vec<Node>,
 }
 
@@ -194,11 +195,12 @@ impl<'a> UpdateIterator<'a> {
         }
     }
 
-    /// iterate the client ids until we find the next client with left updates that can be consumed
+    /// iterate the client ids until we find the next client with left updates
+    /// that can be consumed
     ///
     /// note:
-    /// firstly we will check current client id as well to ensure current updates queue is not empty yet
-    ///
+    /// firstly we will check current client id as well to ensure current
+    /// updates queue is not empty yet
     fn next_client(&mut self) -> Option<Client> {
         while let Some(client_id) = self.cur_client_id {
             match self.update.structs.get(&client_id) {
@@ -238,8 +240,8 @@ impl<'a> UpdateIterator<'a> {
         }
     }
 
-    /// tell if current update's dependencies(left, right, parent) has already been consumed and recorded
-    /// and return the client of them if not.
+    /// tell if current update's dependencies(left, right, parent) has already
+    /// been consumed and recorded and return the client of them if not.
     fn get_missing_dep(&self, struct_info: &Node) -> Option<Client> {
         if let Some(item) = struct_info.as_item().get() {
             let id = item.id;
@@ -258,8 +260,7 @@ impl<'a> UpdateIterator<'a> {
             if let Some(parent) = &item.parent {
                 match parent {
                     Parent::Id(parent_id)
-                        if parent_id.client != id.client
-                            && parent_id.clock >= self.state.get(&parent_id.client) =>
+                        if parent_id.client != id.client && parent_id.clock >= self.state.get(&parent_id.client) =>
                     {
                         return Some(parent_id.client);
                     }
@@ -280,14 +281,7 @@ impl<'a> UpdateIterator<'a> {
             // Safety:
             // client index of updates and update length are both checked in next_client
             // safe to use unwrap
-            cur.replace(
-                self.update
-                    .structs
-                    .get_mut(&client)
-                    .unwrap()
-                    .pop_front()
-                    .unwrap(),
-            );
+            cur.replace(self.update.structs.get_mut(&client).unwrap().pop_front().unwrap());
         }
 
         cur
@@ -336,8 +330,8 @@ impl Iterator for UpdateIterator<'_> {
                 } else {
                     // we finally find the first applicable update
                     let local_state = self.state.get(&id.client);
-                    // we've already check the local state is greater or equal to current update's clock
-                    // so offset here will never be negative
+                    // we've already check the local state is greater or equal to current update's
+                    // clock so offset here will never be negative
                     let offset = local_state - id.clock;
                     if offset == 0 || offset < cur_update.len() {
                         self.state.set_max(id.client, id.clock + cur_update.len());
@@ -396,9 +390,7 @@ impl Iterator for DeleteSetIterator<'_> {
                     return Some((client, range));
                 } else {
                     // all state missing
-                    self.update
-                        .pending_delete_set
-                        .add(client, start, end - start);
+                    self.update.pending_delete_set.add(client, start, end - start);
                 }
             }
 
@@ -411,11 +403,12 @@ impl Iterator for DeleteSetIterator<'_> {
 
 #[cfg(test)]
 mod tests {
-    use crate::doc::common::OrderRange;
+    use std::{num::ParseIntError, path::PathBuf};
+
+    use serde::Deserialize;
 
     use super::*;
-    use serde::Deserialize;
-    use std::{num::ParseIntError, path::PathBuf};
+    use crate::doc::common::OrderRange;
 
     fn struct_item(id: (Client, Clock), len: usize) -> Node {
         Node::Item(Somr::new(
@@ -435,27 +428,16 @@ mod tests {
     fn test_parse_doc() {
         let docs = [
             (include_bytes!("../../fixtures/basic.bin").to_vec(), 1, 188),
-            (
-                include_bytes!("../../fixtures/database.bin").to_vec(),
-                1,
-                149,
-            ),
+            (include_bytes!("../../fixtures/database.bin").to_vec(), 1, 149),
             (include_bytes!("../../fixtures/large.bin").to_vec(), 1, 9036),
-            (
-                include_bytes!("../../fixtures/with-subdoc.bin").to_vec(),
-                2,
-                30,
-            ),
+            (include_bytes!("../../fixtures/with-subdoc.bin").to_vec(), 2, 30),
         ];
 
         for (doc, clients, structs) in docs {
             let update = parse_doc_update(doc).unwrap();
 
             assert_eq!(update.structs.len(), clients);
-            assert_eq!(
-                update.structs.iter().map(|s| s.1.len()).sum::<usize>(),
-                structs
-            );
+            assert_eq!(update.structs.iter().map(|s| s.1.len()).sum::<usize>(), structs);
         }
     }
 
@@ -478,9 +460,7 @@ mod tests {
     #[ignore = "just for local data test"]
     #[test]
     fn test_parse_local_doc() {
-        let json =
-            serde_json::from_slice::<Vec<Data>>(include_bytes!("../../fixtures/local_docs.json"))
-                .unwrap();
+        let json = serde_json::from_slice::<Vec<Data>>(include_bytes!("../../fixtures/local_docs.json")).unwrap();
 
         for ws in json {
             let data = &ws.blob[5..=(ws.blob.len() - 2)];
@@ -496,8 +476,7 @@ mod tests {
                     }
                     Err(_e) => {
                         std::fs::write(
-                            PathBuf::from("./src/fixtures/invalid")
-                                .join(format!("{}.ydoc", ws.workspace)),
+                            PathBuf::from("./src/fixtures/invalid").join(format!("{}.ydoc", ws.workspace)),
                             data,
                         )
                         .unwrap();
@@ -562,13 +541,7 @@ mod tests {
             assert_eq!(iter.next(), None);
             assert!(!update.pending_structs.is_empty());
             assert_eq!(
-                update
-                    .pending_structs
-                    .get_mut(&0)
-                    .unwrap()
-                    .pop_front()
-                    .unwrap()
-                    .id(),
+                update.pending_structs.get_mut(&0).unwrap().pop_front().unwrap().id(),
                 (0, 4).into()
             );
             assert!(!update.missing_state.is_empty());

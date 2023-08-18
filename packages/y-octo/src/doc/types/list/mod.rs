@@ -39,7 +39,6 @@ impl ItemPosition {
     /// after:
     /// ---------------------------------
     ///    ^left   ^right
-    ///
     pub fn normalize(&mut self, store: &mut DocStore) -> JwstCodecResult {
         if self.offset > 0 {
             debug_assert!(self.left.is_some());
@@ -223,9 +222,7 @@ pub(crate) trait ListType: AsInner<Inner = YTypeRef> {
                     } else {
                         remaining -= content_len;
                     }
-                    store
-                        .delete_set
-                        .add(item.id.client, item.id.clock, content_len);
+                    store.delete_set.add(item.id.client, item.id.clock, content_len);
                     DocStore::delete_item(item, Some(&mut lock));
                 }
 

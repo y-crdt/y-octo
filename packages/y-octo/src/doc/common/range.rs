@@ -66,7 +66,8 @@ impl OrderRange {
     }
 
     /// Push new range to current one.
-    /// Range will be merged if overlap exists or turned into fragment if it's not continuous.
+    /// Range will be merged if overlap exists or turned into fragment if it's
+    /// not continuous.
     pub fn push(&mut self, range: Range<u64>) {
         match self {
             OrderRange::Range(r) => {
@@ -243,10 +244,7 @@ mod tests {
     fn test_range_sort() {
         let mut range: OrderRange = vec![(20..30), (0..10), (10..50)].into();
         range.sort();
-        assert_eq!(
-            range,
-            OrderRange::Fragment(vec![(0..10), (10..50), (20..30)])
-        );
+        assert_eq!(range, OrderRange::Fragment(vec![(0..10), (10..50), (20..30)]));
     }
 
     #[test]

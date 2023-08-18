@@ -1,6 +1,8 @@
 use criterion::{criterion_group, criterion_main, Criterion, SamplingMode};
-use lib0::decoding::{Cursor, Read};
-use lib0::encoding::Write;
+use lib0::{
+    decoding::{Cursor, Read},
+    encoding::Write,
+};
 use y_octo::{read_var_i64, read_var_u64, write_var_i64, write_var_u64};
 
 const BENCHMARK_SIZE: u32 = 100000;
