@@ -1,8 +1,8 @@
 #![no_main]
 
-use jwst_codec::write_var_u64;
 use lib0::encoding::Write;
 use libfuzzer_sys::fuzz_target;
+use y_octo::write_var_u64;
 
 fuzz_target!(|data: Vec<u64>| {
     for i in data {

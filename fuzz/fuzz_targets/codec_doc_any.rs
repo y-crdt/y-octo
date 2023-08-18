@@ -1,7 +1,7 @@
 #![no_main]
 
-use jwst_codec::{Any, CrdtRead, CrdtWrite, RawDecoder, RawEncoder};
 use libfuzzer_sys::fuzz_target;
+use y_octo::{Any, CrdtRead, CrdtWrite, RawDecoder, RawEncoder};
 
 fuzz_target!(|data: &[u8]| {
     if let Ok(any) = Any::read(&mut RawDecoder::new(data.to_vec())) {

@@ -15,7 +15,7 @@ fn operations(c: &mut Criterion) {
             .map(|_| rng.gen_range(0..base_text.len() as u64))
             .collect::<Vec<_>>();
         b.iter(|| {
-            use jwst_codec::*;
+            use y_octo::*;
             let doc = Doc::default();
             let mut array = doc.get_or_create_array("test").unwrap();
             for c in base_text.chars() {
@@ -42,10 +42,10 @@ fn operations(c: &mut Criterion) {
 
             let mut trx = doc.transact_mut();
             for c in base_text.chars() {
-                array.push_back(&mut trx, c.to_string()).unwrap();
+                array.push_back(&mut trx, c.to_string());
             }
             for idx in &idxs {
-                array.insert(&mut trx, *idx, "test").unwrap();
+                array.insert(&mut trx, *idx, "test");
             }
             drop(trx);
         });
@@ -60,7 +60,7 @@ fn operations(c: &mut Criterion) {
             .map(|_| rng.gen_range(0..base_text.len() as u64))
             .collect::<Vec<_>>();
         b.iter(|| {
-            use jwst_codec::*;
+            use y_octo::*;
             let doc = Doc::default();
             let mut array = doc.get_or_create_array("test").unwrap();
             for c in base_text.chars() {
@@ -88,12 +88,10 @@ fn operations(c: &mut Criterion) {
 
             let mut trx = doc.transact_mut();
             for c in base_text.chars() {
-                array.push_back(&mut trx, c.to_string()).unwrap();
+                array.push_back(&mut trx, c.to_string());
             }
             for idx in &idxs {
-                array
-                    .insert_range(&mut trx, *idx, vec!["test1", "test2"])
-                    .unwrap();
+                array.insert_range(&mut trx, *idx, vec!["test1", "test2"]);
             }
             drop(trx);
         });
@@ -103,7 +101,7 @@ fn operations(c: &mut Criterion) {
         let base_text = "test1 test2 test3 test4 test5 test6 test7 test8 test9";
 
         b.iter(|| {
-            use jwst_codec::*;
+            use y_octo::*;
             let doc = Doc::default();
             let mut array = doc.get_or_create_array("test").unwrap();
             for c in base_text.chars() {
@@ -125,10 +123,10 @@ fn operations(c: &mut Criterion) {
 
             let mut trx = doc.transact_mut();
             for c in base_text.chars() {
-                array.push_back(&mut trx, c.to_string()).unwrap();
+                array.push_back(&mut trx, c.to_string());
             }
             for idx in (base_text.len() as u32)..0 {
-                array.remove(&mut trx, idx).unwrap();
+                array.remove(&mut trx, idx);
             }
             drop(trx);
         });

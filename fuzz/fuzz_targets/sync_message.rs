@@ -1,7 +1,7 @@
 #![no_main]
 
-use jwst_codec::{read_sync_message, write_sync_message};
 use libfuzzer_sys::fuzz_target;
+use y_octo::{read_sync_message, write_sync_message};
 
 fuzz_target!(|data: &[u8]| {
     let result = read_sync_message(data);

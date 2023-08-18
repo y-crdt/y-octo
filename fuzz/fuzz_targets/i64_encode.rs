@@ -1,7 +1,7 @@
 #![no_main]
 
-use jwst_codec::write_var_i64;
 use libfuzzer_sys::fuzz_target;
+use y_octo::write_var_i64;
 
 fuzz_target!(|data: Vec<i64>| {
     use lib0::encoding::Write;

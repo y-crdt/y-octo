@@ -1,9 +1,9 @@
 #![no_main]
 
-use jwst_codec::*;
 use libfuzzer_sys::fuzz_target;
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha20Rng;
+use y_octo::*;
 
 fuzz_target!(|seed: u64| {
     // println!("seed: {}", seed);

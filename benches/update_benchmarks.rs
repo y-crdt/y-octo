@@ -19,7 +19,7 @@ fn update(c: &mut Criterion) {
             &file.content,
             |b, content| {
                 b.iter(|| {
-                    use jwst_codec::*;
+                    use y_octo::*;
                     let mut decoder = RawDecoder::new(content.clone());
                     Update::read(&mut decoder).unwrap()
                 });

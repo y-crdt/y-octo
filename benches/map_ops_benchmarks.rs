@@ -11,7 +11,7 @@ fn operations(c: &mut Criterion) {
             .collect::<Vec<_>>();
 
         b.iter(|| {
-            use jwst_codec::*;
+            use y_octo::*;
             let doc = Doc::default();
             let mut map = doc.get_or_create_map("test").unwrap();
             for (idx, key) in base_text.iter().enumerate() {
@@ -32,7 +32,7 @@ fn operations(c: &mut Criterion) {
 
             let mut trx = doc.transact_mut();
             for (idx, key) in base_text.iter().enumerate() {
-                map.insert(&mut trx, key.to_string(), idx as f64).unwrap();
+                map.insert(&mut trx, key.to_string(), idx as f64);
             }
 
             drop(trx);
@@ -40,7 +40,7 @@ fn operations(c: &mut Criterion) {
     });
 
     group.bench_function("jwst/get", |b| {
-        use jwst_codec::*;
+        use y_octo::*;
 
         let base_text = "test1 test2 test3 test4 test5 test6 test7 test8 test9"
             .split(" ")
@@ -70,7 +70,7 @@ fn operations(c: &mut Criterion) {
 
         let mut trx = doc.transact_mut();
         for (idx, key) in (&base_text).iter().enumerate() {
-            map.insert(&mut trx, key.to_string(), idx as f64).unwrap();
+            map.insert(&mut trx, key.to_string(), idx as f64);
         }
         drop(trx);
 
@@ -88,7 +88,7 @@ fn operations(c: &mut Criterion) {
             .collect::<Vec<_>>();
 
         b.iter(|| {
-            use jwst_codec::*;
+            use y_octo::*;
             let doc = Doc::default();
             let mut map = doc.get_or_create_map("test").unwrap();
             for (idx, key) in base_text.iter().enumerate() {
@@ -112,7 +112,7 @@ fn operations(c: &mut Criterion) {
 
             let mut trx = doc.transact_mut();
             for (idx, key) in (&base_text).iter().enumerate() {
-                map.insert(&mut trx, key.to_string(), idx as f64).unwrap();
+                map.insert(&mut trx, key.to_string(), idx as f64);
             }
 
             for key in &base_text {

@@ -1,8 +1,8 @@
 #![no_main]
 
-use jwst_codec::{Any, CrdtRead, CrdtWrite, RawDecoder, RawEncoder};
 use libfuzzer_sys::fuzz_target;
 use rand::{distributions::Alphanumeric, Rng};
+use y_octo::{Any, CrdtRead, CrdtWrite, RawDecoder, RawEncoder};
 
 fn get_random_string() -> String {
     rand::thread_rng()

@@ -50,7 +50,7 @@ fuzz_target!(|crdt_params: Vec<CRDTParam>| {
 
     let trx = doc.transact_mut();
     let binary_from_yrs = trx.encode_update_v1().unwrap();
-    let doc = jwst_codec::Doc::new_from_binary(binary_from_yrs.clone()).unwrap();
+    let doc = y_octo::Doc::new_from_binary(binary_from_yrs.clone()).unwrap();
     let binary = doc.encode_update_v1().unwrap();
     assert_eq!(binary, binary_from_yrs);
 });
