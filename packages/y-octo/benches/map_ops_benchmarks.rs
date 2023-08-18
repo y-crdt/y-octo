@@ -8,7 +8,7 @@ fn operations(c: &mut Criterion) {
 
     group.bench_function("jwst/insert", |b| {
         let base_text = "test1 test2 test3 test4 test5 test6 test7 test8 test9"
-            .split(" ")
+            .split(' ')
             .collect::<Vec<_>>();
 
         b.iter(|| {
@@ -23,7 +23,7 @@ fn operations(c: &mut Criterion) {
 
     group.bench_function("yrs/insert", |b| {
         let base_text = "test1 test2 test3 test4 test5 test6 test7 test8 test9"
-            .split(" ")
+            .split(' ')
             .collect::<Vec<_>>();
 
         b.iter(|| {
@@ -33,7 +33,7 @@ fn operations(c: &mut Criterion) {
 
             let mut trx = doc.transact_mut();
             for (idx, key) in base_text.iter().enumerate() {
-                map.insert(&mut trx, key.to_string(), idx as f64);
+                map.insert(&mut trx, key.to_string(), idx as f64).unwrap();
             }
 
             drop(trx);
@@ -44,7 +44,7 @@ fn operations(c: &mut Criterion) {
         use y_octo::*;
 
         let base_text = "test1 test2 test3 test4 test5 test6 test7 test8 test9"
-            .split(" ")
+            .split(' ')
             .collect::<Vec<_>>();
         let doc = Doc::default();
         let mut map = doc.get_or_create_map("test").unwrap();
@@ -63,15 +63,15 @@ fn operations(c: &mut Criterion) {
         use yrs::*;
 
         let base_text = "test1 test2 test3 test4 test5 test6 test7 test8 test9"
-            .split(" ")
+            .split(' ')
             .collect::<Vec<_>>();
 
         let doc = Doc::new();
         let map = doc.get_or_insert_map("test");
 
         let mut trx = doc.transact_mut();
-        for (idx, key) in (&base_text).iter().enumerate() {
-            map.insert(&mut trx, key.to_string(), idx as f64);
+        for (idx, key) in base_text.iter().enumerate() {
+            map.insert(&mut trx, key.to_string(), idx as f64).unwrap();
         }
         drop(trx);
 
@@ -85,7 +85,7 @@ fn operations(c: &mut Criterion) {
 
     group.bench_function("jwst/remove", |b| {
         let base_text = "test1 test2 test3 test4 test5 test6 test7 test8 test9"
-            .split(" ")
+            .split(' ')
             .collect::<Vec<_>>();
 
         b.iter(|| {
@@ -103,7 +103,7 @@ fn operations(c: &mut Criterion) {
 
     group.bench_function("yrs/remove", |b| {
         let base_text = "test1 test2 test3 test4 test5 test6 test7 test8 test9"
-            .split(" ")
+            .split(' ')
             .collect::<Vec<_>>();
 
         b.iter(|| {
@@ -112,8 +112,8 @@ fn operations(c: &mut Criterion) {
             let map = doc.get_or_insert_map("test");
 
             let mut trx = doc.transact_mut();
-            for (idx, key) in (&base_text).iter().enumerate() {
-                map.insert(&mut trx, key.to_string(), idx as f64);
+            for (idx, key) in base_text.iter().enumerate() {
+                map.insert(&mut trx, key.to_string(), idx as f64).unwrap();
             }
 
             for key in &base_text {

@@ -3,9 +3,11 @@ use std::{cmp::max, collections::hash_map::Entry};
 use super::*;
 use crate::sync::Arc;
 
+pub type AwarenessCallback = Arc<dyn Fn(&Awareness, AwarenessEvent) + Send + Sync + 'static>;
+
 pub struct Awareness {
     awareness: AwarenessStates,
-    callback: Option<Arc<dyn Fn(&Awareness, AwarenessEvent) + Send + Sync + 'static>>,
+    callback: Option<AwarenessCallback>,
     local_id: u64,
 }
 
@@ -171,7 +173,7 @@ mod tests {
                 states.insert(0, AwarenessState::new(2, "test0".to_string()));
                 states.insert(1, AwarenessState::new(2, "test1".to_string()));
                 awareness.apply_update(states);
-                assert_eq!(awareness.get_states().contains_key(&1), true);
+                assert!(awareness.get_states().contains_key(&1));
 
                 // local state will not apply
                 assert_eq!(awareness.get_states().get(&0).unwrap().content, "null".to_string());
@@ -216,7 +218,7 @@ mod tests {
                 assert_eq!(event.updated, [1]);
 
                 assert_eq!(
-                    event.get_updated(&awareness.get_states()).get(&1).unwrap(),
+                    event.get_updated(awareness.get_states()).get(&1).unwrap(),
                     &AwarenessState::new(3, "test update".to_string())
                 );
 

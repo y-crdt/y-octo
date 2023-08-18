@@ -12,7 +12,6 @@ fn operations(c: &mut Criterion) {
         let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(1234);
 
         let idxs = (0..99)
-            .into_iter()
             .map(|_| rng.gen_range(0..base_text.len() as u64))
             .collect::<Vec<_>>();
         b.iter(|| {
@@ -33,7 +32,6 @@ fn operations(c: &mut Criterion) {
         let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(1234);
 
         let idxs = (0..99)
-            .into_iter()
             .map(|_| rng.gen_range(0..base_text.len() as u32))
             .collect::<Vec<_>>();
         b.iter(|| {
@@ -43,10 +41,10 @@ fn operations(c: &mut Criterion) {
 
             let mut trx = doc.transact_mut();
             for c in base_text.chars() {
-                array.push_back(&mut trx, c.to_string());
+                array.push_back(&mut trx, c.to_string()).unwrap();
             }
             for idx in &idxs {
-                array.insert(&mut trx, *idx, "test");
+                array.insert(&mut trx, *idx, "test").unwrap();
             }
             drop(trx);
         });
@@ -57,7 +55,6 @@ fn operations(c: &mut Criterion) {
         let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(1234);
 
         let idxs = (0..99)
-            .into_iter()
             .map(|_| rng.gen_range(0..base_text.len() as u64))
             .collect::<Vec<_>>();
         b.iter(|| {
@@ -79,7 +76,6 @@ fn operations(c: &mut Criterion) {
         let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(1234);
 
         let idxs = (0..99)
-            .into_iter()
             .map(|_| rng.gen_range(0..base_text.len() as u32))
             .collect::<Vec<_>>();
         b.iter(|| {
@@ -89,10 +85,10 @@ fn operations(c: &mut Criterion) {
 
             let mut trx = doc.transact_mut();
             for c in base_text.chars() {
-                array.push_back(&mut trx, c.to_string());
+                array.push_back(&mut trx, c.to_string()).unwrap();
             }
             for idx in &idxs {
-                array.insert_range(&mut trx, *idx, vec!["test1", "test2"]);
+                array.insert_range(&mut trx, *idx, vec!["test1", "test2"]).unwrap();
             }
             drop(trx);
         });
@@ -124,10 +120,10 @@ fn operations(c: &mut Criterion) {
 
             let mut trx = doc.transact_mut();
             for c in base_text.chars() {
-                array.push_back(&mut trx, c.to_string());
+                array.push_back(&mut trx, c.to_string()).unwrap();
             }
             for idx in (base_text.len() as u32)..0 {
-                array.remove(&mut trx, idx);
+                array.remove(&mut trx, idx).unwrap();
             }
             drop(trx);
         });

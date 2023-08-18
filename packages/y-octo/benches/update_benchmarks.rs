@@ -31,7 +31,7 @@ fn update(c: &mut Criterion) {
             |b, content| {
                 b.iter(|| {
                     use yrs::{updates::decoder::Decode, Update};
-                    Update::decode_v1(&content).unwrap()
+                    Update::decode_v1(content).unwrap()
                 });
             },
         );
