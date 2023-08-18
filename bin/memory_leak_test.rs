@@ -1,4 +1,4 @@
-use jwst_codec::*;
+use y_octo::*;
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha20Rng;
 

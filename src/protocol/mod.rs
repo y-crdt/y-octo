@@ -13,7 +13,7 @@ pub use sync::{read_sync_message, write_sync_message, SyncMessage};
 use super::*;
 use awareness::{read_awareness, write_awareness};
 use doc::{read_doc_message, write_doc_message};
-use jwst_logger::debug;
+use log::debug;
 use nom::{
     error::{Error, ErrorKind},
     IResult,
