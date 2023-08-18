@@ -1,11 +1,11 @@
 #![no_main]
 
-use jwst_codec_util::{
+use libfuzzer_sys::fuzz_target;
+use std::collections::HashSet;
+use y_octo_utils::{
     gen_nest_type_from_nest_type, gen_nest_type_from_root, CRDTParam, ManipulateSource, OpType,
     OpsRegistry, YrsNestType,
 };
-use libfuzzer_sys::fuzz_target;
-use std::collections::HashSet;
 use yrs::Transact;
 
 fuzz_target!(|crdt_params: Vec<CRDTParam>| {

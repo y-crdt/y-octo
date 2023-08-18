@@ -405,9 +405,8 @@ checksum = "e2abad23fbc42b3700f2f279844dc832adb2b2eb069b2df918f455c4e18cc646"
 
 [[package]]
 name = "lib0"
-version = "0.16.10"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "29dc19a026a0d45fc391898c6d4a6d0a5aab5ae6a826ebddc0f33572ffdae8dc"
+version = "0.16.5"
+source = "git+https://github.com/toeverything/y-crdt?rev=a700f09#a700f0990a993f905531f7acf589c6a736bb7429"
 dependencies = [
  "serde",
  "serde_json",
@@ -568,6 +567,48 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d8285c3c3c3085f8819bdcebc9c7e783851527f34974d7d283ced36c977ae812"
 dependencies = [
  "walkdir",
+]
+
+[[package]]
+name = "phf"
+version = "0.11.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ade2d8b8f33c7333b51bcf0428d37e217e9f32192ae4772156f65063b8ce03dc"
+dependencies = [
+ "phf_macros",
+ "phf_shared",
+]
+
+[[package]]
+name = "phf_generator"
+version = "0.11.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "48e4cc64c2ad9ebe670cb8fd69dd50ae301650392e81c05f9bfcb2d5bdbc24b0"
+dependencies = [
+ "phf_shared",
+ "rand 0.8.5",
+]
+
+[[package]]
+name = "phf_macros"
+version = "0.11.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3444646e286606587e49f3bcf1679b8cef1dc2c5ecc29ddacaffc305180d464b"
+dependencies = [
+ "phf_generator",
+ "phf_shared",
+ "proc-macro2 1.0.66",
+ "quote 1.0.33",
+ "syn 2.0.29",
+]
+
+[[package]]
+name = "phf_shared"
+version = "0.11.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "90fcb95eef784c2ac79119d1dd819e162b5da872ce6f3c3abe1e8ca1c082f72b"
+dependencies = [
+ "siphasher",
 ]
 
 [[package]]
@@ -941,6 +982,12 @@ checksum = "900fba806f70c630b0a382d0d825e17a0f19fcd059a2ade1ff237bcddf446b31"
 dependencies = [
  "lazy_static",
 ]
+
+[[package]]
+name = "siphasher"
+version = "0.3.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7bd3e3206899af3f8b12af284fafc038cc1dc2b41d1b89dd17297221c5d225de"
 
 [[package]]
 name = "smallstr"
@@ -1362,10 +1409,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "y-octo-utils"
+version = "0.1.0"
+dependencies = [
+ "arbitrary",
+ "phf",
+ "y-octo",
+ "yrs",
+]
+
+[[package]]
 name = "y-sync"
-version = "0.3.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f54d34b68ec4514a0659838c2b1ba867c571b20b3804a1338dacf4fa9062d801"
+version = "0.3.0"
+source = "git+https://github.com/toeverything/y-sync?rev=aeb0010#aeb001081ed0b25db113b86ec88ccdc00c0905db"
 dependencies = [
  "lib0",
  "thiserror",
@@ -1374,9 +1430,8 @@ dependencies = [
 
 [[package]]
 name = "yrs"
-version = "0.16.10"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0c48071f2693893c866cffdad3e6a931aefcd14e4400d45353a0e3f91a96e80b"
+version = "0.16.5"
+source = "git+https://github.com/toeverything/y-crdt?rev=a700f09#a700f0990a993f905531f7acf589c6a736bb7429"
 dependencies = [
  "atomic_refcell",
  "lib0",

@@ -37,13 +37,13 @@ loom = { version = "0.6", features = ["checkpoint"] }
 [dev-dependencies]
 assert-json-diff = "2.0.2"
 criterion = { version = "0.5.1", features = ["html_reports"] }
-lib0 = { version = "0.16.10", features = ["lib0-serde"] }
+lib0 = { version = "=0.16.5", features = ["lib0-serde"] }
 ordered-float = { version = "3.8.0", features = ["proptest"] }
 path-ext = "0.1.0"
 proptest = "1.1.0"
 proptest-derive = "0.3.0"
-y-sync = "0.3.1"
-yrs = "0.16.10"
+y-sync = "=0.3.0"
+yrs = "=0.16.5"
 
 [[bin]]
 name = "memory_leak_test"
