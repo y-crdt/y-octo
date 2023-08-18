@@ -1,9 +1,13 @@
 [package]
-name = "jwst-codec"
+name = "y-octo"
 version = "0.1.0"
-authors = ["DarkSky <darksky2048@gmail.com>"]
+authors = [
+    "DarkSky <darksky2048@gmail.com>",
+    "forehalo <forehalo@gmail.com>",
+    "x1a0t <405028157@qq.com>",
+]
 edition = "2021"
-license = "AGPL-3.0-only"
+license = "MIT"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
