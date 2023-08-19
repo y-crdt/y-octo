@@ -110,7 +110,7 @@ jobs:
 
             - name: Memory Check
               run: |
-                  rustup component add rust-src
+                  rustup component add rust-src --toolchain nightly-2023-08-19
                   cargo +nightly-2023-08-19 test -Zbuild-std --target x86_64-unknown-linux-gnu -p y-octo --lib
 
     loom:
@@ -174,17 +174,17 @@ jobs:
               working-directory: ./packages/y-octo
               run: |
                   cargo install cargo-fuzz
-                  cargo fuzz run apply_update -- -max_total_time=30
-                  cargo fuzz run codec_doc_any_struct -- -max_total_time=30
-                  cargo fuzz run codec_doc_any -- -max_total_time=30
-                  cargo fuzz run decode_bytes -- -max_total_time=30
-                  cargo fuzz run i32_decode -- -max_total_time=30
-                  cargo fuzz run i32_encode -- -max_total_time=30
-                  cargo fuzz run ins_del_text -- -max_total_time=30
-                  cargo fuzz run sync_message -- -max_total_time=30
-                  cargo fuzz run u64_decode -- -max_total_time=30
-                  cargo fuzz run u64_encode -- -max_total_time=30
-                  cargo fuzz run apply_update -- -max_total_time=30
+                  cargo +nightly-2023-08-19 fuzz run apply_update -- -max_total_time=30
+                  cargo +nightly-2023-08-19 fuzz run codec_doc_any_struct -- -max_total_time=30
+                  cargo +nightly-2023-08-19 fuzz run codec_doc_any -- -max_total_time=30
+                  cargo +nightly-2023-08-19 fuzz run decode_bytes -- -max_total_time=30
+                  cargo +nightly-2023-08-19 fuzz run i32_decode -- -max_total_time=30
+                  cargo +nightly-2023-08-19 fuzz run i32_encode -- -max_total_time=30
+                  cargo +nightly-2023-08-19 fuzz run ins_del_text -- -max_total_time=30
+                  cargo +nightly-2023-08-19 fuzz run sync_message -- -max_total_time=30
+                  cargo +nightly-2023-08-19 fuzz run u64_decode -- -max_total_time=30
+                  cargo +nightly-2023-08-19 fuzz run u64_encode -- -max_total_time=30
+                  cargo +nightly-2023-08-19 fuzz run apply_update -- -max_total_time=30
 
             - name: upload fuzz artifacts
               if: ${{ failure() }}
