@@ -1,6 +1,6 @@
 [package]
 name = "y-octo"
-version = "0.1.0"
+version = "0.0.1"
 authors = [
     "DarkSky <darksky2048@gmail.com>",
     "forehalo <forehalo@gmail.com>",
@@ -9,6 +9,12 @@ authors = [
 ]
 edition = "2021"
 license = "MIT"
+description = "High-performance and thread-safe CRDT implementation compatible with Yjs"
+homepage = "https://github.com/toeverything/y-octo"
+repository = "https://github.com/toeverything/y-octo"
+keywords = ["collaboration", "crdt", "crdts", "yjs", "yata"]
+include = ["src/**/*", "benches/**/*", "bin/**/*", "LICENSE", "README.md"]
+readme = "README.md"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 

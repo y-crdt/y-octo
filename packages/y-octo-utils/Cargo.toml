@@ -1,6 +1,6 @@
 [package]
 name = "y-octo-utils"
-version = "0.1.0"
+version = "0.0.1"
 authors = ["x1a0t <405028157@qq.com>"]
 edition = "2021"
 license = "MIT"
