@@ -111,7 +111,7 @@ jobs:
             - name: Memory Check
               run: |
                   rustup component add rust-src
-                  cargo +nightly test -Zbuild-std --target x86_64-unknown-linux-gnu -p y-octo --lib
+                  cargo +nightly-2023-08-19 test -Zbuild-std --target x86_64-unknown-linux-gnu -p y-octo --lib
 
     loom:
         name: loom thread test
@@ -154,7 +154,7 @@ jobs:
 
             - name: Miri Code Check
               run: |
-                  cargo +nightly miri nextest run -p y-octo -j2
+                  cargo +nightly-2023-08-19 miri nextest run -p y-octo -j2
 
     fuzzing:
         name: fuzzing
