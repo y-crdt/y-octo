@@ -8,11 +8,11 @@ edition = "2021"
 cargo-fuzz = true
 
 [dependencies]
-rand = "0.8.5"
-rand_chacha = "0.3.1"
-libfuzzer-sys = "0.4.6"
-lib0 = "0.16.5"
-yrs = "0.16.5"
+rand = "0.8"
+rand_chacha = "0.3"
+libfuzzer-sys = "0.4"
+lib0 = "=0.16.5"
+yrs = "=0.16.5"
 
 y-octo-utils = { path = "../../y-octo-utils" }
 
@@ -57,14 +57,14 @@ test = false
 doc = false
 
 [[bin]]
-name = "i64_decode"
-path = "fuzz_targets/i64_decode.rs"
+name = "i32_decode"
+path = "fuzz_targets/i32_decode.rs"
 test = false
 doc = false
 
 [[bin]]
-name = "i64_encode"
-path = "fuzz_targets/i64_encode.rs"
+name = "i32_encode"
+path = "fuzz_targets/i32_encode.rs"
 test = false
 doc = false
 
