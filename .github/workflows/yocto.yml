@@ -1,0 +1,193 @@
+name: Build Y-Octo
+
+on:
+    workflow_dispatch:
+    push:
+        branches: [master]
+        paths:
+            - "Cargo.toml"
+            - "packages/**"
+            - ".github/workflows/yocto.yml"
+    pull_request:
+        branches: [master]
+        paths:
+            - "Cargo.toml"
+            - "packages/**"
+            - ".github/workflows/yocto.yml"
+
+# Cancels all previous workflow runs for pull requests that have not completed.
+# See https://docs.github.com/en/actions/using-jobs/using-concurrency
+concurrency:
+    # The concurrency group contains the workflow name and the branch name for
+    # pull requests or the commit hash for any other events.
+    group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.head_ref || github.sha }}
+    cancel-in-progress: true
+
+jobs:
+    lint:
+        runs-on: ubuntu-latest
+        permissions:
+            contents: read
+            security-events: write
+
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v2
+              with:
+                  fetch-depth: 0
+
+            - name: Install Rust
+              uses: actions-rs/toolchain@v1
+              with:
+                  profile: minimal
+                  toolchain: stable
+                  components: clippy
+                  override: true
+
+            - uses: Swatinem/rust-cache@v2
+
+            - name: Install required cargo components
+              uses: taiki-e/install-action@v2
+              with:
+                  tool: clippy-sarif,sarif-fmt
+
+            - name: Build & Check
+              run: |
+                  cargo vendor > .cargo/config
+                  cargo clippy --all-features --message-format=json | clippy-sarif | tee rust-clippy-results.sarif | sarif-fmt
+                  RUSTDOCFLAGS="-D rustdoc::broken-intra-doc-links" cargo doc --workspace --all-features --no-deps
+              env:
+                  CARGO_TERM_COLOR: always
+
+            - name: Upload analysis results to GitHub
+              uses: github/codeql-action/upload-sarif@v2
+              with:
+                  sarif_file: rust-clippy-results.sarif
+                  wait-for-processing: true
+
+    test:
+        name: test & collect coverage
+        runs-on: ubuntu-latest
+        continue-on-error: true
+        env:
+            RUSTFLAGS: -D warnings
+            CARGO_TERM_COLOR: always
+        steps:
+            - uses: actions/checkout@v3
+            - uses: dtolnay/rust-toolchain@stable
+              with:
+                  components: llvm-tools-preview
+            - uses: Swatinem/rust-cache@v2
+
+            - name: Install latest nextest release
+              uses: taiki-e/install-action@nextest
+            - name: Install cargo-llvm-cov
+              uses: taiki-e/install-action@cargo-llvm-cov
+
+            - name: Collect coverage data
+              run: cargo llvm-cov nextest --lcov --output-path lcov.info
+            - name: Upload coverage data to codecov
+              uses: codecov/codecov-action@v3
+              with:
+                  name: tests
+                  files: lcov.info
+
+    memory_check:
+        name: memory check
+        runs-on: ubuntu-latest
+        continue-on-error: true
+        env:
+            RUSTFLAGS: -D warnings -Zsanitizer=address
+            ASAN_OPTIONS: detect_leaks=1
+            CARGO_TERM_COLOR: always
+        steps:
+            - uses: actions/checkout@v3
+            - uses: dtolnay/rust-toolchain@stable
+              with:
+                  toolchain: nightly-2023-08-19
+            - uses: Swatinem/rust-cache@v2
+
+            - name: Memory Check
+              run: |
+                  rustup component add rust-src --toolchain nightly-2023-08-19
+                  cargo +nightly-2023-08-19 test -Zbuild-std --target x86_64-unknown-linux-gnu -p y-octo --lib
+
+    loom:
+        name: loom thread test
+        runs-on: ubuntu-latest
+        continue-on-error: true
+        env:
+            RUSTFLAGS: --cfg loom
+            RUST_BACKTRACE: full
+            CARGO_TERM_COLOR: always
+        steps:
+            - uses: actions/checkout@v3
+            - uses: dtolnay/rust-toolchain@stable
+            - uses: Swatinem/rust-cache@v2
+
+            - name: Install latest nextest release
+              uses: taiki-e/install-action@nextest
+
+            - name: Loom Thread Test
+              run: |
+                  cargo nextest run -p y-octo --lib
+
+    miri:
+        name: miri code check
+        runs-on: ubuntu-latest
+        continue-on-error: true
+        env:
+            RUST_BACKTRACE: full
+            CARGO_TERM_COLOR: always
+            MIRIFLAGS: -Zmiri-backtrace=full -Zmiri-tree-borrows
+        steps:
+            - uses: actions/checkout@v3
+            - uses: dtolnay/rust-toolchain@stable
+              with:
+                  toolchain: nightly-2023-08-19
+                  components: miri
+            - uses: Swatinem/rust-cache@v2
+
+            - name: Install latest nextest release
+              uses: taiki-e/install-action@nextest
+
+            - name: Miri Code Check
+              run: |
+                  cargo +nightly-2023-08-19 miri nextest run -p y-octo -j2
+
+    fuzzing:
+        name: fuzzing
+        runs-on: ubuntu-latest
+        continue-on-error: true
+        env:
+            RUSTFLAGS: -D warnings
+            CARGO_TERM_COLOR: always
+        steps:
+            - uses: actions/checkout@v3
+            - uses: dtolnay/rust-toolchain@master
+              with:
+                  toolchain: nightly-2023-08-19
+            - uses: Swatinem/rust-cache@v2
+
+            - name: fuzzing
+              working-directory: ./packages/y-octo
+              run: |
+                  cargo install cargo-fuzz
+                  cargo +nightly-2023-08-19 fuzz run apply_update -- -max_total_time=30
+                  cargo +nightly-2023-08-19 fuzz run codec_doc_any_struct -- -max_total_time=30
+                  cargo +nightly-2023-08-19 fuzz run codec_doc_any -- -max_total_time=30
+                  cargo +nightly-2023-08-19 fuzz run decode_bytes -- -max_total_time=30
+                  cargo +nightly-2023-08-19 fuzz run i32_decode -- -max_total_time=30
+                  cargo +nightly-2023-08-19 fuzz run i32_encode -- -max_total_time=30
+                  cargo +nightly-2023-08-19 fuzz run ins_del_text -- -max_total_time=30
+                  cargo +nightly-2023-08-19 fuzz run sync_message -- -max_total_time=30
+                  cargo +nightly-2023-08-19 fuzz run u64_decode -- -max_total_time=30
+                  cargo +nightly-2023-08-19 fuzz run u64_encode -- -max_total_time=30
+                  cargo +nightly-2023-08-19 fuzz run apply_update -- -max_total_time=30
+
+            - name: upload fuzz artifacts
+              if: ${{ failure() }}
+              uses: actions/upload-artifact@v3
+              with:
+                  name: fuzz-artifact
+                  path: ./packages/y-octo/fuzz/artifacts/**/*

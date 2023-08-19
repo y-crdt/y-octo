@@ -1,5 +1,5 @@
 [package]
-name = "jwst-codec-fuzz"
+name = "y-octo-fuzz"
 version = "0.0.0"
 publish = false
 edition = "2021"
@@ -14,9 +14,9 @@ libfuzzer-sys = "0.4.6"
 lib0 = "0.16.5"
 yrs = "0.16.5"
 
-jwst-codec-util = { path = "../../jwst-codec-util" }
+y-octo-utils = { path = "../../y-octo-utils" }
 
-[dependencies.jwst-codec]
+[dependencies.y-octo]
 path = ".."
 
 # Prevent this from interfering with workspaces

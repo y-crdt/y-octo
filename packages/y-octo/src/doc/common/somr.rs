@@ -89,6 +89,7 @@ impl<T> Somr<T> {
         }
     }
 
+    #[allow(dead_code)]
     pub fn get_mut(&self) -> Option<&mut T> {
         if !self.is_owned() || self.dangling() {
             return None;
