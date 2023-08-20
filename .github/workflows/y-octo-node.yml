@@ -13,7 +13,7 @@ env:
 
 jobs:
   build-node:
-    name: Build Storage
+    name: Build Node Binding
     runs-on: ubuntu-latest
     env:
       RUSTFLAGS: "-C debuginfo=1"
