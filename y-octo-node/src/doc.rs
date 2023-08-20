@@ -25,3 +25,15 @@ impl Doc {
         self.doc.client() as i64
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_doc_client() {
+        let client_id = 1;
+        let doc = Doc::new(Some(client_id));
+        assert_eq!(doc.client_id(), 1);
+    }
+}
