@@ -33,7 +33,7 @@ jobs:
         uses: actions/upload-artifact@v3
         with:
           name: y-octo.node
-          path: ./y-octo-node/y-octo.node
+          path: ./y-octo-node/y-octo.linux-x64-gnu.node
           if-no-files-found: error
 
   node-binding-test:
