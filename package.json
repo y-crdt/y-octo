@@ -1,8 +1,15 @@
 {
-  "name": "y-octo",
+  "name": "@y-octo/format",
   "version": "0.0.0",
   "packageManager": "yarn@3.6.2",
   "license": "MIT",
+  "workspaces": [
+    ".",
+    "y-octo-node"
+  ],
+  "engines": {
+    "node": ">=18.16.1 <19.0.0"
+  },
   "scripts": {
     "format": "run-p format:toml format:prettier format:rs",
     "format:toml": "taplo format",
