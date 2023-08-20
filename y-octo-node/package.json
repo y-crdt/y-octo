@@ -20,8 +20,9 @@
   "devDependencies": {
     "@napi-rs/cli": "^2.16.2",
     "@types/node": "^18.17.5",
+    "@types/prompts": "^2.4.4",
     "@types/uuid": "^9.0.2",
-    "cross-env": "^7.0.3",
+    "prompts": "^2.4.2",
     "ts-node": "^10.9.1",
     "typescript": "^5.1.6",
     "uuid": "^9.0.0"
@@ -34,8 +35,35 @@
     "build": "napi build --platform --release --no-const-enum",
     "build:debug": "napi build --platform --no-const-enum",
     "universal": "napi universal",
-    "test": "cross-env TS_NODE_TRANSPILE_ONLY=1 TS_NODE_PROJECT=./tsconfig.json node --test --loader ts-node/esm --experimental-specifier-resolution=node ./tests/**/*.mts",
+    "test": "yarn exec ts-node-esm ./scripts/run-test.mts all",
+    "test:watch": "yarn exec ts-node-esm ./scripts/run-test.ts all --watch",
+    "test:coverage": "c8 yarn exec ts-node-esm ./scripts/run-test.ts all",
     "version": "napi version"
   },
-  "version": "0.0.1"
+  "version": "0.0.1",
+  "sharedConfig": {
+    "nodeArgs": [
+      "--loader",
+      "ts-node/esm",
+      "--es-module-specifier-resolution=node"
+    ],
+    "env": {
+      "TS_NODE_TRANSPILE_ONLY": "1",
+      "TS_NODE_PROJECT": "./tsconfig.json",
+      "NODE_ENV": "development",
+      "DEBUG": "napi:*"
+    }
+  },
+  "c8": {
+    "reporter": [
+      "text",
+      "lcov"
+    ],
+    "report-dir": ".coverage",
+    "exclude": [
+      "scripts",
+      "node_modules",
+      "**/*.spec.ts"
+    ]
+  }
 }

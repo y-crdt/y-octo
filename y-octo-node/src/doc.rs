@@ -1,5 +1,6 @@
-use super::*;
 use y_octo::Doc as YDoc;
+
+use super::*;
 
 #[napi]
 pub struct Doc {

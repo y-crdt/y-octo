@@ -1,5 +1,5 @@
 {
-  "name": "@y-octo/format",
+  "name": "@y-octo/cli",
   "version": "0.0.0",
   "packageManager": "yarn@3.6.2",
   "license": "MIT",
@@ -11,6 +11,9 @@
     "node": ">=18.16.1 <19.0.0"
   },
   "scripts": {
+    "build:node": "yarn workspace @y-octo/node build",
+    "test:node": "yarn workspace @y-octo/node test",
+    "test:node:coverage": "yarn workspace @y-octo/node test:coverage",
     "format": "run-p format:toml format:prettier format:rs",
     "format:toml": "taplo format",
     "format:prettier": "prettier --write .",
