@@ -366,8 +366,7 @@ impl DocStore {
             }
 
             if ty.is_owned() {
-                self.dangling_types
-                    .insert(ty.ptr().as_ptr() as usize, ty.swap_take());
+                self.dangling_types.insert(ty.ptr().as_ptr() as usize, ty.swap_take());
             } else {
                 return Err(JwstCodecError::InvalidParent);
             }
