@@ -1,15 +1,15 @@
-use y_octo::Text as YText;
+use y_octo::Text;
 
 use super::*;
 
 #[napi]
-pub struct Text {
-    text: YText,
+pub struct YText {
+    pub(crate) text: Text,
 }
 
 #[napi]
-impl Text {
-    pub(crate) fn new(text: YText) -> Self {
+impl YText {
+    pub(crate) fn new(text: Text) -> Self {
         Self { text }
     }
 

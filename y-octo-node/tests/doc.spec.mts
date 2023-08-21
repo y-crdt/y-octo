@@ -20,6 +20,29 @@ test("y-octo doc", { concurrency: false }, async (t) => {
     equal(doc?.clientId, client_id);
   });
 
+  await t.test("array should be created", () => {
+    let arr = doc?.getOrCreateArray("arr");
+    deepEqual(doc?.keys, ["arr"]);
+    equal(arr?.len, 0);
+  });
+
+  await t.test("array editing", () => {
+    let arr = doc?.getOrCreateArray("arr");
+    arr?.insert(0, true);
+    arr?.insert(1, false);
+    arr?.insert(2, 1);
+    arr?.insert(3, "hello world");
+    equal(arr?.len, 4);
+    equal(arr?.get(0), true);
+    equal(arr?.get(1), false);
+    equal(arr?.get(2), 1);
+    equal(arr?.get(3), "hello world");
+    equal(arr?.len, 4);
+    arr?.remove(1, 1);
+    equal(arr?.len, 3);
+    equal(arr?.get(2), "hello world");
+  });
+
   await t.test("text should be created", () => {
     let text = doc?.getOrCreateText("text");
     deepEqual(doc?.keys, ["text"]);

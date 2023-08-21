@@ -36,10 +36,18 @@ impl Doc {
     }
 
     #[napi]
-    pub fn get_or_create_text(&mut self, key: String) -> Result<Text> {
+    pub fn get_or_create_array(&self, key: String) -> Result<YArray> {
+        self.doc
+            .get_or_create_array(&key)
+            .map(YArray::new)
+            .map_err(|e| anyhow::Error::from(e))
+    }
+
+    #[napi]
+    pub fn get_or_create_text(&self, key: String) -> Result<YText> {
         self.doc
             .get_or_create_text(&key)
-            .map(Text::new)
+            .map(YText::new)
             .map_err(|e| anyhow::Error::from(e))
     }
 }
@@ -62,16 +70,24 @@ mod tests {
     }
 
     #[test]
+    fn test_create_array() {
+        let doc = Doc::new(None);
+        let array = doc.get_or_create_array("array".into()).unwrap();
+        assert_eq!(array.len(), 0);
+    }
+
+    #[test]
     fn test_create_text() {
-        let mut doc = Doc::new(None);
+        let doc = Doc::new(None);
         let text = doc.get_or_create_text("text".into()).unwrap();
         assert_eq!(text.len(), 0);
     }
 
     #[test]
     fn test_keys() {
-        let mut doc = Doc::new(None);
+        let doc = Doc::new(None);
+        doc.get_or_create_array("array".into()).unwrap();
         doc.get_or_create_text("text".into()).unwrap();
-        assert_eq!(doc.keys(), vec!["text"]);
+        assert_eq!(doc.keys(), vec!["array", "text"]);
     }
 }
