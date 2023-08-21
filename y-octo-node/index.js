@@ -252,6 +252,7 @@ if (!nativeBinding) {
   throw new Error(`Failed to load native binding`)
 }
 
-const { Doc } = nativeBinding
+const { Doc, Text } = nativeBinding
 
 module.exports.Doc = Doc
+module.exports.Text = Text

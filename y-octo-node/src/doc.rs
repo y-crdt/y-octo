@@ -9,7 +9,7 @@ pub struct Doc {
 
 #[napi]
 impl Doc {
-    // #[napi(constructor)]
+    #[napi(constructor)]
     pub fn new(client_id: Option<i64>) -> Self {
         Self {
             doc: if let Some(client_id) = client_id {

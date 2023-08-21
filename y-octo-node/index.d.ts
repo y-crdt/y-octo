@@ -6,4 +6,14 @@
 export class Doc {
   constructor(clientId?: number | undefined | null)
   get clientId(): number
+  get guid(): string
+  get keys(): Array<string>
+  getOrCreateText(key: string): Text
+}
+export class Text {
+  get len(): number
+  get isEmpty(): boolean
+  insert(charIndex: number, str: string): void
+  remove(charIndex: number, len: number): void
+  toString(): string
 }
