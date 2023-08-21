@@ -1,0 +1,44 @@
+name: "Y-Octo Node.js Setup"
+description: "Node.js setup for CI, including cache configuration"
+inputs:
+  extra-flags:
+    description: "Extra flags to pass to the yarn install."
+    required: false
+    default: "--immutable --inline-builds"
+  package-install:
+    description: "Run the install step."
+    required: false
+    default: "true"
+  hard-link-nm:
+    description: "set nmMode to hardlinks-local in .yarnrc.yml"
+    required: false
+    default: "true"
+
+runs:
+  using: "composite"
+  steps:
+    - name: Setup Node.js
+      uses: actions/setup-node@v3
+      with:
+        node-version-file: ".nvmrc"
+        cache: "yarn"
+
+    - name: Set nmMode
+      if: ${{ inputs.hard-link-nm == 'true' }}
+      shell: bash
+      run: yarn config set nmMode hardlinks-local
+
+    - name: yarn install
+      if: ${{ inputs.package-install == 'true' }}
+      continue-on-error: true
+      shell: bash
+      run: yarn install ${{ inputs.extra-flags }}
+      env:
+        HUSKY: "0"
+
+    - name: yarn install (try again)
+      if: ${{ steps.install.outcome == 'failure' }}
+      shell: bash
+      run: yarn install ${{ inputs.extra-flags }}
+      env:
+        HUSKY: "0"
