@@ -5,7 +5,7 @@
 
 Y-Octo is a high-performance CRDT implementation compatible with [yjs].
 
-## Introduction
+### Introduction
 
 Y-Octo is a tiny, ultra-fast CRDT collaboration library built for all major platforms. Developers can use Y-Octo as the [Single source of truth](https://en.wikipedia.org/wiki/Single_source_of_truth) for their application state, naturally turning the application into a [local-first](https://www.inkandswitch.com/local-first/) collaborative app.
 
@@ -18,9 +18,7 @@ Y-Octo also has interoperability and binary compatibility with [yjs]. Developers
 [![Memory Leak Detect]](https://github.com/toeverything/y-octo/actions/workflows/memory-test.yml)
 [![codecov]](https://codecov.io/gh/toeverything/y-octo)
 
-###
-
-## Features
+### Features
 
 - [x] Collaborative Text
   - [x] Read and write styled Unicode compatible data.
