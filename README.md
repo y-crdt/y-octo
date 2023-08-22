@@ -1,16 +1,24 @@
 # Y-Octo
 
-[![docs]](https://docs.rs/crate/y-octo) [![crates]](https://crates.io/crates/y-octo) [![codecov]](https://codecov.io/gh/toeverything/y-octo)
+[![docs]](https://docs.rs/crate/y-octo)
+[![crates]](https://crates.io/crates/y-octo)
 
 Y-Octo is a high-performance CRDT implementation compatible with [yjs].
 
-Y-Octo aims to provide a thread-safe, high-performance CRDT implementation on multiple platforms and offers binary compatibility and interoperability with [yjs].
+## Introduction
 
-## Code Robustness
+Y-Octo is a tiny, ultra-fast CRDT collaboration library built for all major platforms. Developers can use Y-Octo as the [Single source of truth](https://en.wikipedia.org/wiki/Single_source_of_truth) for their application state, naturally turning the application into a [local-first](https://www.inkandswitch.com/local-first/) collaborative app.
+
+Y-Octo also has interoperability and binary compatibility with [yjs]. Developers can use [yjs] to develop local-first web applications and collaborate with Y-Octo in native apps alongside web apps.
+
+### Code Robustness
 
 [![Lint & Test & Fuzzing]](https://github.com/toeverything/y-octo/actions/workflows/y-octo.yml)
 [![Address Sanitizer]](https://github.com/toeverything/y-octo/actions/workflows/asan.yml)
 [![Memory Leak Detect]](https://github.com/toeverything/y-octo/actions/workflows/memory-test.yml)
+[![codecov]](https://codecov.io/gh/toeverything/y-octo)
+
+###
 
 ## Features
 
