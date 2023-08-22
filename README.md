@@ -20,33 +20,42 @@ Y-Octo also has interoperability and binary compatibility with [yjs]. Developers
 
 ### Features
 
-- [x] Collaborative Text
-  - [x] Read and write styled Unicode compatible data.
-  - [ ] Add, modify and delete text styles.
-  - [ ] Embedded JS data types and collaborative types.
-  - [x] Collaborative types of thread-safe.
-- [x] Collaborative Array and Map
-  - [x] Add, modify, and delete basic JS data types.
-  - [x] Recursively add, modify, and delete collaborative Rich-Text, Map, and Array data types.
-  - [x] Collaborative types of thread-safe.
-  - [ ] Recursive event subscription
-- [ ] Xml series yjs types
-- [x] Collaborative Doc Container
-  - [x] YATA CRDT state apply/diff compatible with [yjs]
-  - [x] State sync of thread-safe.
-  - [x] Store all collaborative types and JS data types
-  - [x] Update event subscription.
-  - [x] Yjs primitive type encoding.
-  - [x] Yjs v1 encoding.
-  - [ ] Yjs v2 encoding.
+- ✅ Collaborative Text
+  - ✅Read and write styled Unicode compatible data.
+  - 🚧 Add, modify and delete text styles.
+  - 🚧 Embedded JS data types and collaborative types.
+  - ✅ Collaborative types of thread-safe.
+- Collaborative Array
+  - ✅ Add, modify, and delete basic JS data types.
+  - ✅ Recursively add, modify, and delete collaborative types.
+  - ✅ Collaborative types of thread-safe.
+  - 🚧 Recursive event subscription
+- Collaborative Map
+  - ✅ Add, modify, and delete basic JS data types.
+  - ✅ Recursively add, modify, and delete collaborative types.
+  - ✅ Collaborative types of thread-safe.
+  - 🚧 Recursive event subscription
+- 🚧 Collaborative Xml (Fragment / Element)
+- ✅ Collaborative Doc Container
+  - ✅ YATA CRDT state apply/diff compatible with [yjs]
+  - ✅ State sync of thread-safe.
+  - ✅ Store all collaborative types and JS data types
+  - ✅ Update event subscription.
+  - 🚧 Sub Document.
+- ✅ Yjs binary encoding
+  - ✅ Awareness encoding.
+  - ✅ Primitive type encoding.
+  - ✅ Sync Protocol encoding.
+  - ✅ Yjs update v1 encoding.
+  - 🚧 Yjs update v2 encoding.
 
 ### Testing & Linting
 
 Put everything to the test! We've established various test suites, but we're continually striving to enhance our coverage：
 
-- Rust (cargo test/nextest) => sourced via inline #[cfg(test)] declarations
-- Typescript (node test) => via spec files
-- Smoke Tests (run on merges to latest)
+- Rust Tests
+- Node Tests
+- Smoke Tests
 - eslint, clippy
 
 ### Related projects
