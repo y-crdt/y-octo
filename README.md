@@ -21,7 +21,7 @@ Y-Octo also has interoperability and binary compatibility with [yjs]. Developers
 ### Features
 
 - ✅ Collaborative Text
-  - ✅Read and write styled Unicode compatible data.
+  - ✅ Read and write styled Unicode compatible data.
   - 🚧 Add, modify and delete text styles.
   - 🚧 Embedded JS data types and collaborative types.
   - ✅ Collaborative types of thread-safe.
