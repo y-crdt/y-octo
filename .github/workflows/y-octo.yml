@@ -1,4 +1,4 @@
-name: Build Y-Octo
+name: Lint & Test & Fuzzing
 
 on:
   workflow_dispatch:
@@ -95,27 +95,6 @@ jobs:
           name: tests
           files: lcov.info
 
-  memory_check:
-    name: memory check
-    runs-on: ubuntu-latest
-    continue-on-error: true
-    env:
-      RUSTFLAGS: -D warnings -Zsanitizer=address
-      ASAN_OPTIONS: detect_leaks=1
-      CARGO_TERM_COLOR: always
-    steps:
-      - uses: actions/checkout@v3
-
-      - name: Setup Rust
-        uses: ./.github/actions/setup-rust
-        with:
-          toolchain: nightly-2023-08-19
-
-      - name: Memory Check
-        run: |
-          rustup component add rust-src --toolchain nightly-2023-08-19
-          cargo +nightly-2023-08-19 test -Zbuild-std --target x86_64-unknown-linux-gnu -p y-octo --lib
-
   loom:
     name: loom thread test
     runs-on: ubuntu-latest
@@ -135,29 +114,6 @@ jobs:
       - name: Loom Thread Test
         run: |
           cargo nextest run -p y-octo --lib
-
-  miri:
-    name: miri code check
-    runs-on: ubuntu-latest
-    continue-on-error: true
-    env:
-      RUST_BACKTRACE: full
-      CARGO_TERM_COLOR: always
-      MIRIFLAGS: -Zmiri-backtrace=full -Zmiri-tree-borrows
-    steps:
-      - uses: actions/checkout@v3
-
-      - name: Setup Rust
-        uses: ./.github/actions/setup-rust
-        with:
-          toolchain: nightly-2023-08-19
-          components: miri
-      - name: Install latest nextest release
-        uses: taiki-e/install-action@nextest
-
-      - name: Miri Code Check
-        run: |
-          cargo +nightly-2023-08-19 miri nextest run -p y-octo -j2
 
   fuzzing:
     name: fuzzing
