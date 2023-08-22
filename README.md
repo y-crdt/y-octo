@@ -63,6 +63,17 @@ Put everything to the test! We've established various test suites, but we're con
 - [OctoBase]: The open-source embedded database based on Y-Octo.
 - [yjs]: Shared data types for building collaborative software in web.
 
+## Maintainers
+
+- [DarkSky](https://github.com/darkskygit)
+- [liuyi](https://github.com/forehalo)
+- [X1a0t](https://github.com/thorseraq)
+- [LongYinan](https://github.com/Brooooooklyn)
+
+## License
+
+Y-Octo are [MIT licensed].
+
 [codecov]: https://codecov.io/gh/toeverything/y-octo/graph/badge.svg?token=9AQY5Q1BYH
 [crates]: https://img.shields.io/crates/v/y-octo.svg
 [docs]: https://img.shields.io/crates/v/y-octo.svg
@@ -73,3 +84,4 @@ Put everything to the test! We've established various test suites, but we're con
 [OctoBase]: https://github.com/toeverything/octobase
 [BlockSuite]: https://github.com/toeverything/blocksuite
 [AFFiNE]: https://github.com/toeverything/affine
+[MIT licensed]: ./LICENSE
