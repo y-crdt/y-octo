@@ -40,6 +40,20 @@ Y-Octo also has interoperability and binary compatibility with [yjs]. Developers
   - [x] Yjs v1 encoding.
   - [ ] Yjs v2 encoding.
 
+### Testing & Linting
+
+Put everything to the test! We've established various test suites, but we're continually striving to enhance our coverage：
+
+- Rust (cargo test/nextest) => sourced via inline #[cfg(test)] declarations
+- Typescript (node test) => via spec files
+- Smoke Tests (run on merges to latest)
+- eslint, clippy
+
+### Related projects
+
+- [OctoBase]: The open-source embedded database based on Y-Octo.
+- [yjs]: Shared data types for building collaborative software in web.
+
 [codecov]: https://codecov.io/gh/toeverything/y-octo/graph/badge.svg?token=9AQY5Q1BYH
 [crates]: https://img.shields.io/crates/v/y-octo.svg
 [docs]: https://img.shields.io/crates/v/y-octo.svg
@@ -47,3 +61,6 @@ Y-Octo also has interoperability and binary compatibility with [yjs]. Developers
 [Lint & Test & Fuzzing]: https://github.com/toeverything/y-octo/actions/workflows/y-octo.yml/badge.svg
 [Address Sanitizer]: https://github.com/toeverything/y-octo/actions/workflows/y-octo-asan.yml/badge.svg
 [Memory Leak Detect]: https://github.com/toeverything/y-octo/actions/workflows/y-octo-memory-test.yml/badge.svg
+[OctoBase]: https://github.com/toeverything/octobase
+[BlockSuite]: https://github.com/toeverything/blocksuite
+[AFFiNE]: https://github.com/toeverything/affine
