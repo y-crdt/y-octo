@@ -1,3 +1,5 @@
+#![allow(unused)]
+
 use std::collections::HashMap;
 
 fn process_duration(duration: &str) -> (f64, f64) {
@@ -29,6 +31,7 @@ fn convert_dur_to_seconds(dur: f64, units: &str) -> f64 {
     dur * factors.get(units).unwrap_or(&1.0)
 }
 
+#[allow(dead_code)]
 fn is_significant(changes_dur: f64, changes_err: f64, base_dur: f64, base_err: f64) -> bool {
     if changes_dur < base_dur {
         changes_dur + changes_err < base_dur || base_dur - base_err > changes_dur
