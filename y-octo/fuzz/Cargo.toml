@@ -14,7 +14,7 @@ rand          = "0.8"
 rand_chacha   = "0.3"
 yrs           = "=0.16.5"
 
-y-octo-utils = { path = "../../y-octo-utils" }
+y-octo-utils = { path = "../../y-octo-utils", features = ["fuzz"] }
 
   [dependencies.y-octo]
   path = ".."
