@@ -4,9 +4,9 @@ inputs:
   components:
     description: "Cargo components"
     required: false
-  target:
+  targets:
     description: "Cargo target"
-    required: true
+    required: false
   toolchain:
     description: "Rustup toolchain"
     required: false
@@ -19,6 +19,6 @@ runs:
       uses: dtolnay/rust-toolchain@stable
       with:
         toolchain: ${{ inputs.toolchain }}
-        targets: ${{ inputs.target }}
+        targets: ${{ inputs.targets }}
         components: ${{ inputs.components }}
     - uses: Swatinem/rust-cache@v2
