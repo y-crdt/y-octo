@@ -1,4 +1,4 @@
-name: Lint & Test & Fuzzing
+name: Lint & Test & Fuzzing & Miri & Loom
 
 on:
   workflow_dispatch:
@@ -6,6 +6,9 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+
+env:
+  nightly: nightly-2023-08-19
 
 # Cancels all previous workflow runs for pull requests that have not completed.
 # See https://docs.github.com/en/actions/using-jobs/using-concurrency
@@ -51,7 +54,7 @@ jobs:
       - name: Build & Check
         run: |
           cargo vendor > .cargo/config
-          cargo clippy --all-features --message-format=json | clippy-sarif | tee rust-clippy-results.sarif | sarif-fmt
+          cargo clippy --all-features --message-format=json -- -D warnings | clippy-sarif | tee rust-clippy-results.sarif | sarif-fmt
           RUSTDOCFLAGS="-D rustdoc::broken-intra-doc-links" cargo doc --workspace --all-features --no-deps
         env:
           CARGO_TERM_COLOR: always
@@ -128,23 +131,23 @@ jobs:
       - name: Setup Rust
         uses: ./.github/actions/setup-rust
         with:
-          toolchain: nightly-2023-08-19
+          toolchain: ${{ env.nightly }}
 
       - name: fuzzing
         working-directory: ./y-octo
         run: |
           cargo install cargo-fuzz
-          cargo +nightly-2023-08-19 fuzz run apply_update -- -max_total_time=30
-          cargo +nightly-2023-08-19 fuzz run codec_doc_any_struct -- -max_total_time=30
-          cargo +nightly-2023-08-19 fuzz run codec_doc_any -- -max_total_time=30
-          cargo +nightly-2023-08-19 fuzz run decode_bytes -- -max_total_time=30
-          cargo +nightly-2023-08-19 fuzz run i32_decode -- -max_total_time=30
-          cargo +nightly-2023-08-19 fuzz run i32_encode -- -max_total_time=30
-          cargo +nightly-2023-08-19 fuzz run ins_del_text -- -max_total_time=30
-          cargo +nightly-2023-08-19 fuzz run sync_message -- -max_total_time=30
-          cargo +nightly-2023-08-19 fuzz run u64_decode -- -max_total_time=30
-          cargo +nightly-2023-08-19 fuzz run u64_encode -- -max_total_time=30
-          cargo +nightly-2023-08-19 fuzz run apply_update -- -max_total_time=30
+          cargo +${{ env.nightly }} fuzz run apply_update -- -max_total_time=30
+          cargo +${{ env.nightly }} fuzz run codec_doc_any_struct -- -max_total_time=30
+          cargo +${{ env.nightly }} fuzz run codec_doc_any -- -max_total_time=30
+          cargo +${{ env.nightly }} fuzz run decode_bytes -- -max_total_time=30
+          cargo +${{ env.nightly }} fuzz run i32_decode -- -max_total_time=30
+          cargo +${{ env.nightly }} fuzz run i32_encode -- -max_total_time=30
+          cargo +${{ env.nightly }} fuzz run ins_del_text -- -max_total_time=30
+          cargo +${{ env.nightly }} fuzz run sync_message -- -max_total_time=30
+          cargo +${{ env.nightly }} fuzz run u64_decode -- -max_total_time=30
+          cargo +${{ env.nightly }} fuzz run u64_encode -- -max_total_time=30
+          cargo +${{ env.nightly }} fuzz run apply_update -- -max_total_time=30
 
       - name: upload fuzz artifacts
         if: ${{ failure() }}
@@ -152,3 +155,47 @@ jobs:
         with:
           name: fuzz-artifact
           path: ./y-octo/fuzz/artifacts/**/*
+
+  miri:
+    name: miri code check
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    env:
+      RUST_BACKTRACE: full
+      CARGO_TERM_COLOR: always
+      MIRIFLAGS: -Zmiri-backtrace=full -Zmiri-tree-borrows
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Setup Rust
+        uses: ./.github/actions/setup-rust
+        with:
+          toolchain: ${{ env.nightly }}
+          components: miri
+      - name: Install latest nextest release
+        uses: taiki-e/install-action@nextest
+
+      - name: Miri Code Check
+        run: |
+          cargo +${{ env.nightly }} miri nextest run -p y-octo -j2
+
+  asan:
+    name: Address sanitizer
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    env:
+      RUSTFLAGS: -D warnings -Zsanitizer=address
+      ASAN_OPTIONS: detect_leaks=1
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Setup Rust
+        uses: ./.github/actions/setup-rust
+        with:
+          toolchain: ${{ env.nightly }}
+
+      - name: Memory Check
+        run: |
+          rustup component add rust-src --toolchain ${{ env.nightly }}
+          cargo +${{ env.nightly }} test -Zbuild-std --target x86_64-unknown-linux-gnu -p y-octo --lib

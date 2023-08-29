@@ -3,13 +3,16 @@
 use std::collections::HashMap;
 
 fn process_duration(duration: &str) -> (f64, f64) {
-    let dur_split: Vec<String> = duration.split("±").map(String::from).collect();
-    let units = dur_split[1].chars().skip_while(|c| c.is_digit(10)).collect::<String>();
+    let dur_split: Vec<String> = duration.split('±').map(String::from).collect();
+    let units = dur_split[1]
+        .chars()
+        .skip_while(|c| c.is_ascii_digit())
+        .collect::<String>();
     let dur_secs = convert_dur_to_seconds(dur_split[0].parse::<f64>().unwrap(), &units);
     let error_secs = convert_dur_to_seconds(
         dur_split[1]
             .chars()
-            .take_while(|c| c.is_digit(10))
+            .take_while(|c| c.is_ascii_digit())
             .collect::<String>()
             .parse::<f64>()
             .unwrap(),
@@ -47,10 +50,10 @@ fn convert_to_markdown() -> impl Iterator<Item = String> {
         .lines()
         .skip(2)
         .map(|l| l.ok())
-        .map(move |row| {
+        .filter_map(move |row| {
             if let Some(row) = row {
                 let columns = re.split(&row).collect::<Vec<_>>();
-                let name = columns.get(0)?;
+                let name = columns.first()?;
                 let base_duration = columns.get(2)?;
                 let changes_duration = columns.get(5)?;
                 Some((
@@ -62,7 +65,6 @@ fn convert_to_markdown() -> impl Iterator<Item = String> {
                 None
             }
         })
-        .flatten()
         .map(|(name, base_duration, changes_duration)| {
             let mut difference = "N/A".to_string();
             let base_undefined = base_duration == "?";
@@ -82,7 +84,7 @@ fn convert_to_markdown() -> impl Iterator<Item = String> {
 
             format!(
                 "| {} | {} | {} | {} |",
-                name.replace("|", "\\|"),
+                name.replace('|', "\\|"),
                 if base_undefined { "N/A" } else { &base_duration },
                 if changes_undefined { "N/A" } else { &changes_duration },
                 difference
@@ -91,7 +93,7 @@ fn convert_to_markdown() -> impl Iterator<Item = String> {
 }
 
 fn main() {
-    let platform = std::env::args().into_iter().skip(1).next().unwrap();
+    let platform = std::env::args().nth(1).unwrap();
 
     #[cfg(feature = "bench")]
     for ret in [
