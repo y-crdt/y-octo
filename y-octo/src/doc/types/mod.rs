@@ -26,7 +26,7 @@ use crate::{
 pub(crate) struct YType {
     pub start: Somr<Item>,
     pub item: Somr<Item>,
-    pub map: Option<HashMap<String, Node>>,
+    pub map: Option<HashMap<String, Somr<Item>>>,
     pub len: u64,
     /// The tag name of XMLElement and XMLHook type
     pub name: Option<String>,
@@ -288,15 +288,6 @@ macro_rules! impl_variants {
                 }
             }
         }
-
-
-        $(
-            impl From<$name> for super::Value {
-                fn from(value: $name) -> Self {
-                    Self::$name(value)
-                }
-            }
-        )*
     };
 }
 
@@ -350,6 +341,12 @@ macro_rules! impl_type {
         impl $name {
             pub(crate) fn from_unchecked(value: super::YTypeRef) -> Self {
                 $name::new(value.clone())
+            }
+        }
+
+        impl From<$name> for super::Value {
+            fn from(value: $name) -> Self {
+                Self::$name(value)
             }
         }
     };
@@ -453,7 +450,7 @@ impl TryFrom<&Content> for Value {
                 // actually unreachable
                 YTypeKind::Unknown => return Err(JwstCodecError::TypeCastError("unknown")),
             },
-            Content::Doc { .. } => return Err(JwstCodecError::TypeCastError("unimplemented: Doc")),
+            Content::Doc { guid: _, opts } => Value::Doc(DocOptions::try_from(opts.clone())?.build()),
             Content::Format { .. } => return Err(JwstCodecError::TypeCastError("unimplemented: Format")),
             Content::Deleted(_) => return Err(JwstCodecError::TypeCastError("unimplemented: Deleted")),
         })
@@ -466,8 +463,7 @@ impl From<Value> for Content {
             Value::Any(any) => Content::from(any),
             Value::Doc(doc) => Content::Doc {
                 guid: doc.guid().to_owned(),
-                // TODO: replace doc options if we got ones
-                opts: Any::Undefined,
+                opts: Any::from(doc.options().clone()),
             },
             Value::Array(v) => Content::Type(v.0),
             Value::Map(v) => Content::Type(v.0),
