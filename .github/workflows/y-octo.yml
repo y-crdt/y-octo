@@ -53,7 +53,7 @@ jobs:
 
       - name: Build & Check
         run: |
-          cargo vendor > .cargo/config
+          cargo vendor > .cargo/config.toml
           cargo clippy --all-features --message-format=json -- -D warnings | clippy-sarif | tee rust-clippy-results.sarif | sarif-fmt
           RUSTDOCFLAGS="-D rustdoc::broken-intra-doc-links" cargo doc --workspace --all-features --no-deps
         env:
