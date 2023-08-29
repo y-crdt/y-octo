@@ -227,8 +227,6 @@ impl Item {
             return false;
         }
 
-        // self.content.delete();
-
         self.flags.set_deleted();
 
         true
@@ -236,6 +234,10 @@ impl Item {
 
     pub fn countable(&self) -> bool {
         self.flags.countable()
+    }
+
+    pub fn keep(&self) -> bool {
+        self.flags.keep()
     }
 
     pub fn indexable(&self) -> bool {
@@ -246,6 +248,10 @@ impl Item {
         let Id { client, clock } = self.id;
 
         Id::new(client, clock + self.len() - 1)
+    }
+
+    pub fn right_item(&self) -> ItemRef {
+        self.right.as_ref().map(|n| n.as_item()).unwrap_or_default()
     }
 
     #[allow(dead_code)]
@@ -417,8 +423,7 @@ impl Item {
                         encoder.write_item_id(id)?;
                     }
                     Parent::Type(ty) => {
-                        if let Some(ty) = ty.get() {
-                            let ty = ty.read().unwrap();
+                        if let Some(ty) = ty.ty() {
                             if let Some(item) = ty.item.get() {
                                 encoder.write_var_u64(0)?;
                                 encoder.write_item_id(&item.id)?;

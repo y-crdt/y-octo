@@ -1,7 +1,4 @@
-use std::ops::Deref;
-
 use super::*;
-use crate::sync::RwLock;
 
 #[derive(Clone)]
 #[cfg_attr(test, derive(proptest_derive::Arbitrary))]
@@ -25,6 +22,9 @@ pub(crate) enum Content {
         opts: Any,
     },
 }
+
+unsafe impl Send for Content {}
+unsafe impl Sync for Content {}
 
 impl From<Any> for Content {
     fn from(value: Any) -> Self {
@@ -65,10 +65,7 @@ impl PartialEq for Content {
             ) => key1 == key2 && value1 == value2,
             (Self::Any(any1), Self::Any(any2)) => any1 == any2,
             (Self::Doc { guid: guid1, .. }, Self::Doc { guid: guid2, .. }) => guid1 == guid2,
-            (Self::Type(ty1), Self::Type(ty2)) => match (ty1.get(), ty2.get()) {
-                (Some(ty1), Some(ty2)) => ty1.read().unwrap().deref() == ty2.read().unwrap().deref(),
-                _ => false,
-            },
+            (Self::Type(ty1), Self::Type(ty2)) => ty1 == ty2,
             _ => false,
         }
     }
@@ -93,10 +90,7 @@ impl std::fmt::Debug for Content {
                 .field("key", key)
                 .field("value", value)
                 .finish(),
-            Self::Type(arg0) => f
-                .debug_tuple("Type")
-                .field(&arg0.get().unwrap().read().unwrap().kind())
-                .finish(),
+            Self::Type(arg0) => f.debug_tuple("Type").field(&arg0.ty().unwrap().kind()).finish(),
             Self::Any(arg0) => f.debug_tuple("Any").field(arg0).finish(),
             Self::Doc { guid, opts } => f.debug_struct("Doc").field("guid", guid).field("opts", opts).finish(),
         }
@@ -143,8 +137,7 @@ impl Content {
                     _ => None,
                 };
 
-                let ty = YType::new(kind, tag_name);
-                Ok(Self::Type(Somr::new(RwLock::new(ty))))
+                Ok(Self::Type(YTypeRef::new(kind, tag_name)))
             } // YType
             8 => Ok(Self::Any(Any::read_multiple(decoder)?)), // Any
             9 => {
@@ -202,12 +195,11 @@ impl Content {
                     .write_var_string(serde_json::to_string(value).map_err(|_| JwstCodecError::DamagedDocumentJson)?)?;
             }
             Self::Type(ty) => {
-                if let Some(ty) = ty.get() {
-                    let ty = ty.read().unwrap();
+                if let Some(ty) = ty.ty() {
                     let type_ref = u64::from(ty.kind());
                     encoder.write_var_u64(type_ref)?;
 
-                    if matches!(ty.kind, YTypeKind::XMLElement | YTypeKind::XMLHook) {
+                    if matches!(ty.kind(), YTypeKind::XMLElement | YTypeKind::XMLHook) {
                         encoder.write_var_string(ty.name.as_ref().unwrap())?;
                     }
                 }
@@ -249,11 +241,11 @@ impl Content {
                 Ok((Self::String(left.to_string()), Self::String(right.to_string())))
             }
             Self::Json(vec) => {
-                let (left, right) = vec.split_at((diff + 1) as usize);
+                let (left, right) = vec.split_at(diff as usize);
                 Ok((Self::Json(left.to_owned()), Self::Json(right.to_owned())))
             }
             Self::Any(vec) => {
-                let (left, right) = vec.split_at((diff + 1) as usize);
+                let (left, right) = vec.split_at(diff as usize);
                 Ok((Self::Any(left.to_owned()), Self::Any(right.to_owned())))
             }
             Self::Deleted(len) => {
@@ -312,19 +304,13 @@ mod tests {
                     key: "key".to_string(),
                     value: Any::Integer(42),
                 },
-                Content::Type(Somr::new(RwLock::new(YType::new(YTypeKind::Array, None)))),
-                Content::Type(Somr::new(RwLock::new(YType::new(YTypeKind::Map, None)))),
-                Content::Type(Somr::new(RwLock::new(YType::new(YTypeKind::Text, None)))),
-                Content::Type(Somr::new(RwLock::new(YType::new(
-                    YTypeKind::XMLElement,
-                    Some("test".to_string()),
-                )))),
-                Content::Type(Somr::new(RwLock::new(YType::new(YTypeKind::XMLFragment, None)))),
-                Content::Type(Somr::new(RwLock::new(YType::new(
-                    YTypeKind::XMLHook,
-                    Some("test".to_string()),
-                )))),
-                Content::Type(Somr::new(RwLock::new(YType::new(YTypeKind::XMLText, None)))),
+                Content::Type(YTypeRef::new(YTypeKind::Array, None)),
+                Content::Type(YTypeRef::new(YTypeKind::Map, None)),
+                Content::Type(YTypeRef::new(YTypeKind::Text, None)),
+                Content::Type(YTypeRef::new(YTypeKind::XMLElement, Some("test".to_string()))),
+                Content::Type(YTypeRef::new(YTypeKind::XMLFragment, None)),
+                Content::Type(YTypeRef::new(YTypeKind::XMLHook, Some("test".to_string()))),
+                Content::Type(YTypeRef::new(YTypeKind::XMLText, None)),
                 Content::Any(vec![Any::BigInt64(42), Any::String("Test Any".to_string())]),
                 Content::Doc {
                     guid: "my_guid".to_string(),
@@ -357,18 +343,18 @@ mod tests {
         {
             let (left, right) = contents[1].split(1).unwrap();
             assert!(contents[1].splittable());
-            assert_eq!(left, Content::Json(vec![None, Some("test_1".to_string())]));
-            assert_eq!(right, Content::Json(vec![Some("test_2".to_string())]));
+            assert_eq!(left, Content::Json(vec![None]));
+            assert_eq!(
+                right,
+                Content::Json(vec![Some("test_1".to_string()), Some("test_2".to_string())])
+            );
         }
 
         {
             let (left, right) = contents[2].split(1).unwrap();
             assert!(contents[2].splittable());
-            assert_eq!(
-                left,
-                Content::Any(vec![Any::BigInt64(42), Any::String("Test Any".to_string())])
-            );
-            assert_eq!(right, Content::Any(vec![]));
+            assert_eq!(left, Content::Any(vec![Any::BigInt64(42)]));
+            assert_eq!(right, Content::Any(vec![Any::String("Test Any".to_string())]));
         }
 
         {

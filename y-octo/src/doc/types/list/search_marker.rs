@@ -216,15 +216,8 @@ mod tests {
 
     #[test]
     fn test_marker_list() {
-        let options = DocOptions {
-            client: Some(rand::random()),
-            guid: Some(nanoid::nanoid!()),
-        };
-        let yrs_options = Options {
-            client_id: rand::random(),
-            guid: nanoid::nanoid!().into(),
-            ..Default::default()
-        };
+        let options = DocOptions::default();
+        let yrs_options = Options::default();
 
         loom_model!({
             let (client_id, buffer) = if cfg!(miri) {
@@ -257,7 +250,7 @@ mod tests {
 
             let marker_list = MarkerList::new();
 
-            let marker = marker_list.find_marker(&array.read().unwrap(), 8).unwrap();
+            let marker = marker_list.find_marker(&array.0.ty().unwrap(), 8).unwrap();
 
             assert_eq!(marker.index, 2);
             assert_eq!(
@@ -274,10 +267,7 @@ mod tests {
 
     #[test]
     fn test_search_marker_flaky() {
-        let options = DocOptions {
-            client: Some(rand::random()),
-            guid: Some(nanoid::nanoid!()),
-        };
+        let options = DocOptions::default();
 
         loom_model!({
             let doc = Doc::with_options(options.clone());

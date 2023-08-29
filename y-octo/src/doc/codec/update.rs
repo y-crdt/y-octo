@@ -6,6 +6,9 @@ use std::{
 use super::*;
 use crate::doc::StateVector;
 
+const CLIENTS_SAFE_CAPACITY: u64 = 1024;
+const STRUCTS_SAFE_CAPACITY: u64 = 10240;
+
 #[derive(Debug, Default, Clone)]
 pub struct Update {
     pub(crate) structs: HashMap<u64, VecDeque<Node>>,
@@ -25,13 +28,21 @@ impl<R: CrdtReader> CrdtRead<R> for Update {
     fn read(decoder: &mut R) -> JwstCodecResult<Self> {
         let num_of_clients = decoder.read_var_u64()?;
 
-        let mut map = HashMap::with_capacity(num_of_clients as usize);
+        let mut map = HashMap::with_capacity(if num_of_clients > CLIENTS_SAFE_CAPACITY {
+            CLIENTS_SAFE_CAPACITY
+        } else {
+            num_of_clients
+        } as usize);
         for _ in 0..num_of_clients {
             let num_of_structs = decoder.read_var_u64()?;
             let client = decoder.read_var_u64()?;
             let mut clock = decoder.read_var_u64()?;
 
-            let mut structs = VecDeque::with_capacity(num_of_structs as usize);
+            let mut structs = VecDeque::with_capacity(if num_of_structs > STRUCTS_SAFE_CAPACITY {
+                STRUCTS_SAFE_CAPACITY
+            } else {
+                num_of_structs
+            } as usize);
 
             for _ in 0..num_of_structs {
                 let struct_info = Node::read(decoder, Id::new(client, clock))?;
