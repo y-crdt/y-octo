@@ -17,6 +17,3 @@ y-octo      = { path = "../y-octo" }
 
 [build-dependencies]
 napi-build = "2"
-
-[profile.release]
-lto = true

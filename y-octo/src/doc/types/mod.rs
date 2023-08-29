@@ -125,6 +125,7 @@ impl YTypeRef {
         }
     }
 
+    #[allow(dead_code)]
     pub fn read(&self) -> Option<(RwLockReadGuard<DocStore>, RwLockReadGuard<YType>)> {
         self.store().and_then(|store| self.ty().map(|ty| (store, ty)))
     }

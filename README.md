@@ -1,5 +1,7 @@
 # Y-Octo
 
+[![Lint & Test & Fuzzing & Miri & Loom](https://github.com/toeverything/y-octo/actions/workflows/y-octo.yml/badge.svg)](https://github.com/toeverything/y-octo/actions/workflows/y-octo.yml)
+
 [![docs]](https://docs.rs/crate/y-octo)
 [![crates]](https://crates.io/crates/y-octo)
 
