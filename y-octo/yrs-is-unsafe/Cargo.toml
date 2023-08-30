@@ -1,0 +1,18 @@
+[package]
+edition = "2021"
+name    = "yrs-is-unsafe"
+version = "0.1.0"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+y-octo = { path = ".." }
+yrs    = "=0.16.5"
+
+[[bin]]
+name = "yrs-mem"
+path = "./bin/mem_usage.rs"
+
+[[bin]]
+name = "yrs-global-lock"
+path = "./bin/global_lock.rs"
