@@ -13,6 +13,16 @@ Y-Octo is a tiny, ultra-fast CRDT collaboration library built for all major plat
 
 Y-Octo also has interoperability and binary compatibility with [yjs]. Developers can use [yjs] to develop local-first web applications and collaborate with Y-Octo in native apps alongside web apps.
 
+### Who are using
+
+<a href="https://affine.pro"><img src="./assets/affine.svg" /></a>
+
+[AFFiNE](https://affine.pro) is using y-octo in production. There are [Electron](https://affine.pro/download) app and [Node.js server](https://github.com/toeverything/AFFiNE/tree/master/packages/storage) using y-octo in production.
+
+<a href="https://www.mysc.app/"><img src="https://www.mysc.app/images/logo_blk.webp" width="120px" /></a>
+
+[Mysc](https://www.mysc.app/) is using y-octo in the Rust server, and the iOS/Android client via the Swift/Kotlin bindings (Official bindings coming soon).
+
 ### Features
 
 - ✅ Collaborative Text
