@@ -77,7 +77,7 @@ impl<const N: usize> From<[(Client, Clock); N]> for StateVector {
 impl<R: CrdtReader> CrdtRead<R> for StateVector {
     fn read(decoder: &mut R) -> JwstCodecResult<Self> {
         let len = decoder.read_var_u64()? as usize;
-        
+
         // See: [HASHMAP_SAFE_CAPACITY]
         let mut map = HashMap::with_capacity(len.min(HASHMAP_SAFE_CAPACITY));
         for _ in 0..len {

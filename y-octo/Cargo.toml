@@ -32,7 +32,7 @@ serde_json    = "1.0"
 thiserror     = "1.0"
 
 [features]
-bench = []
+bench      = []
 large_refs = []
 
 [target.'cfg(fuzzing)'.dependencies]
