@@ -59,7 +59,7 @@ cargo build --release --bin yrs-mem
 /usr/bin/time -l ./target/release/yrs-mem
 ```
 
-[The source codes](y-octo/yrs-is-unsafe/bin/mem_usage.rs):
+[The source codes](../yrs-is-unsafe/bin/mem_usage.rs):
 
 <details>
 <summary>mem_usage.rs</summary>
