@@ -11,7 +11,7 @@ pub use doc::{
     CrdtWriter, Doc, DocOptions, Id, Map, RawDecoder, RawEncoder, StateVector, Text, Update, Value,
 };
 pub(crate) use doc::{Content, Item, HASHMAP_SAFE_CAPACITY};
-use log::{debug, warn};
+use log::{debug, info, warn};
 use nom::IResult;
 pub use protocol::{
     read_sync_message, write_sync_message, AwarenessState, AwarenessStates, DocMessage, SyncMessage, SyncMessageScanner,
