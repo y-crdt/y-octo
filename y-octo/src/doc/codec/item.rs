@@ -221,17 +221,22 @@ impl Item {
         }
     }
 
-    pub fn resolve_parent(&self) -> Option<(Option<Parent>, Option<String>)> {
-        if let Some(item) = self.left.get() {
+    // find a note that has parent info
+    // in crdt tree, not all node has parent info
+    // so we need to check left and right node if they have parent info
+    pub fn find_node_with_parent_info(&self) -> Option<Item> {
+        if self.parent.is_some() {
+            return Some(self.clone());
+        } else if let Some(item) = self.left.get() {
             if item.parent.is_none() {
                 if let Some(item) = item.right.get() {
-                    return Some((item.parent.clone(), item.parent_sub.clone()));
+                    return Some(item.clone());
                 }
             } else {
-                return Some((item.parent.clone(), item.parent_sub.clone()));
+                return Some(item.clone());
             }
         } else if let Some(item) = self.right.get() {
-            return Some((item.parent.clone(), item.parent_sub.clone()));
+            return Some(item.clone());
         }
         None
     }
