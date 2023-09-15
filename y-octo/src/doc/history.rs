@@ -119,9 +119,7 @@ impl StoreHistory {
             histories.push(History {
                 id: item.id.to_string(),
                 parent: Self::parse_path(item, &parents),
-                content: Value::try_from(item.content.as_ref())
-                    .map(|v| v.to_string())
-                    .unwrap_or("unknown".to_owned()),
+                content: Value::from(&item.content).to_string(),
             })
         }
 
@@ -243,8 +241,8 @@ mod test {
             let doc = Doc::default();
             let mut map = doc.get_or_create_map("map").unwrap();
             let mut sub_map = doc.create_map().unwrap();
-            map.insert("sub_map", sub_map.clone()).unwrap();
-            sub_map.insert("key", "value").unwrap();
+            map.insert("sub_map".to_string(), sub_map.clone()).unwrap();
+            sub_map.insert("key".to_string(), "value").unwrap();
 
             assert_eq!(doc.clients()[0], doc.client());
         });
@@ -256,8 +254,8 @@ mod test {
             let doc = Doc::default();
             let mut map = doc.get_or_create_map("map").unwrap();
             let mut sub_map = doc.create_map().unwrap();
-            map.insert("sub_map", sub_map.clone()).unwrap();
-            sub_map.insert("key", "value").unwrap();
+            map.insert("sub_map".to_string(), sub_map.clone()).unwrap();
+            sub_map.insert("key".to_string(), "value").unwrap();
 
             let history = StoreHistory::new(&doc.store);
 
