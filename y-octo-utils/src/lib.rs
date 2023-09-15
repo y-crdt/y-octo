@@ -1,3 +1,4 @@
+mod doc;
 mod message;
 
 #[cfg(feature = "fuzz")]
