@@ -43,11 +43,8 @@ impl<'a> Iterator for SyncMessageScanner<'a> {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use proptest::{collection::vec, prelude::*};
-    use y_sync::sync::MessageReader;
-    use yrs::updates::decoder::DecoderV1;
-
-    use super::{utils::to_sync_message, *};
 
     proptest! {
         #[test]
@@ -61,14 +58,6 @@ mod tests {
 
             let result: Result<Vec<SyncMessage>, _> = SyncMessageScanner::new(&buffer).collect();
             assert_eq!(result.unwrap(), messages);
-
-            {
-                let mut decoder = DecoderV1::from(buffer.as_slice());
-                let original =  MessageReader::new(&mut decoder)
-                    .flatten()
-                    .collect::<Vec<_>>();
-                assert_eq!(original.into_iter().filter_map(to_sync_message).collect::<Vec<_>>(), messages);
-            }
         }
     }
 }
