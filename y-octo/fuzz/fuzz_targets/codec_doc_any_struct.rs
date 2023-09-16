@@ -14,11 +14,7 @@ fn get_random_string() -> String {
 
 fuzz_target!(|data: Vec<Any>| {
     {
-        let any = Any::Object(
-            data.iter()
-                .map(|a| (get_random_string(), a.clone()))
-                .collect(),
-        );
+        let any = Any::Object(data.iter().map(|a| (get_random_string(), a.clone())).collect());
 
         let mut buffer = RawEncoder::default();
         if let Err(e) = any.write(&mut buffer) {

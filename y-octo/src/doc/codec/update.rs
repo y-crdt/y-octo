@@ -6,9 +6,6 @@ use std::{
 use super::*;
 use crate::doc::StateVector;
 
-const CLIENTS_SAFE_CAPACITY: u64 = 1024;
-const STRUCTS_SAFE_CAPACITY: u64 = 10240;
-
 #[derive(Debug, Default, Clone)]
 pub struct Update {
     pub(crate) structs: HashMap<u64, VecDeque<Node>>,
@@ -26,23 +23,17 @@ pub struct Update {
 
 impl<R: CrdtReader> CrdtRead<R> for Update {
     fn read(decoder: &mut R) -> JwstCodecResult<Self> {
-        let num_of_clients = decoder.read_var_u64()?;
+        let num_of_clients = decoder.read_var_u64()? as usize;
 
-        let mut map = HashMap::with_capacity(if num_of_clients > CLIENTS_SAFE_CAPACITY {
-            CLIENTS_SAFE_CAPACITY
-        } else {
-            num_of_clients
-        } as usize);
+        // See: [HASHMAP_SAFE_CAPACITY]
+        let mut map = HashMap::with_capacity(num_of_clients.min(HASHMAP_SAFE_CAPACITY));
         for _ in 0..num_of_clients {
-            let num_of_structs = decoder.read_var_u64()?;
+            let num_of_structs = decoder.read_var_u64()? as usize;
             let client = decoder.read_var_u64()?;
             let mut clock = decoder.read_var_u64()?;
 
-            let mut structs = VecDeque::with_capacity(if num_of_structs > STRUCTS_SAFE_CAPACITY {
-                STRUCTS_SAFE_CAPACITY
-            } else {
-                num_of_structs
-            } as usize);
+            // same reason as above
+            let mut structs = VecDeque::with_capacity(num_of_structs.min(HASHMAP_SAFE_CAPACITY));
 
             for _ in 0..num_of_structs {
                 let struct_info = Node::read(decoder, Id::new(client, clock))?;
@@ -50,8 +41,11 @@ impl<R: CrdtReader> CrdtRead<R> for Update {
                 structs.push_back(struct_info);
             }
 
+            structs.shrink_to_fit();
             map.insert(client, structs);
         }
+
+        map.shrink_to_fit();
 
         let delete_set = DeleteSet::read(decoder)?;
 
@@ -150,6 +144,7 @@ impl Update {
             // insert [Node::Skip] if structs[index].id().clock + structs[index].len() <
             // structs[index + 1].id().clock
             let mut index = 0;
+            let mut merged_index = vec![];
             while index < structs.len() - 1 {
                 let cur = &structs[index];
                 let next = &structs[index + 1];
@@ -163,11 +158,40 @@ impl Update {
                         Node::new_skip((cur.id().client, clock_end).into(), next_clock - clock_end),
                     );
                     index += 1;
+                } else if cur.id().clock == next_clock {
+                    if cur.deleted() == next.deleted()
+                        && cur.last_id() == next.last_id()
+                        && cur.left() == next.left()
+                        && cur.right() == next.right()
+                    {
+                        // merge two nodes, mark the index
+                        merged_index.push(index + 1);
+                    } else {
+                        debug!("merge failed: {:?} {:?}", cur, next)
+                    }
                 }
 
                 index += 1;
             }
+
+            {
+                // prune the merged nodes
+                let mut new_structs = VecDeque::with_capacity(structs.len() - merged_index.len());
+                let mut next_remove_idx = 0;
+                for (idx, val) in structs.drain(..).enumerate() {
+                    if next_remove_idx < merged_index.len() && idx == merged_index[next_remove_idx] {
+                        next_remove_idx += 1;
+                    } else {
+                        new_structs.push_back(val);
+                    }
+                }
+                structs.extend(new_structs);
+            }
         }
+    }
+
+    pub fn is_content_empty(&self) -> bool {
+        self.structs.is_empty()
     }
 
     pub fn is_empty(&self) -> bool {

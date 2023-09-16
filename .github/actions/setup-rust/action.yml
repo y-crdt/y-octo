@@ -1,4 +1,4 @@
-name: "Y-Octo Rust setup"
+name: "Rust setup"
 description: "Rust setup, including cache configuration"
 inputs:
   components:

@@ -1,5 +1,4 @@
 use super::{item::item_flags, *};
-use crate::sync::Arc;
 
 pub(crate) struct ItemBuilder {
     item: Item,
@@ -16,17 +15,19 @@ impl ItemBuilder {
         self
     }
 
-    pub fn left(mut self, left: Option<Node>) -> ItemBuilder {
-        let origin_id = left.as_ref().map(|i| i.last_id());
-        self.item.left = left;
-        self.item.origin_left_id = origin_id;
+    pub fn left(mut self, left: Somr<Item>) -> ItemBuilder {
+        if let Some(l) = left.get() {
+            self.item.origin_left_id = Some(l.last_id());
+            self.item.left = left;
+        }
         self
     }
 
-    pub fn right(mut self, right: Option<Node>) -> ItemBuilder {
-        let origin_id = right.as_ref().map(|i| i.id());
-        self.item.right = right;
-        self.item.origin_right_id = origin_id;
+    pub fn right(mut self, right: Somr<Item>) -> ItemBuilder {
+        if let Some(r) = right.get() {
+            self.item.origin_right_id = Some(r.id);
+            self.item.right = right;
+        }
         self
     }
 
@@ -52,7 +53,7 @@ impl ItemBuilder {
     }
 
     pub fn content(mut self, content: Content) -> ItemBuilder {
-        self.item.content = Arc::new(content);
+        self.item.content = content;
         self
     }
 
@@ -90,7 +91,7 @@ mod tests {
             assert_eq!(item.origin_right_id, Some(Id::new(4, 5)));
             assert!(matches!(item.parent, Some(Parent::String(text)) if text == "test"));
             assert_eq!(item.parent_sub, None);
-            assert_eq!(item.content, Arc::new(Content::Any(vec![Any::String("Hello".into())])));
+            assert_eq!(item.content, Content::Any(vec![Any::String("Hello".into())]));
         });
     }
 }

@@ -1,6 +1,6 @@
 [workspace]
 
-members  = ["./y-octo", "./y-octo-node", "./y-octo-utils"]
+members  = ["y-octo", "y-octo/yrs-is-unsafe", "y-octo-node", "y-octo-utils"]
 resolver = "2"
 
   [workspace.dependencies]

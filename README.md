@@ -7,13 +7,23 @@
 
 Y-Octo is a high-performance CRDT implementation compatible with [yjs].
 
-### Introduction
+## Introduction
 
 Y-Octo is a tiny, ultra-fast CRDT collaboration library built for all major platforms. Developers can use Y-Octo as the [Single source of truth](https://en.wikipedia.org/wiki/Single_source_of_truth) for their application state, naturally turning the application into a [local-first](https://www.inkandswitch.com/local-first/) collaborative app.
 
 Y-Octo also has interoperability and binary compatibility with [yjs]. Developers can use [yjs] to develop local-first web applications and collaborate with Y-Octo in native apps alongside web apps.
 
-### Features
+## Who are using
+
+<a href="https://affine.pro"><img src="./assets/affine.svg" /></a>
+
+[AFFiNE](https://affine.pro) is using y-octo in production. There are [Electron](https://affine.pro/download) app and [Node.js server](https://github.com/toeverything/AFFiNE/tree/master/packages/storage) using y-octo in production.
+
+<a href="https://www.mysc.app/"><img src="https://www.mysc.app/images/logo_blk.webp" width="120px" /></a>
+
+[Mysc](https://www.mysc.app/) is using y-octo in the Rust server, and the iOS/Android client via the Swift/Kotlin bindings (Official bindings coming soon).
+
+## Features
 
 - ✅ Collaborative Text
   - ✅ Read and write styled Unicode compatible data.
@@ -44,16 +54,21 @@ Y-Octo also has interoperability and binary compatibility with [yjs]. Developers
   - ✅ Yjs update v1 encoding.
   - 🚧 Yjs update v2 encoding.
 
-### Testing & Linting
+## Testing & Linting
 
 Put everything to the test! We've established various test suites, but we're continually striving to enhance our coverage：
 
 - Rust Tests
+  - Unit tests
+  - [Loom](https://docs.rs/loom/latest/loom/) multi-threading tests
+  - [Miri](https://github.com/rust-lang/miri) undefined behavior tests
+  - [Address Sanitizer](https://doc.rust-lang.org/beta/unstable-book/compiler-flags/sanitizer.html) memory error detections
+  - [Fuzzing](https://github.com/rust-fuzz/cargo-fuzz) fuzzing tests
 - Node Tests
 - Smoke Tests
-- eslint, clippy
+- Eslint, Clippy
 
-### Related projects
+## Related projects
 
 - [OctoBase]: The open-source embedded database based on Y-Octo.
 - [yjs]: Shared data types for building collaborative software in web.
@@ -64,6 +79,10 @@ Put everything to the test! We've established various test suites, but we're con
 - [liuyi](https://github.com/forehalo)
 - [X1a0t](https://github.com/thorseraq)
 - [LongYinan](https://github.com/Brooooooklyn)
+
+## Why not [yrs](https://github.com/y-crdt/y-crdt/)
+
+See [Why we're not using yrs](./y-octo/yrs-is-unsafe/README.md)
 
 ## License
 

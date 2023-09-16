@@ -2,7 +2,7 @@ mod iterator;
 mod search_marker;
 
 pub(crate) use iterator::ListIterator;
-pub use search_marker::MarkerList;
+pub(crate) use search_marker::MarkerList;
 
 use super::*;
 
@@ -22,7 +22,7 @@ impl ItemPosition {
             }
 
             self.left = self.right.clone();
-            self.right = right.right.clone().into();
+            self.right = right.right.clone();
         } else {
             // FAIL
         }
@@ -62,7 +62,10 @@ pub(crate) trait ListType: AsInner<Inner = YTypeRef> {
 
     fn iter_item(&self) -> ListIterator {
         let inner = self.as_inner().ty().unwrap();
-        ListIterator::new(inner.start.clone())
+        ListIterator {
+            cur: inner.start.clone(),
+            _lock: inner,
+        }
     }
 
     fn find_pos(&self, inner: &YType, index: u64) -> Option<ItemPosition> {
@@ -89,7 +92,7 @@ pub(crate) trait ListType: AsInner<Inner = YTypeRef> {
                     remaining -= marker.index;
                 }
                 pos.index = marker.index;
-                pos.left = marker.ptr.get().and_then(|ptr| ptr.left.clone()).into();
+                pos.left = marker.ptr.get().map(|ptr| ptr.left.clone()).unwrap_or_default();
                 pos.right = marker.ptr;
             }
         };
@@ -108,7 +111,7 @@ pub(crate) trait ListType: AsInner<Inner = YTypeRef> {
                 }
 
                 pos.left = pos.right.clone();
-                pos.right = item.right.clone().into();
+                pos.right = item.right.clone();
             } else {
                 return None;
             }

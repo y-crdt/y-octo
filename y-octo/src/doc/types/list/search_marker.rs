@@ -10,9 +10,9 @@ use super::*;
 const MAX_SEARCH_MARKER: usize = 80;
 
 #[derive(Clone, Debug)]
-pub struct SearchMarker {
-    pub(super) ptr: Somr<Item>,
-    pub(super) index: u64,
+pub(crate) struct SearchMarker {
+    pub ptr: Somr<Item>,
+    pub index: u64,
 }
 
 impl SearchMarker {
@@ -25,6 +25,8 @@ impl SearchMarker {
         self.index = index;
     }
 }
+
+unsafe impl Sync for MarkerList {}
 
 /// in yjs, a timestamp field is used to sort markers and the oldest marker is
 /// deleted once the limit is reached. this was designed for optimization
@@ -39,7 +41,7 @@ impl SearchMarker {
 /// instance behind [RwLock] guard already, so it's safe to make the list
 /// internal mutable.
 #[derive(Debug)]
-pub struct MarkerList(RefCell<VecDeque<SearchMarker>>);
+pub(crate) struct MarkerList(RefCell<VecDeque<SearchMarker>>);
 
 impl Deref for MarkerList {
     type Target = RefCell<VecDeque<SearchMarker>>;
@@ -55,8 +57,14 @@ impl DerefMut for MarkerList {
     }
 }
 
+impl Default for MarkerList {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MarkerList {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         MarkerList(RefCell::new(VecDeque::new()))
     }
 
@@ -74,14 +82,14 @@ impl MarkerList {
     }
 
     // update mark position if the index is within the range of the marker
-    pub(super) fn update_marker_changes(&self, index: u64, len: i64) {
+    pub fn update_marker_changes(&self, index: u64, len: i64) {
         let mut list = self.borrow_mut();
 
         for marker in list.iter_mut() {
             if len > 0 {
                 while let Some(ptr) = marker.ptr.get() {
                     if !ptr.indexable() {
-                        let left_ref: ItemRef = ptr.left.as_ref().into();
+                        let left_ref = ptr.left.clone();
                         if let Some(left) = left_ref.get() {
                             if left.indexable() {
                                 marker.index -= left.len();
@@ -107,7 +115,7 @@ impl MarkerList {
     }
 
     // find and return the marker that is closest to the index
-    pub(super) fn find_marker(&self, parent: &YType, index: u64) -> Option<SearchMarker> {
+    pub fn find_marker(&self, parent: &YType, index: u64) -> Option<SearchMarker> {
         if parent.start.is_none() || index == 0 {
             return None;
         }
@@ -132,7 +140,7 @@ impl MarkerList {
                     break;
                 }
 
-                let right_ref: ItemRef = item.right.clone().into();
+                let right_ref: ItemRef = item.right.clone();
                 if right_ref.is_some() {
                     if item.indexable() {
                         if index < marker_index + item.len() {
@@ -153,7 +161,7 @@ impl MarkerList {
                     break;
                 }
 
-                let left_ref: ItemRef = item.left.clone().into();
+                let left_ref: ItemRef = item.left.clone();
                 if let Some(left) = left_ref.get() {
                     if left.indexable() {
                         marker_index -= left.len();
@@ -169,7 +177,7 @@ impl MarkerList {
             // (it is most likely the best marker anyway) iterate to left until
             // item_ptr can't be merged with left
             while let Some(item) = item_ptr.clone().get() {
-                let left_ref: ItemRef = item.left.clone().into();
+                let left_ref: ItemRef = item.left.clone();
                 if let Some(left) = left_ref.get() {
                     if left.id.client == item.id.client && left.id.clock + left.len() == item.id.clock {
                         if left.indexable() {
@@ -201,8 +209,19 @@ impl MarkerList {
     }
 
     #[allow(dead_code)]
-    pub(super) fn get_last_marker(&self) -> Option<SearchMarker> {
+    pub fn get_last_marker(&self) -> Option<SearchMarker> {
         self.borrow().back().cloned()
+    }
+
+    pub fn replace_marker(&self, raw: Somr<Item>, new: Somr<Item>, len_shift: i64) {
+        let mut list = self.borrow_mut();
+
+        for marker in list.iter_mut() {
+            if marker.ptr == raw {
+                marker.ptr = new.clone();
+                marker.index = ((marker.index as i64) + len_shift) as u64;
+            }
+        }
     }
 }
 

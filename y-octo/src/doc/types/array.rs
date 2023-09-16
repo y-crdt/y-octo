@@ -4,16 +4,16 @@ impl_type!(Array);
 
 impl ListType for Array {}
 
-pub struct ArrayIter(ListIterator);
+pub struct ArrayIter<'a>(ListIterator<'a>);
 
-impl Iterator for ArrayIter {
+impl Iterator for ArrayIter<'_> {
     type Item = Value;
 
     fn next(&mut self) -> Option<Self::Item> {
         for item in self.0.by_ref() {
             if let Some(item) = item.get() {
                 if item.countable() {
-                    return Some(item.content.as_ref().try_into().unwrap());
+                    return Some(Value::try_from(&item.content).unwrap());
                 }
             }
         }
@@ -39,9 +39,9 @@ impl Array {
         debug_assert!(offset == 0);
         if let Some(item) = item.get() {
             // TODO: rewrite to content.read(&mut [Any])
-            return match item.content.as_ref() {
+            return match &item.content {
                 Content::Any(any) => return any.first().map(|any| Value::Any(any.clone())),
-                _ => item.content.as_ref().try_into().map_or_else(|_| None, Some),
+                _ => Value::try_from(&item.content).map_or_else(|_| None, Some),
             };
         }
 
@@ -83,8 +83,6 @@ impl serde::Serialize for Array {
 
 #[cfg(test)]
 mod tests {
-    use yrs::{Array, Options, Text, Transact};
-
     use super::*;
 
     #[test]
@@ -108,6 +106,7 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore)]
     fn test_ytext_equal() {
+        use yrs::{Options, Text, Transact};
         let options = DocOptions::default();
         let yrs_options = Options::default();
 
@@ -166,6 +165,7 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore)]
     fn test_yrs_array_decode() {
+        use yrs::{Array, Transact};
         let update = {
             let doc = yrs::Doc::new();
             let array = doc.get_or_insert_array("abc");
