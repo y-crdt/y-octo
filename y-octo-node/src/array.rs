@@ -1,5 +1,5 @@
 use napi::{bindgen_prelude::Array as JsArray, Env, JsUnknown, ValueType};
-use y_octo::{Any, Array};
+use y_octo::{Any, Array, Value};
 
 use super::*;
 
@@ -74,7 +74,24 @@ impl YArray {
                         Err(anyhow::Error::msg("Failed to coerce value to string"))
                     }
                 }
-                ValueType::Object => Err(anyhow::Error::msg("Object values are not supported yet")),
+                ValueType::Object => {
+                    if let Ok(object) = value.coerce_to_object() {
+                        if let Ok(length) = object.get_array_length() {
+                            for i in 0..length {
+                                if let Ok(any) = object.get_element::<JsUnknown>(i).and_then(get_any_from_js_unknown) {
+                                    self.array
+                                        .insert(char_index as u64 + i as u64, Value::Any(any))
+                                        .map_err(|e| anyhow::Error::from(e))?;
+                                }
+                            }
+                            Ok(())
+                        } else {
+                            Err(anyhow::Error::msg("Failed to coerce value to array"))
+                        }
+                    } else {
+                        Err(anyhow::Error::msg("Failed to coerce value to array"))
+                    }
+                }
                 ValueType::Symbol => Err(anyhow::Error::msg("Symbol values are not supported")),
                 ValueType::Function => Err(anyhow::Error::msg("Function values are not supported")),
                 ValueType::External => Err(anyhow::Error::msg("External values are not supported")),
@@ -93,7 +110,7 @@ impl YArray {
 
     #[napi]
     pub fn to_json(&self, env: Env) -> Result<JsArray> {
-        let mut js_array = env.create_array(self.array.len() as u32)?;
+        let mut js_array = env.create_array(0)?;
         for value in self.array.iter() {
             js_array.insert(get_js_unknown_from_value(env, value)?)?;
         }
