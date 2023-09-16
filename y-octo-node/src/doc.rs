@@ -50,6 +50,14 @@ impl Doc {
             .map(YText::new)
             .map_err(|e| anyhow::Error::from(e))
     }
+
+    #[napi]
+    pub fn get_or_create_map(&self, key: String) -> Result<YMap> {
+        self.doc
+            .get_or_create_map(&key)
+            .map(YMap::new)
+            .map_err(|e| anyhow::Error::from(e))
+    }
 }
 
 #[cfg(test)]
@@ -73,7 +81,7 @@ mod tests {
     fn test_create_array() {
         let doc = Doc::new(None);
         let array = doc.get_or_create_array("array".into()).unwrap();
-        assert_eq!(array.len(), 0);
+        assert_eq!(array.length(), 0);
     }
 
     #[test]
@@ -88,6 +96,9 @@ mod tests {
         let doc = Doc::new(None);
         doc.get_or_create_array("array".into()).unwrap();
         doc.get_or_create_text("text".into()).unwrap();
-        assert_eq!(doc.keys(), vec!["array", "text"]);
+        doc.get_or_create_map("map".into()).unwrap();
+        let mut keys = doc.keys();
+        keys.sort();
+        assert_eq!(keys, vec!["array", "map", "text"]);
     }
 }

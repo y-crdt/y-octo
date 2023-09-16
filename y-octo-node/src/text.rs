@@ -37,6 +37,11 @@ impl YText {
             .map_err(|e| anyhow::Error::from(e))
     }
 
+    #[napi(getter)]
+    pub fn length(&self) -> i64 {
+        self.text.len() as i64
+    }
+
     #[napi]
     pub fn to_string(&self) -> String {
         self.text.to_string()
@@ -49,14 +54,14 @@ mod tests {
 
     #[test]
     fn test_text_init() {
-        let mut doc = Doc::new(None);
+        let doc = Doc::new(None);
         let text = doc.get_or_create_text("text".into()).unwrap();
         assert_eq!(text.len(), 0);
     }
 
     #[test]
     fn test_text_edit() {
-        let mut doc = Doc::new(None);
+        let doc = Doc::new(None);
         let mut text = doc.get_or_create_text("text".into()).unwrap();
         text.insert(0, "hello".into()).unwrap();
         assert_eq!(text.to_string(), "hello");

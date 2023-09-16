@@ -1,32 +1,32 @@
 use napi::{Env, JsUnknown, ValueType};
-use y_octo::{Any, Array, Value};
+use y_octo::{Any, Map, Value};
 
 use super::*;
 
 #[napi]
-pub struct YArray {
-    pub(crate) array: Array,
+pub struct YMap {
+    pub(crate) map: Map,
 }
 
 #[napi]
-impl YArray {
-    pub(crate) fn new(array: Array) -> Self {
-        Self { array }
+impl YMap {
+    pub(crate) fn new(map: Map) -> Self {
+        Self { map }
     }
 
     #[napi(getter)]
     pub fn length(&self) -> i64 {
-        self.array.len() as i64
+        self.map.len() as i64
     }
 
     #[napi(getter)]
     pub fn is_empty(&self) -> bool {
-        self.array.is_empty()
+        self.map.is_empty()
     }
 
     #[napi]
-    pub fn get(&self, env: Env, char_index: i64) -> Result<Option<JsUnknown>> {
-        if let Some(value) = self.array.get(char_index as u64) {
+    pub fn get(&self, env: Env, key: String) -> Result<Option<JsUnknown>> {
+        if let Some(value) = self.map.get(&key) {
             match value {
                 Value::Any(any) => get_js_unknown_from_value(env, any),
                 Value::Array(array) => env.create_external(YArray { array }, None).map(|o| o.into_unknown()),
@@ -42,27 +42,22 @@ impl YArray {
     }
 
     #[napi]
-    pub fn insert(&mut self, char_index: i64, value: JsUnknown) -> Result<()> {
+    pub fn set(&mut self, key: String, value: JsUnknown) -> Result<()> {
         match value.get_type() {
             Ok(value_type) => match value_type {
-                ValueType::Undefined | ValueType::Null => self
-                    .array
-                    .insert(char_index as u64, Any::Null)
-                    .map_err(|e| anyhow::Error::from(e)),
+                ValueType::Undefined | ValueType::Null => {
+                    self.map.insert(key, Any::Null).map_err(|e| anyhow::Error::from(e))
+                }
                 ValueType::Boolean => {
                     if let Ok(boolean) = value.coerce_to_bool().and_then(|v| v.get_value()) {
-                        self.array
-                            .insert(char_index as u64, boolean)
-                            .map_err(|e| anyhow::Error::from(e))
+                        self.map.insert(key, boolean).map_err(|e| anyhow::Error::from(e))
                     } else {
                         Err(anyhow::Error::msg("Failed to coerce value to boolean"))
                     }
                 }
                 ValueType::Number => {
                     if let Ok(number) = value.coerce_to_number().and_then(|v| v.get_double()) {
-                        self.array
-                            .insert(char_index as u64, number)
-                            .map_err(|e| anyhow::Error::from(e))
+                        self.map.insert(key, number).map_err(|e| anyhow::Error::from(e))
                     } else {
                         Err(anyhow::Error::msg("Failed to coerce value to number"))
                     }
@@ -73,9 +68,7 @@ impl YArray {
                         .and_then(|v| v.into_utf8())
                         .and_then(|s| s.as_str().map(|s| s.to_string()))
                     {
-                        self.array
-                            .insert(char_index as u64, string)
-                            .map_err(|e| anyhow::Error::from(e))
+                        self.map.insert(key, string).map_err(|e| anyhow::Error::from(e))
                     } else {
                         Err(anyhow::Error::msg("Failed to coerce value to string"))
                     }
@@ -91,10 +84,8 @@ impl YArray {
     }
 
     #[napi]
-    pub fn remove(&mut self, char_index: i64, len: i64) -> Result<()> {
-        self.array
-            .remove(char_index as u64, len as u64)
-            .map_err(|e| anyhow::Error::from(e))
+    pub fn remove(&mut self, key: String) {
+        self.map.remove(&key);
     }
 }
 
@@ -104,9 +95,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_array_init() {
+    fn test_map_init() {
         let doc = Doc::new(None);
-        let array = doc.get_or_create_array("array".into()).unwrap();
-        assert_eq!(array.length(), 0);
+        let text = doc.get_or_create_map("map".into()).unwrap();
+        assert_eq!(text.length(), 0);
     }
 }
