@@ -1,5 +1,5 @@
-use napi::{Env, JsUnknown, ValueType};
-use y_octo::{Any, Array, Value};
+use napi::{bindgen_prelude::Array as JsArray, Env, JsUnknown, ValueType};
+use y_octo::{Any, Array};
 
 use super::*;
 
@@ -27,15 +27,9 @@ impl YArray {
     #[napi]
     pub fn get(&self, env: Env, char_index: i64) -> Result<Option<JsUnknown>> {
         if let Some(value) = self.array.get(char_index as u64) {
-            match value {
-                Value::Any(any) => get_js_unknown_from_value(env, any),
-                Value::Array(array) => env.create_external(YArray { array }, None).map(|o| o.into_unknown()),
-                Value::Map(map) => env.create_external(YMap { map }, None).map(|o| o.into_unknown()),
-                Value::Text(text) => env.create_external(YText { text }, None).map(|o| o.into_unknown()),
-                _ => env.get_null().map(|v| v.into_unknown()),
-            }
-            .map(Some)
-            .map_err(|e| anyhow::Error::from(e))
+            get_js_unknown_from_value(env, value)
+                .map(Some)
+                .map_err(|e| anyhow::Error::from(e))
         } else {
             Ok(None)
         }
@@ -95,6 +89,15 @@ impl YArray {
         self.array
             .remove(char_index as u64, len as u64)
             .map_err(|e| anyhow::Error::from(e))
+    }
+
+    #[napi]
+    pub fn to_json(&self, env: Env) -> Result<JsArray> {
+        let mut js_array = env.create_array(self.array.len() as u32)?;
+        for value in self.array.iter() {
+            js_array.insert(get_js_unknown_from_value(env, value)?)?;
+        }
+        Ok(js_array)
     }
 }
 

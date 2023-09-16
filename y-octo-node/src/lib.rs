@@ -12,4 +12,4 @@ pub use doc::Doc;
 pub use map::YMap;
 pub use text::YText;
 
-use utils::get_js_unknown_from_value;
+use utils::{get_js_unknown_from_any, get_js_unknown_from_value};

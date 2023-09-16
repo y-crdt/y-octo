@@ -9,6 +9,7 @@ export class YArray {
   get(charIndex: number): unknown | null
   insert(charIndex: number, value: unknown): void
   remove(charIndex: number, len: number): void
+  toJson(): JsArray
 }
 export class Doc {
   constructor(clientId?: number | undefined | null)
@@ -18,6 +19,9 @@ export class Doc {
   getOrCreateArray(key: string): YArray
   getOrCreateText(key: string): YText
   getOrCreateMap(key: string): YMap
+  applyUpdate(update: Buffer): Buffer
+  encodeUpdateV1(): Buffer
+  onUpdate(callback: (result: Uint8Array) => void): void
 }
 export class YMap {
   get length(): number
@@ -25,6 +29,7 @@ export class YMap {
   get(key: string): unknown | null
   set(key: string, value: unknown): void
   remove(key: string): void
+  toJson(): object
 }
 export class YText {
   get len(): number

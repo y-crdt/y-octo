@@ -12,7 +12,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 anyhow      = "1"
-napi        = { version = "2", features = ["anyhow"] }
+napi        = { version = "2", features = ["anyhow", "napi4"] }
 napi-derive = "2"
 y-octo      = { path = "../y-octo" }
 

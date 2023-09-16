@@ -1,4 +1,9 @@
-use y_octo::Doc as YDoc;
+use napi::{
+    bindgen_prelude::Buffer,
+    threadsafe_function::{ErrorStrategy, ThreadsafeFunction, ThreadsafeFunctionCallMode},
+    JsFunction,
+};
+use y_octo::{Doc as YDoc, History};
 
 use super::*;
 
@@ -57,6 +62,34 @@ impl Doc {
             .get_or_create_map(&key)
             .map(YMap::new)
             .map_err(|e| anyhow::Error::from(e))
+    }
+
+    #[napi]
+    pub fn apply_update(&mut self, update: Buffer) -> Result<Buffer> {
+        self.doc
+            .apply_update_from_binary(update.to_vec())
+            .and_then(|u| u.into_ybinary1().map(|v| v.into()))
+            .map_err(|e| anyhow::Error::from(e))
+    }
+
+    #[napi]
+    pub fn encode_update_v1(&self) -> Result<Buffer> {
+        self.doc
+            .encode_update_v1()
+            .map(|v| v.into())
+            .map_err(|e| anyhow::Error::from(e))
+    }
+
+    #[napi(ts_args_type = "callback: (result: Uint8Array) => void")]
+    pub fn on_update(&mut self, callback: JsFunction) -> Result<()> {
+        let tsfn: ThreadsafeFunction<Buffer, ErrorStrategy::Fatal> =
+            callback.create_threadsafe_function(0, |ctx| Ok(vec![ctx.value]))?;
+
+        let callback = move |update: &[u8], _h: &[History]| {
+            tsfn.call(Buffer::from(update.to_vec()), ThreadsafeFunctionCallMode::Blocking);
+        };
+        self.doc.subscribe(Box::new(callback));
+        Ok(())
     }
 }
 

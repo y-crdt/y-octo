@@ -1,4 +1,4 @@
-use napi::{Env, JsUnknown, ValueType};
+use napi::{bindgen_prelude::Object, Env, JsUnknown, ValueType};
 use y_octo::{Any, Map, Value};
 
 use super::*;
@@ -28,7 +28,7 @@ impl YMap {
     pub fn get(&self, env: Env, key: String) -> Result<Option<JsUnknown>> {
         if let Some(value) = self.map.get(&key) {
             match value {
-                Value::Any(any) => get_js_unknown_from_value(env, any),
+                Value::Any(any) => get_js_unknown_from_any(env, any),
                 Value::Array(array) => env.create_external(YArray { array }, None).map(|o| o.into_unknown()),
                 Value::Map(map) => env.create_external(YMap { map }, None).map(|o| o.into_unknown()),
                 Value::Text(text) => env.create_external(YText { text }, None).map(|o| o.into_unknown()),
@@ -86,6 +86,15 @@ impl YMap {
     #[napi]
     pub fn remove(&mut self, key: String) {
         self.map.remove(&key);
+    }
+
+    #[napi]
+    pub fn to_json(&self, env: Env) -> Result<Object> {
+        let mut js_object = env.create_object()?;
+        for (key, value) in self.map.iter() {
+            js_object.set(key, get_js_unknown_from_value(env, value))?;
+        }
+        Ok(js_object)
     }
 }
 
