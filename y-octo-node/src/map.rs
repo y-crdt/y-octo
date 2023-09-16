@@ -35,7 +35,7 @@ impl YMap {
                 _ => env.get_null().map(|v| v.into_unknown()),
             }
             .map(Some)
-            .map_err(|e| anyhow::Error::from(e))
+            .map_err(anyhow::Error::from)
         } else {
             Ok(None)
         }
@@ -45,19 +45,17 @@ impl YMap {
     pub fn set(&mut self, key: String, value: JsUnknown) -> Result<()> {
         match value.get_type() {
             Ok(value_type) => match value_type {
-                ValueType::Undefined | ValueType::Null => {
-                    self.map.insert(key, Any::Null).map_err(|e| anyhow::Error::from(e))
-                }
+                ValueType::Undefined | ValueType::Null => self.map.insert(key, Any::Null).map_err(anyhow::Error::from),
                 ValueType::Boolean => {
                     if let Ok(boolean) = value.coerce_to_bool().and_then(|v| v.get_value()) {
-                        self.map.insert(key, boolean).map_err(|e| anyhow::Error::from(e))
+                        self.map.insert(key, boolean).map_err(anyhow::Error::from)
                     } else {
                         Err(anyhow::Error::msg("Failed to coerce value to boolean"))
                     }
                 }
                 ValueType::Number => {
                     if let Ok(number) = value.coerce_to_number().and_then(|v| v.get_double()) {
-                        self.map.insert(key, number).map_err(|e| anyhow::Error::from(e))
+                        self.map.insert(key, number).map_err(anyhow::Error::from)
                     } else {
                         Err(anyhow::Error::msg("Failed to coerce value to number"))
                     }
@@ -68,16 +66,14 @@ impl YMap {
                         .and_then(|v| v.into_utf8())
                         .and_then(|s| s.as_str().map(|s| s.to_string()))
                     {
-                        self.map.insert(key, string).map_err(|e| anyhow::Error::from(e))
+                        self.map.insert(key, string).map_err(anyhow::Error::from)
                     } else {
                         Err(anyhow::Error::msg("Failed to coerce value to string"))
                     }
                 }
                 ValueType::Object => {
                     if let Ok(any) = get_any_from_js_unknown(value) {
-                        self.map
-                            .insert(key, Value::Any(any))
-                            .map_err(|e| anyhow::Error::from(e))
+                        self.map.insert(key, Value::Any(any)).map_err(anyhow::Error::from)
                     } else {
                         Err(anyhow::Error::msg("Failed to coerce value to array"))
                     }

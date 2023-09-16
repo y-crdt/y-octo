@@ -1,8 +1,9 @@
 use std::collections::HashMap;
 
-use super::*;
 use napi::{Env, Error, JsUnknown, Result, Status, ValueType};
 use y_octo::{Any, Value};
+
+use super::*;
 
 pub fn get_js_unknown_from_any(env: Env, any: Any) -> Result<JsUnknown> {
     match any {
@@ -52,7 +53,7 @@ pub fn get_any_from_js_unknown(js_unknown: JsUnknown) -> Result<Any> {
             if let Ok(object) = js_unknown.coerce_to_object() {
                 if let Ok(length) = object.get_array_length() {
                     let mut array = Vec::with_capacity(length as usize);
-                    for i in 0..length as u32 {
+                    for i in 0..length {
                         if let Ok(value) = object.get_element::<JsUnknown>(i) {
                             array.push(get_any_from_js_unknown(value)?);
                         }
@@ -62,12 +63,10 @@ pub fn get_any_from_js_unknown(js_unknown: JsUnknown) -> Result<Any> {
                     let mut map = HashMap::new();
                     let keys = object.get_property_names()?;
                     if let Ok(length) = keys.get_array_length() {
-                        for i in 0..length as u32 {
+                        for i in 0..length {
                             if let Ok((obj, key)) = keys.get_element::<JsUnknown>(i).and_then(|o| {
                                 o.coerce_to_string().and_then(|obj| {
-                                    obj.clone()
-                                        .into_utf8()
-                                        .and_then(|s| s.as_str().map(|s| (obj, s.to_string())))
+                                    obj.into_utf8().and_then(|s| s.as_str().map(|s| (obj, s.to_string())))
                                 })
                             }) {
                                 if let Ok(value) = object.get_property::<_, JsUnknown>(obj) {

@@ -29,7 +29,7 @@ impl YArray {
         if let Some(value) = self.array.get(char_index as u64) {
             get_js_unknown_from_value(env, value)
                 .map(Some)
-                .map_err(|e| anyhow::Error::from(e))
+                .map_err(anyhow::Error::from)
         } else {
             Ok(None)
         }
@@ -42,12 +42,12 @@ impl YArray {
                 ValueType::Undefined | ValueType::Null => self
                     .array
                     .insert(char_index as u64, Any::Null)
-                    .map_err(|e| anyhow::Error::from(e)),
+                    .map_err(anyhow::Error::from),
                 ValueType::Boolean => {
                     if let Ok(boolean) = value.coerce_to_bool().and_then(|v| v.get_value()) {
                         self.array
                             .insert(char_index as u64, boolean)
-                            .map_err(|e| anyhow::Error::from(e))
+                            .map_err(anyhow::Error::from)
                     } else {
                         Err(anyhow::Error::msg("Failed to coerce value to boolean"))
                     }
@@ -56,7 +56,7 @@ impl YArray {
                     if let Ok(number) = value.coerce_to_number().and_then(|v| v.get_double()) {
                         self.array
                             .insert(char_index as u64, number)
-                            .map_err(|e| anyhow::Error::from(e))
+                            .map_err(anyhow::Error::from)
                     } else {
                         Err(anyhow::Error::msg("Failed to coerce value to number"))
                     }
@@ -69,7 +69,7 @@ impl YArray {
                     {
                         self.array
                             .insert(char_index as u64, string)
-                            .map_err(|e| anyhow::Error::from(e))
+                            .map_err(anyhow::Error::from)
                     } else {
                         Err(anyhow::Error::msg("Failed to coerce value to string"))
                     }
@@ -81,7 +81,7 @@ impl YArray {
                                 if let Ok(any) = object.get_element::<JsUnknown>(i).and_then(get_any_from_js_unknown) {
                                     self.array
                                         .insert(char_index as u64 + i as u64, Value::Any(any))
-                                        .map_err(|e| anyhow::Error::from(e))?;
+                                        .map_err(anyhow::Error::from)?;
                                 }
                             }
                             Ok(())
@@ -105,7 +105,7 @@ impl YArray {
     pub fn remove(&mut self, char_index: i64, len: i64) -> Result<()> {
         self.array
             .remove(char_index as u64, len as u64)
-            .map_err(|e| anyhow::Error::from(e))
+            .map_err(anyhow::Error::from)
     }
 
     #[napi]

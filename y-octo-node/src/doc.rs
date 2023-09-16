@@ -43,25 +43,25 @@ impl Doc {
     #[napi]
     pub fn get_or_create_array(&self, key: String) -> Result<YArray> {
         self.doc
-            .get_or_create_array(&key)
+            .get_or_create_array(key)
             .map(YArray::new)
-            .map_err(|e| anyhow::Error::from(e))
+            .map_err(anyhow::Error::from)
     }
 
     #[napi]
     pub fn get_or_create_text(&self, key: String) -> Result<YText> {
         self.doc
-            .get_or_create_text(&key)
+            .get_or_create_text(key)
             .map(YText::new)
-            .map_err(|e| anyhow::Error::from(e))
+            .map_err(anyhow::Error::from)
     }
 
     #[napi]
     pub fn get_or_create_map(&self, key: String) -> Result<YMap> {
         self.doc
-            .get_or_create_map(&key)
+            .get_or_create_map(key)
             .map(YMap::new)
-            .map_err(|e| anyhow::Error::from(e))
+            .map_err(anyhow::Error::from)
     }
 
     #[napi]
@@ -69,7 +69,7 @@ impl Doc {
         self.doc
             .apply_update_from_binary(update.to_vec())
             .and_then(|u| u.into_ybinary1().map(|v| v.into()))
-            .map_err(|e| anyhow::Error::from(e))
+            .map_err(anyhow::Error::from)
     }
 
     #[napi]
@@ -77,12 +77,12 @@ impl Doc {
         self.doc
             .encode_update_v1()
             .map(|v| v.into())
-            .map_err(|e| anyhow::Error::from(e))
+            .map_err(anyhow::Error::from)
     }
 
     #[napi]
     pub fn gc(&self) -> Result<()> {
-        self.doc.gc().map_err(|e| anyhow::Error::from(e))
+        self.doc.gc().map_err(anyhow::Error::from)
     }
 
     #[napi(ts_args_type = "callback: (result: Uint8Array) => void")]
