@@ -21,6 +21,7 @@ export class Doc {
   getOrCreateMap(key: string): YMap
   applyUpdate(update: Buffer): Buffer
   encodeUpdateV1(): Buffer
+  gc(): void
   onUpdate(callback: (result: Uint8Array) => void): void
 }
 export class YMap {

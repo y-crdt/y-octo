@@ -73,7 +73,15 @@ impl YMap {
                         Err(anyhow::Error::msg("Failed to coerce value to string"))
                     }
                 }
-                ValueType::Object => Err(anyhow::Error::msg("Object values are not supported yet")),
+                ValueType::Object => {
+                    if let Ok(any) = get_any_from_js_unknown(value) {
+                        self.map
+                            .insert(key, Value::Any(any))
+                            .map_err(|e| anyhow::Error::from(e))
+                    } else {
+                        Err(anyhow::Error::msg("Failed to coerce value to array"))
+                    }
+                }
                 ValueType::Symbol => Err(anyhow::Error::msg("Symbol values are not supported")),
                 ValueType::Function => Err(anyhow::Error::msg("Function values are not supported")),
                 ValueType::External => Err(anyhow::Error::msg("External values are not supported")),

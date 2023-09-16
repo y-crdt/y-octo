@@ -80,6 +80,11 @@ impl Doc {
             .map_err(|e| anyhow::Error::from(e))
     }
 
+    #[napi]
+    pub fn gc(&self) -> Result<()> {
+        self.doc.gc().map_err(|e| anyhow::Error::from(e))
+    }
+
     #[napi(ts_args_type = "callback: (result: Uint8Array) => void")]
     pub fn on_update(&mut self, callback: JsFunction) -> Result<()> {
         let tsfn: ThreadsafeFunction<Buffer, ErrorStrategy::Fatal> =
