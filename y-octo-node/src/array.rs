@@ -1,4 +1,7 @@
-use napi::{bindgen_prelude::Array as JsArray, Env, JsUnknown, ValueType};
+use napi::{
+    bindgen_prelude::{Array as JsArray, Either4},
+    Env, JsUnknown, ValueType,
+};
 use y_octo::{Any, Array, Value};
 
 use super::*;
@@ -10,7 +13,12 @@ pub struct YArray {
 
 #[napi]
 impl YArray {
-    pub(crate) fn new(array: Array) -> Self {
+    #[napi(constructor)]
+    pub fn new() -> Self {
+        unimplemented!()
+    }
+
+    pub(crate) fn inner_new(array: Array) -> Self {
         Self { array }
     }
 
@@ -24,14 +32,19 @@ impl YArray {
         self.array.is_empty()
     }
 
-    #[napi]
-    pub fn get(&self, env: Env, index: i64) -> Result<Option<JsUnknown>> {
+    #[napi(ts_generic_types = "T = unknown", ts_return_type = "T")]
+    pub fn get(&self, env: Env, index: i64) -> Result<MixedYType> {
         if let Some(value) = self.array.get(index as u64) {
-            get_js_unknown_from_value(env, value)
-                .map(Some)
-                .map_err(anyhow::Error::from)
+            match value {
+                Value::Any(any) => get_js_unknown_from_any(env, any).map(Either4::D),
+                Value::Array(array) => Ok(Either4::A(YArray::inner_new(array))),
+                Value::Map(map) => Ok(Either4::B(YMap::inner_new(map))),
+                Value::Text(text) => Ok(Either4::C(YText::inner_new(text))),
+                _ => env.get_null().map(|v| v.into_unknown()).map(Either4::D),
+            }
+            .map_err(anyhow::Error::from)
         } else {
-            Ok(None)
+            Ok(Either4::D(env.get_null()?.into_unknown()))
         }
     }
 

@@ -43,7 +43,7 @@ impl Doc {
     pub fn get_or_create_array(&self, key: String) -> Result<YArray> {
         self.doc
             .get_or_create_array(key)
-            .map(YArray::new)
+            .map(YArray::inner_new)
             .map_err(anyhow::Error::from)
     }
 
@@ -51,7 +51,7 @@ impl Doc {
     pub fn get_or_create_text(&self, key: String) -> Result<YText> {
         self.doc
             .get_or_create_text(key)
-            .map(YText::new)
+            .map(YText::inner_new)
             .map_err(anyhow::Error::from)
     }
 
@@ -59,23 +59,23 @@ impl Doc {
     pub fn get_or_create_map(&self, key: String) -> Result<YMap> {
         self.doc
             .get_or_create_map(key)
-            .map(YMap::new)
+            .map(YMap::inner_new)
             .map_err(anyhow::Error::from)
     }
 
     #[napi]
     pub fn create_array(&self) -> Result<YArray> {
-        self.doc.create_array().map(YArray::new).map_err(anyhow::Error::from)
+        self.doc.create_array().map(YArray::inner_new).map_err(anyhow::Error::from)
     }
 
     #[napi]
     pub fn create_text(&self) -> Result<YText> {
-        self.doc.create_text().map(YText::new).map_err(anyhow::Error::from)
+        self.doc.create_text().map(YText::inner_new).map_err(anyhow::Error::from)
     }
 
     #[napi]
     pub fn create_map(&self) -> Result<YMap> {
-        self.doc.create_map().map(YMap::new).map_err(anyhow::Error::from)
+        self.doc.create_map().map(YMap::inner_new).map_err(anyhow::Error::from)
     }
 
     #[napi]

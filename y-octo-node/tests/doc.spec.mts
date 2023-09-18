@@ -1,7 +1,7 @@
 import assert, { equal, deepEqual } from "node:assert";
 import { test } from "node:test";
 
-import { Doc, YMap } from "../index";
+import { Doc, YArray, YMap, YText } from "../index";
 
 test("y-octo doc", { concurrency: false }, async (t) => {
   let client_id: number;
@@ -87,6 +87,26 @@ test("y-octo doc", { concurrency: false }, async (t) => {
     equal(text.toString(), "");
   });
 
+  await t.test("sub array should can edit", () => {
+    let map = doc.getOrCreateMap("map");
+    let sub = doc.createArray();
+    map.setArray("sub", sub);
+
+    sub.insert(0, true);
+    sub.insert(1, false);
+    sub.insert(2, 1);
+    sub.insert(3, "hello world");
+    equal(sub.length, 4);
+
+    let sub2 = map.get<YArray>("sub");
+    assert(sub2);
+    equal(sub2.get(0), true);
+    equal(sub2.get(1), false);
+    equal(sub2.get(2), 1);
+    equal(sub2.get(3), "hello world");
+    equal(sub2.length, 4);
+  });
+
   await t.test("sub map should can edit", () => {
     let map = doc.getOrCreateMap("map");
     let sub = doc.createMap();
@@ -98,12 +118,27 @@ test("y-octo doc", { concurrency: false }, async (t) => {
     sub.set("d", "hello world");
     equal(sub.length, 4);
 
-    let sub2 = map.getMap("sub");
+    let sub2 = map.get<YMap>("sub");
     assert(sub2);
     equal(sub2.get("a"), true);
     equal(sub2.get("b"), false);
     equal(sub2.get("c"), 1);
     equal(sub2.get("d"), "hello world");
     equal(sub2.length, 4);
+  });
+
+  await t.test("sub text should can edit", () => {
+    let map = doc.getOrCreateMap("map");
+    let sub = doc.createText();
+    map.setText("sub", sub);
+
+    sub.insert(0, "a");
+    sub.insert(1, "b");
+    sub.insert(2, "c");
+    equal(sub.toString(), "abc");
+
+    let sub2 = map.get<YText>("sub");
+    assert(sub2);
+    equal(sub2.toString(), "abc");
   });
 });

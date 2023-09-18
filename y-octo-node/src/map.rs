@@ -1,7 +1,4 @@
-use napi::{
-    bindgen_prelude::{Object as JsObject, Unknown as JsUnknown},
-    Env, ValueType,
-};
+use napi::{bindgen_prelude::Either4, Env, JsObject, JsUnknown, ValueType};
 use y_octo::{Any, Map, Value};
 
 use super::*;
@@ -13,7 +10,12 @@ pub struct YMap {
 
 #[napi]
 impl YMap {
-    pub(crate) fn new(map: Map) -> Self {
+    #[napi(constructor)]
+    pub fn new() -> Self {
+        unimplemented!()
+    }
+
+    pub(crate) fn inner_new(map: Map) -> Self {
         Self { map }
     }
 
@@ -27,42 +29,20 @@ impl YMap {
         self.map.is_empty()
     }
 
-    #[napi]
-    pub fn get(&self, env: Env, key: String) -> Result<Option<JsUnknown>> {
+    #[napi(ts_generic_types = "T = unknown", ts_return_type = "T")]
+    pub fn get(&self, env: Env, key: String) -> Result<MixedYType> {
         if let Some(value) = self.map.get(&key) {
             match value {
-                Value::Any(any) => get_js_unknown_from_any(env, any),
-                _ => env.get_null().map(|v| v.into_unknown()),
+                Value::Any(any) => get_js_unknown_from_any(env, any).map(Either4::D),
+                Value::Array(array) => Ok(Either4::A(YArray::inner_new(array))),
+                Value::Map(map) => Ok(Either4::B(YMap::inner_new(map))),
+                Value::Text(text) => Ok(Either4::C(YText::inner_new(text))),
+                _ => env.get_null().map(|v| v.into_unknown()).map(Either4::D),
             }
-            .map(Some)
             .map_err(anyhow::Error::from)
         } else {
-            Ok(None)
+            Ok(Either4::D(env.get_null()?.into_unknown()))
         }
-    }
-
-    #[napi]
-    pub fn get_array(&self, key: String) -> Option<YArray> {
-        self.map.get(&key).and_then(|v| match v {
-            Value::Array(array) => Some(YArray::new(array.clone())),
-            _ => None,
-        })
-    }
-
-    #[napi]
-    pub fn get_map(&self, key: String) -> Option<YMap> {
-        self.map.get(&key).and_then(|v| match v {
-            Value::Map(map) => Some(YMap::new(map.clone())),
-            _ => None,
-        })
-    }
-
-    #[napi]
-    pub fn get_text(&self, key: String) -> Option<YText> {
-        self.map.get(&key).and_then(|v| match v {
-            Value::Text(text) => Some(YText::new(text.clone())),
-            _ => None,
-        })
     }
 
     #[napi]

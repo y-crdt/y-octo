@@ -1,9 +1,11 @@
 use std::collections::HashMap;
 
-use napi::{Env, Error, JsObject, JsUnknown, Result, Status, ValueType};
+use napi::{bindgen_prelude::Either4, Env, Error, JsObject, JsUnknown, Result, Status, ValueType};
 use y_octo::{Any, Value};
 
 use super::*;
+
+pub type MixedYType = Either4<YArray, YMap, YText, JsUnknown>;
 
 pub fn get_js_unknown_from_any(env: Env, any: Any) -> Result<JsUnknown> {
     match any {
@@ -29,9 +31,15 @@ pub fn get_js_unknown_from_any(env: Env, any: Any) -> Result<JsUnknown> {
 pub fn get_js_unknown_from_value(env: Env, value: Value) -> Result<JsUnknown> {
     match value {
         Value::Any(any) => get_js_unknown_from_any(env, any),
-        Value::Array(array) => env.create_external(YArray { array }, None).map(|o| o.into_unknown()),
-        Value::Map(map) => env.create_external(YMap { map }, None).map(|o| o.into_unknown()),
-        Value::Text(text) => env.create_external(YText { text }, None).map(|o| o.into_unknown()),
+        Value::Array(array) => env
+            .create_external(YArray::inner_new(array), None)
+            .map(|o| o.into_unknown()),
+        Value::Map(map) => env
+            .create_external(YMap::inner_new(map), None)
+            .map(|o| o.into_unknown()),
+        Value::Text(text) => env
+            .create_external(YText::inner_new(text), None)
+            .map(|o| o.into_unknown()),
         _ => env.get_null().map(|v| v.into_unknown()),
     }
 }

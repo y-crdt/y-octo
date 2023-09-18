@@ -9,7 +9,12 @@ pub struct YText {
 
 #[napi]
 impl YText {
-    pub(crate) fn new(text: Text) -> Self {
+    #[napi(constructor)]
+    pub fn new() -> Self {
+        unimplemented!()
+    }
+
+    pub(crate) fn inner_new(text: Text) -> Self {
         Self { text }
     }
 
