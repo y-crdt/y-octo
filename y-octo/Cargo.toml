@@ -39,7 +39,7 @@ large_refs = []
 
 [target.'cfg(fuzzing)'.dependencies]
 arbitrary     = { version = "1.3", features = ["derive"] }
-ordered-float = { version = "3.8", features = ["arbitrary"] }
+ordered-float = { version = "3.9", features = ["arbitrary"] }
 
 [target.'cfg(loom)'.dependencies]
 loom = { version = "0.7", features = ["checkpoint"] }
@@ -48,10 +48,10 @@ loom = { version = "0.7", features = ["checkpoint"] }
 assert-json-diff = "2.0"
 criterion        = { version = "0.5", features = ["html_reports"] }
 lib0             = { version = "0.16", features = ["lib0-serde"] }
-ordered-float    = { version = "3.8", features = ["proptest"] }
+ordered-float    = { version = "3.9", features = ["proptest"] }
 path-ext         = "0.1"
-proptest         = "1.1"
-proptest-derive  = "0.3"
+proptest         = "1.2"
+proptest-derive  = "0.4"
 y-sync           = "=0.3.0"
 yrs              = "=0.16.5"
 
