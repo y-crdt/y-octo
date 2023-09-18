@@ -95,6 +95,27 @@ impl YArray {
     }
 
     #[napi]
+    pub fn set_array(&mut self, index: i64, array: &YArray) -> Result<()> {
+        self.array.insert(index as u64, Value::Array(array.array.clone()))?;
+
+        Ok(())
+    }
+
+    #[napi]
+    pub fn set_map(&mut self, index: i64, map: &YMap) -> Result<()> {
+        self.array.insert(index as u64, Value::Map(map.map.clone()))?;
+
+        Ok(())
+    }
+
+    #[napi]
+    pub fn set_text(&mut self, index: i64, text: &YText) -> Result<()> {
+        self.array.insert(index as u64, Value::Text(text.text.clone()))?;
+
+        Ok(())
+    }
+
+    #[napi]
     pub fn remove(&mut self, index: i64, len: i64) -> Result<()> {
         self.array.remove(index as u64, len as u64).map_err(anyhow::Error::from)
     }

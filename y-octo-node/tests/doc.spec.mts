@@ -1,7 +1,7 @@
-import { equal, deepEqual } from "node:assert";
+import assert, { equal, deepEqual } from "node:assert";
 import { test } from "node:test";
 
-import { Doc } from "../index";
+import { Doc, YMap } from "../index";
 
 test("y-octo doc", { concurrency: false }, async (t) => {
   let client_id: number;
@@ -85,5 +85,25 @@ test("y-octo doc", { concurrency: false }, async (t) => {
     equal(text.toString(), "b");
     text.remove(0, 1);
     equal(text.toString(), "");
+  });
+
+  await t.test("sub map should can edit", () => {
+    let map = doc.getOrCreateMap("map");
+    let sub = doc.createMap();
+    map.setMap("sub", sub);
+
+    sub.set("a", true);
+    sub.set("b", false);
+    sub.set("c", 1);
+    sub.set("d", "hello world");
+    equal(sub.length, 4);
+
+    let sub2 = map.getMap("sub");
+    assert(sub2);
+    equal(sub2.get("a"), true);
+    equal(sub2.get("b"), false);
+    equal(sub2.get("c"), 1);
+    equal(sub2.get("d"), "hello world");
+    equal(sub2.length, 4);
   });
 });

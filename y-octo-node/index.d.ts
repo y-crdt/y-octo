@@ -6,9 +6,12 @@
 export class YArray {
   get length(): number
   get isEmpty(): boolean
-  get(charIndex: number): unknown | null
-  insert(charIndex: number, value: unknown): void
-  remove(charIndex: number, len: number): void
+  get(index: number): unknown | null
+  insert(index: number, value: unknown): void
+  setArray(index: number, array: YArray): void
+  setMap(index: number, map: YMap): void
+  setText(index: number, text: YText): void
+  remove(index: number, len: number): void
   toJson(): JsArray
 }
 export class Doc {
@@ -19,6 +22,9 @@ export class Doc {
   getOrCreateArray(key: string): YArray
   getOrCreateText(key: string): YText
   getOrCreateMap(key: string): YMap
+  createArray(): YArray
+  createText(): YText
+  createMap(): YMap
   applyUpdate(update: Buffer): Buffer
   encodeUpdateV1(): Buffer
   gc(): void
@@ -28,15 +34,21 @@ export class YMap {
   get length(): number
   get isEmpty(): boolean
   get(key: string): unknown | null
+  getArray(key: string): YArray | null
+  getMap(key: string): YMap | null
+  getText(key: string): YText | null
   set(key: string, value: unknown): void
+  setArray(key: string, array: YArray): void
+  setMap(key: string, map: YMap): void
+  setText(key: string, text: YText): void
   remove(key: string): void
   toJson(): object
 }
 export class YText {
   get len(): number
   get isEmpty(): boolean
-  insert(charIndex: number, str: string): void
-  remove(charIndex: number, len: number): void
+  insert(index: number, str: string): void
+  remove(index: number, len: number): void
   get length(): number
   toString(): string
 }

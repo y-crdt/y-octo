@@ -1,7 +1,6 @@
 use napi::{
-    bindgen_prelude::Buffer,
+    bindgen_prelude::{Buffer as JsBuffer, JsFunction},
     threadsafe_function::{ErrorStrategy, ThreadsafeFunction, ThreadsafeFunctionCallMode},
-    JsFunction,
 };
 use y_octo::{Doc as YDoc, History};
 
@@ -65,7 +64,22 @@ impl Doc {
     }
 
     #[napi]
-    pub fn apply_update(&mut self, update: Buffer) -> Result<Buffer> {
+    pub fn create_array(&self) -> Result<YArray> {
+        self.doc.create_array().map(YArray::new).map_err(anyhow::Error::from)
+    }
+
+    #[napi]
+    pub fn create_text(&self) -> Result<YText> {
+        self.doc.create_text().map(YText::new).map_err(anyhow::Error::from)
+    }
+
+    #[napi]
+    pub fn create_map(&self) -> Result<YMap> {
+        self.doc.create_map().map(YMap::new).map_err(anyhow::Error::from)
+    }
+
+    #[napi]
+    pub fn apply_update(&mut self, update: JsBuffer) -> Result<JsBuffer> {
         self.doc
             .apply_update_from_binary(update.to_vec())
             .and_then(|u| u.into_ybinary1().map(|v| v.into()))
@@ -73,7 +87,7 @@ impl Doc {
     }
 
     #[napi]
-    pub fn encode_update_v1(&self) -> Result<Buffer> {
+    pub fn encode_update_v1(&self) -> Result<JsBuffer> {
         self.doc
             .encode_update_v1()
             .map(|v| v.into())
@@ -87,11 +101,11 @@ impl Doc {
 
     #[napi(ts_args_type = "callback: (result: Uint8Array) => void")]
     pub fn on_update(&mut self, callback: JsFunction) -> Result<()> {
-        let tsfn: ThreadsafeFunction<Buffer, ErrorStrategy::Fatal> =
+        let tsfn: ThreadsafeFunction<JsBuffer, ErrorStrategy::Fatal> =
             callback.create_threadsafe_function(0, |ctx| Ok(vec![ctx.value]))?;
 
         let callback = move |update: &[u8], _h: &[History]| {
-            tsfn.call(Buffer::from(update.to_vec()), ThreadsafeFunctionCallMode::Blocking);
+            tsfn.call(JsBuffer::from(update.to_vec()), ThreadsafeFunctionCallMode::Blocking);
         };
         self.doc.subscribe(Box::new(callback));
         Ok(())

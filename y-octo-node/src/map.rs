@@ -1,4 +1,7 @@
-use napi::{bindgen_prelude::Object, Env, JsUnknown, ValueType};
+use napi::{
+    bindgen_prelude::{Object as JsObject, Unknown as JsUnknown},
+    Env, ValueType,
+};
 use y_octo::{Any, Map, Value};
 
 use super::*;
@@ -29,9 +32,6 @@ impl YMap {
         if let Some(value) = self.map.get(&key) {
             match value {
                 Value::Any(any) => get_js_unknown_from_any(env, any),
-                Value::Array(array) => env.create_external(YArray { array }, None).map(|o| o.into_unknown()),
-                Value::Map(map) => env.create_external(YMap { map }, None).map(|o| o.into_unknown()),
-                Value::Text(text) => env.create_external(YText { text }, None).map(|o| o.into_unknown()),
                 _ => env.get_null().map(|v| v.into_unknown()),
             }
             .map(Some)
@@ -39,6 +39,30 @@ impl YMap {
         } else {
             Ok(None)
         }
+    }
+
+    #[napi]
+    pub fn get_array(&self, key: String) -> Option<YArray> {
+        self.map.get(&key).and_then(|v| match v {
+            Value::Array(array) => Some(YArray::new(array.clone())),
+            _ => None,
+        })
+    }
+
+    #[napi]
+    pub fn get_map(&self, key: String) -> Option<YMap> {
+        self.map.get(&key).and_then(|v| match v {
+            Value::Map(map) => Some(YMap::new(map.clone())),
+            _ => None,
+        })
+    }
+
+    #[napi]
+    pub fn get_text(&self, key: String) -> Option<YText> {
+        self.map.get(&key).and_then(|v| match v {
+            Value::Text(text) => Some(YText::new(text.clone())),
+            _ => None,
+        })
     }
 
     #[napi]
@@ -72,10 +96,11 @@ impl YMap {
                     }
                 }
                 ValueType::Object => {
-                    if let Ok(any) = get_any_from_js_unknown(value) {
+                    if let Ok(object) = value.coerce_to_object() {
+                        let any = get_any_from_js_object(object)?;
                         self.map.insert(key, Value::Any(any)).map_err(anyhow::Error::from)
                     } else {
-                        Err(anyhow::Error::msg("Failed to coerce value to array"))
+                        Err(anyhow::Error::msg("Failed to coerce object to array"))
                     }
                 }
                 ValueType::Symbol => Err(anyhow::Error::msg("Symbol values are not supported")),
@@ -88,12 +113,33 @@ impl YMap {
     }
 
     #[napi]
+    pub fn set_array(&mut self, key: String, array: &YArray) -> Result<()> {
+        self.map.insert(key, Value::Array(array.array.clone()))?;
+
+        Ok(())
+    }
+
+    #[napi]
+    pub fn set_map(&mut self, key: String, map: &YMap) -> Result<()> {
+        self.map.insert(key, Value::Map(map.map.clone()))?;
+
+        Ok(())
+    }
+
+    #[napi]
+    pub fn set_text(&mut self, key: String, text: &YText) -> Result<()> {
+        self.map.insert(key, Value::Text(text.text.clone()))?;
+
+        Ok(())
+    }
+
+    #[napi]
     pub fn remove(&mut self, key: String) {
         self.map.remove(&key);
     }
 
     #[napi]
-    pub fn to_json(&self, env: Env) -> Result<Object> {
+    pub fn to_json(&self, env: Env) -> Result<JsObject> {
         let mut js_object = env.create_object()?;
         for (key, value) in self.map.iter() {
             js_object.set(key, get_js_unknown_from_value(env, value))?;

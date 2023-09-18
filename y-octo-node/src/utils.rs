@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use napi::{Env, Error, JsUnknown, Result, Status, ValueType};
+use napi::{Env, Error, JsObject, JsUnknown, Result, Status, ValueType};
 use y_octo::{Any, Value};
 
 use super::*;
@@ -36,6 +36,35 @@ pub fn get_js_unknown_from_value(env: Env, value: Value) -> Result<JsUnknown> {
     }
 }
 
+pub fn get_any_from_js_object(object: JsObject) -> Result<Any> {
+    if let Ok(length) = object.get_array_length() {
+        let mut array = Vec::with_capacity(length as usize);
+        for i in 0..length {
+            if let Ok(value) = object.get_element::<JsUnknown>(i) {
+                array.push(get_any_from_js_unknown(value)?);
+            }
+        }
+        Ok(Any::Array(array))
+    } else {
+        let mut map = HashMap::new();
+        let keys = object.get_property_names()?;
+        if let Ok(length) = keys.get_array_length() {
+            for i in 0..length {
+                if let Ok((obj, key)) = keys.get_element::<JsUnknown>(i).and_then(|o| {
+                    o.coerce_to_string()
+                        .and_then(|obj| obj.into_utf8().and_then(|s| s.as_str().map(|s| (obj, s.to_string()))))
+                }) {
+                    if let Ok(value) = object.get_property::<_, JsUnknown>(obj) {
+                        println!("key: {}", key);
+                        map.insert(key, get_any_from_js_unknown(value)?);
+                    }
+                }
+            }
+        }
+        Ok(Any::Object(map))
+    }
+}
+
 pub fn get_any_from_js_unknown(js_unknown: JsUnknown) -> Result<Any> {
     match js_unknown.get_type()? {
         ValueType::Undefined | ValueType::Null => Ok(Any::Null),
@@ -51,32 +80,7 @@ pub fn get_any_from_js_unknown(js_unknown: JsUnknown) -> Result<Any> {
             .into()),
         ValueType::Object => {
             if let Ok(object) = js_unknown.coerce_to_object() {
-                if let Ok(length) = object.get_array_length() {
-                    let mut array = Vec::with_capacity(length as usize);
-                    for i in 0..length {
-                        if let Ok(value) = object.get_element::<JsUnknown>(i) {
-                            array.push(get_any_from_js_unknown(value)?);
-                        }
-                    }
-                    Ok(Any::Array(array))
-                } else {
-                    let mut map = HashMap::new();
-                    let keys = object.get_property_names()?;
-                    if let Ok(length) = keys.get_array_length() {
-                        for i in 0..length {
-                            if let Ok((obj, key)) = keys.get_element::<JsUnknown>(i).and_then(|o| {
-                                o.coerce_to_string().and_then(|obj| {
-                                    obj.into_utf8().and_then(|s| s.as_str().map(|s| (obj, s.to_string())))
-                                })
-                            }) {
-                                if let Ok(value) = object.get_property::<_, JsUnknown>(obj) {
-                                    map.insert(key, get_any_from_js_unknown(value)?);
-                                }
-                            }
-                        }
-                    }
-                    Ok(Any::Object(map))
-                }
+                get_any_from_js_object(object)
             } else {
                 Err(Error::new(Status::InvalidArg, "Failed to coerce value to object"))
             }
