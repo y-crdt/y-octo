@@ -47,12 +47,15 @@ jobs:
       - name: Setup Rust
         uses: ./.github/actions/setup-rust
         with:
-          target: ${{ matrix.targets }}
+          targets: ${{ matrix.targets }}
       - name: Install ziglang
         uses: goto-bus-stop/setup-zig@v2
         with:
           version: 0.11.0
-      - run: cargo install cargo-xwin
+      - name: Install required cargo components
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-xwin
       - name: Build node binding
         run: yarn build:node --zig --target ${{ matrix.targets }}
       - name: Upload y-octo.node
