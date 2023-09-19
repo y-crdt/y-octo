@@ -10,10 +10,31 @@ on:
 env:
   DEBUG: napi:*
   COVERAGE: true
+  MACOSX_DEPLOYMENT_TARGET: "10.13"
 
 jobs:
   build-node:
     name: Build Node Binding
+    strategy:
+      fail-fast: false
+      matrix:
+        targets: [
+            # macOS
+            "x86_64-apple-darwin",
+            # "aarch64-apple-darwin",
+            # Windows
+            "x86_64-pc-windows-msvc",
+            # "i686-pc-windows-msvc",
+            # "aarch64-pc-windows-msvc",
+            # Linux
+            "x86_64-unknown-linux-gnu",
+            # "aarch64-unknown-linux-gnu",
+            # "x86_64-unknown-linux-musl",
+            # "aarch64-unknown-linux-musl",
+            # "armv7-unknown-linux-gnueabihf",
+            # "aarch64-linux-android",
+            # "armv7-linux-androideabi",
+          ]
     runs-on: ubuntu-latest
     env:
       RUSTFLAGS: "-C debuginfo=1"
@@ -26,14 +47,19 @@ jobs:
       - name: Setup Rust
         uses: ./.github/actions/setup-rust
         with:
-          target: "x86_64-unknown-linux-gnu"
+          target: ${{ matrix.targets }}
+      - name: Install ziglang
+        uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: 0.11.0
+      - run: cargo install cargo-xwin
       - name: Build node binding
-        run: yarn build:node
+        run: yarn build:node --zig --target ${{ matrix.targets }}
       - name: Upload y-octo.node
         uses: actions/upload-artifact@v3
         with:
-          name: y-octo.node
-          path: ./y-octo-node/y-octo.linux-x64-gnu.node
+          name: y-octo.${{ matrix.targets }}.node
+          path: ./y-octo-node/*.node
           if-no-files-found: error
 
   test-node:
@@ -65,16 +91,26 @@ jobs:
 
   node-binding-test:
     name: Node Binding Test
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        settings:
+          - target: x86_64-apple-darwin
+            host: macos-latest
+          - target: x86_64-unknown-linux-gnu
+            host: ubuntu-latest
+          - target: x86_64-pc-windows-msvc
+            host: windows-latest
+    runs-on: ${{ matrix.settings.host }}
     needs: build-node
     steps:
       - uses: actions/checkout@v3
       - name: Setup Node.js
         uses: ./.github/actions/setup-node
-      - name: Download y-octo.node
+      - name: Download y-octo.${{ matrix.settings.targets }}.node
         uses: actions/download-artifact@v3
         with:
-          name: y-octo.node
+          name: y-octo.${{ matrix.settings.targets }}.node
           path: ./y-octo-node
       - name: Run node binding tests
         run: yarn test:node:coverage
@@ -85,5 +121,5 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: ./y-octo-node/.coverage/lcov.info
           flags: node-binding-test
-          name: y-octo
+          name: y-octo.${{ matrix.settings.targets }}.node
           fail_ci_if_error: false
