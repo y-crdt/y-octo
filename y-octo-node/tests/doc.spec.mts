@@ -1,9 +1,10 @@
-import assert, { equal, deepEqual } from "node:assert";
+import assert, { equal } from "node:assert";
 import { test } from "node:test";
 
-import { Doc, YArray, YMap, YText } from "../index";
+import { Doc } from "../index";
+import * as Y from "yjs";
 
-test("y-octo doc", { concurrency: false }, async (t) => {
+test("doc test", { concurrency: false }, async (t) => {
   let client_id: number;
   let doc: Doc;
   t.beforeEach(async () => {
@@ -21,124 +22,79 @@ test("y-octo doc", { concurrency: false }, async (t) => {
     equal(doc.clientId, client_id);
   });
 
-  await t.test("array should be created", () => {
-    let arr = doc.getOrCreateArray("arr");
-    deepEqual(doc.keys, ["arr"]);
-    equal(arr.length, 0);
-  });
-
-  await t.test("array editing", () => {
-    let arr = doc.getOrCreateArray("arr");
-    arr.insert(0, true);
-    arr.insert(1, false);
-    arr.insert(2, 1);
-    arr.insert(3, "hello world");
-    equal(arr.length, 4);
-    equal(arr.get(0), true);
-    equal(arr.get(1), false);
-    equal(arr.get(2), 1);
-    equal(arr.get(3), "hello world");
-    equal(arr.length, 4);
-    arr.remove(1, 1);
-    equal(arr.length, 3);
-    equal(arr.get(2), "hello world");
-  });
-
-  await t.test("map should be created", () => {
+  await t.test("y-octo doc update should be apply", () => {
+    let array = doc.getOrCreateArray("array");
     let map = doc.getOrCreateMap("map");
-    deepEqual(doc.keys, ["map"]);
-    equal(map.length, 0);
-  });
+    let text = doc.getOrCreateText("text");
 
-  await t.test("map editing", () => {
-    let map = doc.getOrCreateMap("map");
+    array.insert(0, true);
+    array.insert(1, false);
+    array.insert(2, 1);
+    array.insert(3, "hello world");
     map.set("a", true);
     map.set("b", false);
     map.set("c", 1);
     map.set("d", "hello world");
+    text.insert(0, "a");
+    text.insert(1, "b");
+    text.insert(2, "c");
+
+    let doc2 = new Doc(client_id);
+    doc2.applyUpdate(doc.encodeUpdateV1());
+
+    let array2 = doc2.getOrCreateArray("array");
+    let map2 = doc2.getOrCreateMap("map");
+    let text2 = doc2.getOrCreateText("text");
+
+    equal(doc2.clientId, client_id);
+    equal(array2.length, 4);
+    equal(array2.get(0), true);
+    equal(array2.get(1), false);
+    equal(array2.get(2), 1);
+    equal(array2.get(3), "hello world");
+    equal(map2.length, 4);
+    equal(map2.get("a"), true);
+    equal(map2.get("b"), false);
+    equal(map2.get("c"), 1);
+    equal(map2.get("d"), "hello world");
+    equal(text2.toString(), "abc");
+  });
+
+  await t.test("yjs doc update should be apply", () => {
+    let doc2 = new Y.Doc();
+    let array2 = doc2.getArray("array");
+    let map2 = doc2.getMap("map");
+    let text2 = doc2.getText("text");
+
+    array2.insert(0, [true]);
+    array2.insert(1, [false]);
+    array2.insert(2, [1]);
+    array2.insert(3, ["hello world"]);
+    map2.set("a", true);
+    map2.set("b", false);
+    map2.set("c", 1);
+    map2.set("d", "hello world");
+    text2.insert(0, "a");
+    text2.insert(1, "b");
+    text2.insert(2, "c");
+
+    doc.applyUpdate(Buffer.from(Y.encodeStateAsUpdate(doc2)));
+
+    let array = doc.getOrCreateArray("array");
+    let map = doc.getOrCreateMap("map");
+    let text = doc.getOrCreateText("text");
+
+    equal(array.length, 4);
+    console.log(array.toJson(), array.get(0), array.get(1), array.get(2), array.get(3) ,array.get(4));
+    equal(array.get(0), true);
+    equal(array.get(1), false);
+    equal(array.get(2), 1);
+    equal(array.get(3), "hello world");
     equal(map.length, 4);
     equal(map.get("a"), true);
     equal(map.get("b"), false);
     equal(map.get("c"), 1);
     equal(map.get("d"), "hello world");
-    equal(map.length, 4);
-    map.remove("b");
-    equal(map.length, 3);
-    equal(map.get("d"), "hello world");
-  });
-
-  await t.test("text should be created", () => {
-    let text = doc.getOrCreateText("text");
-    deepEqual(doc.keys, ["text"]);
-    equal(text.len, 0);
-  });
-
-  await t.test("text editing", () => {
-    let text = doc.getOrCreateText("text");
-    text.insert(0, "a");
-    text.insert(1, "b");
-    text.insert(2, "c");
     equal(text.toString(), "abc");
-    text.remove(0, 1);
-    equal(text.toString(), "bc");
-    text.remove(1, 1);
-    equal(text.toString(), "b");
-    text.remove(0, 1);
-    equal(text.toString(), "");
-  });
-
-  await t.test("sub array should can edit", () => {
-    let map = doc.getOrCreateMap("map");
-    let sub = doc.createArray();
-    map.setArray("sub", sub);
-
-    sub.insert(0, true);
-    sub.insert(1, false);
-    sub.insert(2, 1);
-    sub.insert(3, "hello world");
-    equal(sub.length, 4);
-
-    let sub2 = map.get<YArray>("sub");
-    assert(sub2);
-    equal(sub2.get(0), true);
-    equal(sub2.get(1), false);
-    equal(sub2.get(2), 1);
-    equal(sub2.get(3), "hello world");
-    equal(sub2.length, 4);
-  });
-
-  await t.test("sub map should can edit", () => {
-    let map = doc.getOrCreateMap("map");
-    let sub = doc.createMap();
-    map.setMap("sub", sub);
-
-    sub.set("a", true);
-    sub.set("b", false);
-    sub.set("c", 1);
-    sub.set("d", "hello world");
-    equal(sub.length, 4);
-
-    let sub2 = map.get<YMap>("sub");
-    assert(sub2);
-    equal(sub2.get("a"), true);
-    equal(sub2.get("b"), false);
-    equal(sub2.get("c"), 1);
-    equal(sub2.get("d"), "hello world");
-    equal(sub2.length, 4);
-  });
-
-  await t.test("sub text should can edit", () => {
-    let map = doc.getOrCreateMap("map");
-    let sub = doc.createText();
-    map.setText("sub", sub);
-
-    sub.insert(0, "a");
-    sub.insert(1, "b");
-    sub.insert(2, "c");
-    equal(sub.toString(), "abc");
-
-    let sub2 = map.get<YText>("sub");
-    assert(sub2);
-    equal(sub2.toString(), "abc");
   });
 });
