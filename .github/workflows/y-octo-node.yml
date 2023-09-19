@@ -107,6 +107,10 @@ jobs:
           name: y-octo.${{ matrix.settings.target }}.node
           path: ./y-octo-node
       - name: Run node binding tests
+        run: ls -lah & ls -lah tests
+        working-directory: y-octo-node
+        shell: bash
+      - name: Run node binding tests
         run: yarn test:node:coverage
         working-directory: y-octo-node
         shell: bash
