@@ -24,4 +24,5 @@ runs:
     - name: Add Targets
       if: ${{ inputs.targets }}
       run: rustup target add ${{ inputs.targets }}
+      shell: bash
     - uses: Swatinem/rust-cache@v2
