@@ -65,12 +65,18 @@ impl Doc {
 
     #[napi]
     pub fn create_array(&self) -> Result<YArray> {
-        self.doc.create_array().map(YArray::inner_new).map_err(anyhow::Error::from)
+        self.doc
+            .create_array()
+            .map(YArray::inner_new)
+            .map_err(anyhow::Error::from)
     }
 
     #[napi]
     pub fn create_text(&self) -> Result<YText> {
-        self.doc.create_text().map(YText::inner_new).map_err(anyhow::Error::from)
+        self.doc
+            .create_text()
+            .map(YText::inner_new)
+            .map_err(anyhow::Error::from)
     }
 
     #[napi]
