@@ -14,7 +14,7 @@ crate-type = ["cdylib"]
 anyhow      = "1"
 napi        = { version = "2", features = ["anyhow", "napi4"] }
 napi-derive = "2"
-y-octo      = { path = "../y-octo", features = ["large_refs"] }
+y-octo      = { workspace = true, features = ["large_refs"] }
 
 [build-dependencies]
 napi-build = "2"
