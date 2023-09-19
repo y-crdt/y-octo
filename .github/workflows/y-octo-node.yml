@@ -109,6 +109,7 @@ jobs:
       - name: Run node binding tests
         run: yarn test:node:coverage
         working-directory: y-octo-node
+        shell: bash
       - name: Upload server test coverage results
         uses: codecov/codecov-action@v3
         with:
