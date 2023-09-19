@@ -18,28 +18,27 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        targets: [
-            # macOS
-            "x86_64-apple-darwin",
-            # "aarch64-apple-darwin",
-            # Windows
-            "x86_64-pc-windows-msvc",
-            # "i686-pc-windows-msvc",
-            # "aarch64-pc-windows-msvc",
-            # Linux
-            "x86_64-unknown-linux-gnu",
-            # "aarch64-unknown-linux-gnu",
-            # "x86_64-unknown-linux-musl",
-            # "aarch64-unknown-linux-musl",
-            # "armv7-unknown-linux-gnueabihf",
-            # "aarch64-linux-android",
-            # "armv7-linux-androideabi",
-          ]
-    runs-on: ubuntu-latest
+        settings:
+          - target: x86_64-apple-darwin
+            host: macos-latest
+          # - target: aarch64-apple-darwin
+          #   host: macos-latest
+          - target: x86_64-pc-windows-msvc
+            host: windows-latest
+          # - target: aarch64-pc-windows-msvc
+          #   host: windows-latest
+          - target: x86_64-unknown-linux-gnu
+            host: ubuntu-latest
+          # - target: aarch64-unknown-linux-gnu
+          #   host: ubuntu-latest
+          # - target: x86_64-unknown-linux-musl
+          #   host: ubuntu-latest
+          # - target: aarch64-unknown-linux-musl
+          #   host: ubuntu-latest
+    runs-on: ${{ matrix.settings.host }}
     env:
       RUSTFLAGS: "-C debuginfo=1"
     environment: development
-
     steps:
       - uses: actions/checkout@v3
       - name: Setup Node.js
@@ -47,21 +46,21 @@ jobs:
       - name: Setup Rust
         uses: ./.github/actions/setup-rust
         with:
-          targets: ${{ matrix.targets }}
-      - name: Install ziglang
-        uses: goto-bus-stop/setup-zig@v2
-        with:
-          version: 0.11.0
-      - name: Install required cargo components
-        uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-xwin
+          targets: ${{ matrix.settings.target }}
+      # - name: Install ziglang
+      #   uses: goto-bus-stop/setup-zig@v2
+      #   with:
+      #     version: 0.11.0
+      # - name: Install required cargo components
+      #   uses: taiki-e/install-action@v2
+      #   with:
+      #     tool: cargo-xwin
       - name: Build node binding
-        run: yarn build:node --zig --target ${{ matrix.targets }}
+        run: yarn build:node --zig --target ${{ matrix.settings.target }}
       - name: Upload y-octo.node
         uses: actions/upload-artifact@v3
         with:
-          name: y-octo.${{ matrix.targets }}.node
+          name: y-octo.${{ matrix.settings.target }}.node
           path: ./y-octo-node/*.node
           if-no-files-found: error
 
