@@ -56,7 +56,7 @@ jobs:
       #   with:
       #     tool: cargo-xwin
       - name: Build node binding
-        run: yarn build:node --zig --target ${{ matrix.settings.target }}
+        run: yarn build:node --target ${{ matrix.settings.target }}
       - name: Upload y-octo.node
         uses: actions/upload-artifact@v3
         with:
