@@ -28,12 +28,16 @@ const env = {
 };
 
 if (process.argv[2] === "all") {
-  const cp = spawn("node", [...sharedArgs, resolve(testDir, "*")], {
-    cwd: root,
-    env,
-    stdio: "inherit",
-    shell: true,
-  });
+  const cp = spawn(
+    "node",
+    [...sharedArgs, ...files.map((f) => resolve(testDir, f))],
+    {
+      cwd: root,
+      env,
+      stdio: "inherit",
+      shell: true,
+    },
+  );
   cp.on("exit", (code) => {
     process.exit(code ?? 0);
   });
