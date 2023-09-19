@@ -85,7 +85,6 @@ test("doc test", { concurrency: false }, async (t) => {
     let text = doc.getOrCreateText("text");
 
     equal(array.length, 4);
-    console.log(array.toJson(), array.get(0), array.get(1), array.get(2), array.get(3) ,array.get(4));
     equal(array.get(0), true);
     equal(array.get(1), false);
     equal(array.get(2), 1);

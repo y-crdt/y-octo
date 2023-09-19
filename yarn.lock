@@ -123,9 +123,9 @@ __metadata:
   linkType: hard
 
 "@types/node@npm:*":
-  version: 20.5.1
-  resolution: "@types/node@npm:20.5.1"
-  checksum: 3dbe611cd67afa987102c8558ee70f848949c5dcfee5f60abc073e55c0d7b048e391bf06bb1e0dc052cb7210ca97136ac496cbaf6e89123c989de6bd125fde82
+  version: 20.6.2
+  resolution: "@types/node@npm:20.6.2"
+  checksum: 96fe5303872640a173f3fd43e289a451776ed5b8f0090094447c6790b43f23fb607eea8268af0829cef4d132e5afa0bfa4cd871aa7412e9042a414a698e9e971
   languageName: node
   linkType: hard
 
@@ -143,13 +143,6 @@ __metadata:
     "@types/node": "*"
     kleur: ^3.0.3
   checksum: fa8d9a6f63f5e7f4a5b9bd4d40527ca4b8c8c6a63bf0864bf72ea85706a9e1b292d73c8c9a3b7423fb80a5d3e7d563d0069d6644384438c1251adbd9efc03a12
-  languageName: node
-  linkType: hard
-
-"@types/uuid@npm:^9.0.2":
-  version: 9.0.2
-  resolution: "@types/uuid@npm:9.0.2"
-  checksum: 1754bcf3444e1e3aeadd6e774fc328eb53bc956665e2e8fb6ec127aa8e1f43d9a224c3d22a9a6233dca8dd81a12dc7fed4d84b8876dd5ec82d40f574f7ff8b68
   languageName: node
   linkType: hard
 
@@ -172,12 +165,10 @@ __metadata:
     "@napi-rs/cli": ^2.16.2
     "@types/node": ^18.17.5
     "@types/prompts": ^2.4.4
-    "@types/uuid": ^9.0.2
     c8: ^8.0.1
     prompts: ^2.4.2
     ts-node: ^10.9.1
     typescript: ^5.1.6
-    uuid: ^9.0.0
     yjs: ^13.6.8
   languageName: unknown
   linkType: soft
@@ -1511,15 +1502,6 @@ __metadata:
     tsc: bin/tsc
     tsserver: bin/tsserver
   checksum: f53bfe97f7c8b2b6d23cf572750d4e7d1e0c5fff1c36d859d0ec84556a827b8785077bc27676bf7e71fae538e517c3ecc0f37e7f593be913d884805d931bc8be
-  languageName: node
-  linkType: hard
-
-"uuid@npm:^9.0.0":
-  version: 9.0.0
-  resolution: "uuid@npm:9.0.0"
-  bin:
-    uuid: dist/bin/uuid
-  checksum: 8dd2c83c43ddc7e1c71e36b60aea40030a6505139af6bee0f382ebcd1a56f6cd3028f7f06ffb07f8cf6ced320b76aea275284b224b002b289f89fe89c389b028
   languageName: node
   linkType: hard
 
