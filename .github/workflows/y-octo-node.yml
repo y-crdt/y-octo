@@ -47,14 +47,6 @@ jobs:
         uses: ./.github/actions/setup-rust
         with:
           targets: ${{ matrix.settings.target }}
-      # - name: Install ziglang
-      #   uses: goto-bus-stop/setup-zig@v2
-      #   with:
-      #     version: 0.11.0
-      # - name: Install required cargo components
-      #   uses: taiki-e/install-action@v2
-      #   with:
-      #     tool: cargo-xwin
       - name: Build node binding
         run: yarn build:node --target ${{ matrix.settings.target }}
       - name: Upload y-octo.node
@@ -109,10 +101,10 @@ jobs:
       - uses: actions/checkout@v3
       - name: Setup Node.js
         uses: ./.github/actions/setup-node
-      - name: Download y-octo.${{ matrix.settings.targets }}.node
+      - name: Download y-octo.${{ matrix.settings.target }}.node
         uses: actions/download-artifact@v3
         with:
-          name: y-octo.${{ matrix.settings.targets }}.node
+          name: y-octo.${{ matrix.settings.target }}.node
           path: ./y-octo-node
       - name: Run node binding tests
         run: yarn test:node:coverage
@@ -123,5 +115,5 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: ./y-octo-node/.coverage/lcov.info
           flags: node-binding-test
-          name: y-octo.${{ matrix.settings.targets }}.node
+          name: y-octo.${{ matrix.settings.target }}.node
           fail_ci_if_error: false
