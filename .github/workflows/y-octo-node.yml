@@ -10,15 +10,35 @@ on:
 env:
   DEBUG: napi:*
   COVERAGE: true
+  MACOSX_DEPLOYMENT_TARGET: "10.13"
 
 jobs:
   build-node:
     name: Build Node Binding
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        settings:
+          - target: x86_64-apple-darwin
+            host: macos-latest
+          # - target: aarch64-apple-darwin
+          #   host: macos-latest
+          - target: x86_64-pc-windows-msvc
+            host: windows-latest
+          # - target: aarch64-pc-windows-msvc
+          #   host: windows-latest
+          - target: x86_64-unknown-linux-gnu
+            host: ubuntu-latest
+          # - target: aarch64-unknown-linux-gnu
+          #   host: ubuntu-latest
+          # - target: x86_64-unknown-linux-musl
+          #   host: ubuntu-latest
+          # - target: aarch64-unknown-linux-musl
+          #   host: ubuntu-latest
+    runs-on: ${{ matrix.settings.host }}
     env:
       RUSTFLAGS: "-C debuginfo=1"
     environment: development
-
     steps:
       - uses: actions/checkout@v3
       - name: Setup Node.js
@@ -26,14 +46,14 @@ jobs:
       - name: Setup Rust
         uses: ./.github/actions/setup-rust
         with:
-          target: "x86_64-unknown-linux-gnu"
+          targets: ${{ matrix.settings.target }}
       - name: Build node binding
-        run: yarn build:node
+        run: yarn build:node --target ${{ matrix.settings.target }}
       - name: Upload y-octo.node
         uses: actions/upload-artifact@v3
         with:
-          name: y-octo.node
-          path: ./y-octo-node/y-octo.linux-x64-gnu.node
+          name: y-octo.${{ matrix.settings.target }}.node
+          path: ./y-octo-node/*.node
           if-no-files-found: error
 
   test-node:
@@ -65,25 +85,40 @@ jobs:
 
   node-binding-test:
     name: Node Binding Test
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        settings:
+          - target: x86_64-apple-darwin
+            host: macos-latest
+          - target: x86_64-unknown-linux-gnu
+            host: ubuntu-latest
+          - target: x86_64-pc-windows-msvc
+            host: windows-latest
+    runs-on: ${{ matrix.settings.host }}
     needs: build-node
     steps:
       - uses: actions/checkout@v3
       - name: Setup Node.js
         uses: ./.github/actions/setup-node
-      - name: Download y-octo.node
+      - name: Download y-octo.${{ matrix.settings.target }}.node
         uses: actions/download-artifact@v3
         with:
-          name: y-octo.node
+          name: y-octo.${{ matrix.settings.target }}.node
           path: ./y-octo-node
+      - name: Run node binding tests
+        run: ls -lah & ls -lah tests
+        working-directory: y-octo-node
+        shell: bash
       - name: Run node binding tests
         run: yarn test:node:coverage
         working-directory: y-octo-node
+        shell: bash
       - name: Upload server test coverage results
         uses: codecov/codecov-action@v3
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: ./y-octo-node/.coverage/lcov.info
           flags: node-binding-test
-          name: y-octo
+          name: y-octo.${{ matrix.settings.target }}.node
           fail_ci_if_error: false
