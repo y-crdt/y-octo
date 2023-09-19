@@ -123,9 +123,9 @@ __metadata:
   linkType: hard
 
 "@types/node@npm:*":
-  version: 20.5.1
-  resolution: "@types/node@npm:20.5.1"
-  checksum: 3dbe611cd67afa987102c8558ee70f848949c5dcfee5f60abc073e55c0d7b048e391bf06bb1e0dc052cb7210ca97136ac496cbaf6e89123c989de6bd125fde82
+  version: 20.6.2
+  resolution: "@types/node@npm:20.6.2"
+  checksum: 96fe5303872640a173f3fd43e289a451776ed5b8f0090094447c6790b43f23fb607eea8268af0829cef4d132e5afa0bfa4cd871aa7412e9042a414a698e9e971
   languageName: node
   linkType: hard
 
@@ -143,13 +143,6 @@ __metadata:
     "@types/node": "*"
     kleur: ^3.0.3
   checksum: fa8d9a6f63f5e7f4a5b9bd4d40527ca4b8c8c6a63bf0864bf72ea85706a9e1b292d73c8c9a3b7423fb80a5d3e7d563d0069d6644384438c1251adbd9efc03a12
-  languageName: node
-  linkType: hard
-
-"@types/uuid@npm:^9.0.2":
-  version: 9.0.2
-  resolution: "@types/uuid@npm:9.0.2"
-  checksum: 1754bcf3444e1e3aeadd6e774fc328eb53bc956665e2e8fb6ec127aa8e1f43d9a224c3d22a9a6233dca8dd81a12dc7fed4d84b8876dd5ec82d40f574f7ff8b68
   languageName: node
   linkType: hard
 
@@ -172,12 +165,11 @@ __metadata:
     "@napi-rs/cli": ^2.16.2
     "@types/node": ^18.17.5
     "@types/prompts": ^2.4.4
-    "@types/uuid": ^9.0.2
     c8: ^8.0.1
     prompts: ^2.4.2
     ts-node: ^10.9.1
     typescript: ^5.1.6
-    uuid: ^9.0.0
+    yjs: ^13.6.8
   languageName: unknown
   linkType: soft
 
@@ -718,6 +710,13 @@ __metadata:
   languageName: node
   linkType: hard
 
+"isomorphic.js@npm:^0.2.4":
+  version: 0.2.5
+  resolution: "isomorphic.js@npm:0.2.5"
+  checksum: d8d1b083f05f3c337a06628b982ac3ce6db953bbef14a9de8ad49131250c3592f864b73c12030fdc9ef138ce97b76ef55c7d96a849561ac215b1b4b9d301c8e9
+  languageName: node
+  linkType: hard
+
 "istanbul-lib-coverage@npm:^3.0.0, istanbul-lib-coverage@npm:^3.2.0":
   version: 3.2.0
   resolution: "istanbul-lib-coverage@npm:3.2.0"
@@ -757,6 +756,18 @@ __metadata:
   version: 3.0.3
   resolution: "kleur@npm:3.0.3"
   checksum: df82cd1e172f957bae9c536286265a5cdbd5eeca487cb0a3b2a7b41ef959fc61f8e7c0e9aeea9c114ccf2c166b6a8dd45a46fd619c1c569d210ecd2765ad5169
+  languageName: node
+  linkType: hard
+
+"lib0@npm:^0.2.74":
+  version: 0.2.85
+  resolution: "lib0@npm:0.2.85"
+  dependencies:
+    isomorphic.js: ^0.2.4
+  bin:
+    0gentesthtml: bin/gentesthtml.js
+    0serve: bin/0serve.js
+  checksum: 6a3c5c5c3f37f0940eff9309b2595f9a77822f521773db773e0d809309ccf5e6ecab8f39cc47b55b6b167f60b3824c44bb7d92b5c9ffb81a3f331b21277906d2
   languageName: node
   linkType: hard
 
@@ -1494,15 +1505,6 @@ __metadata:
   languageName: node
   linkType: hard
 
-"uuid@npm:^9.0.0":
-  version: 9.0.0
-  resolution: "uuid@npm:9.0.0"
-  bin:
-    uuid: dist/bin/uuid
-  checksum: 8dd2c83c43ddc7e1c71e36b60aea40030a6505139af6bee0f382ebcd1a56f6cd3028f7f06ffb07f8cf6ced320b76aea275284b224b002b289f89fe89c389b028
-  languageName: node
-  linkType: hard
-
 "v8-compile-cache-lib@npm:^3.0.1":
   version: 3.0.1
   resolution: "v8-compile-cache-lib@npm:3.0.1"
@@ -1622,6 +1624,15 @@ __metadata:
     y18n: ^5.0.5
     yargs-parser: ^21.1.1
   checksum: 73b572e863aa4a8cbef323dd911d79d193b772defd5a51aab0aca2d446655216f5002c42c5306033968193bdbf892a7a4c110b0d77954a7fdf563e653967b56a
+  languageName: node
+  linkType: hard
+
+"yjs@npm:^13.6.8":
+  version: 13.6.8
+  resolution: "yjs@npm:13.6.8"
+  dependencies:
+    lib0: ^0.2.74
+  checksum: a2a6fd17a2cce6461b64bedd69f66845b9dfd4702e285be0b5e382840337232e54ba5cf5d48f871263074de625d3902d17ab8a1766695af3fc05a0b4da8d95e0
   languageName: node
   linkType: hard
 

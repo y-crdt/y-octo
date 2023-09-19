@@ -252,6 +252,9 @@ if (!nativeBinding) {
   throw new Error(`Failed to load native binding`)
 }
 
-const { Doc } = nativeBinding
+const { YArray, Doc, YMap, YText } = nativeBinding
 
+module.exports.YArray = YArray
 module.exports.Doc = Doc
+module.exports.YMap = YMap
+module.exports.YText = YText

@@ -11,9 +11,10 @@ version    = "0.0.1"
 crate-type = ["cdylib"]
 
 [dependencies]
-napi        = "2"
+anyhow      = "1"
+napi        = { version = "2", features = ["anyhow", "napi4"] }
 napi-derive = "2"
-y-octo      = { path = "../y-octo" }
+y-octo      = { path = "../y-octo", features = ["large_refs"] }
 
 [build-dependencies]
 napi-build = "2"

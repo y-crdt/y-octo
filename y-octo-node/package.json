@@ -21,12 +21,11 @@
     "@napi-rs/cli": "^2.16.2",
     "@types/node": "^18.17.5",
     "@types/prompts": "^2.4.4",
-    "@types/uuid": "^9.0.2",
     "c8": "^8.0.1",
     "prompts": "^2.4.2",
     "ts-node": "^10.9.1",
     "typescript": "^5.1.6",
-    "uuid": "^9.0.0"
+    "yjs": "^13.6.8"
   },
   "engines": {
     "node": ">= 10"
@@ -36,7 +35,7 @@
     "build": "napi build --platform --release --no-const-enum",
     "build:debug": "napi build --platform --no-const-enum",
     "universal": "napi universal",
-    "test": "yarn exec ts-node-esm ./scripts/run-test.mts all",
+    "test": "NODE_NO_WARNINGS=1 yarn exec ts-node-esm ./scripts/run-test.mts all",
     "test:watch": "yarn exec ts-node-esm ./scripts/run-test.ts all --watch",
     "test:coverage": "c8 yarn exec ts-node-esm ./scripts/run-test.mts all",
     "version": "napi version"
