@@ -1,5 +1,5 @@
 use y_octo::{AwarenessState, DocMessage, SyncMessage};
-use y_sync::sync::Message as YMessage;
+use y_sync::sync::{Message as YMessage, SyncMessage as YSyncMessage};
 use yrs::{
     updates::{decoder::Decode, encoder::Encode},
     StateVector,
@@ -17,9 +17,9 @@ pub fn to_sync_message(msg: YMessage) -> Option<SyncMessage> {
         )),
         YMessage::AwarenessQuery => Some(SyncMessage::AwarenessQuery),
         YMessage::Sync(doc) => Some(SyncMessage::Doc(match doc {
-            y_sync::sync::SyncMessage::SyncStep1(update) => DocMessage::Step1(update.encode_v1().unwrap()),
-            y_sync::sync::SyncMessage::SyncStep2(update) => DocMessage::Step2(update),
-            y_sync::sync::SyncMessage::Update(update) => DocMessage::Update(update),
+            YSyncMessage::SyncStep1(update) => DocMessage::Step1(update.encode_v1().unwrap()),
+            YSyncMessage::SyncStep2(update) => DocMessage::Step2(update),
+            YSyncMessage::Update(update) => DocMessage::Update(update),
         })),
         YMessage::Custom(_tag, _data) => None,
     }
@@ -44,9 +44,9 @@ pub fn to_y_message(msg: SyncMessage) -> YMessage {
         }),
         SyncMessage::AwarenessQuery => YMessage::AwarenessQuery,
         SyncMessage::Doc(doc) => YMessage::Sync(match doc {
-            DocMessage::Step1(update) => y_sync::sync::SyncMessage::SyncStep1(StateVector::decode_v1(&update).unwrap()),
-            DocMessage::Step2(update) => y_sync::sync::SyncMessage::SyncStep2(update),
-            DocMessage::Update(update) => y_sync::sync::SyncMessage::Update(update),
+            DocMessage::Step1(update) => YSyncMessage::SyncStep1(StateVector::decode_v1(&update).unwrap()),
+            DocMessage::Step2(update) => YSyncMessage::SyncStep2(update),
+            DocMessage::Update(update) => YSyncMessage::Update(update),
         }),
     }
 }
