@@ -45,7 +45,9 @@ impl YMap {
         }
     }
 
-    #[napi]
+    #[napi(
+        ts_args_type = "key: string, value: YArray | YMap | YText | boolean | number | string | Record<string, any> | null | undefined"
+    )]
     pub fn set(&mut self, key: String, value: MixedRefYType) -> Result<()> {
         match value {
             MixedRefYType::A(array) => self.map.insert(key, array.array.clone()).map_err(anyhow::Error::from),

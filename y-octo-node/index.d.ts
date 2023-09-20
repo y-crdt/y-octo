@@ -8,7 +8,7 @@ export class YArray {
   get length(): number
   get isEmpty(): boolean
   get<T = unknown>(index: number): T
-  insert(index: number, value: MixedRefYType): void
+  insert(index: number, value: YArray | YMap | YText | boolean | number | string | Record<string, any> | null | undefined): void
   remove(index: number, len: number): void
   toJson(): JsArray
 }
@@ -33,7 +33,7 @@ export class YMap {
   get length(): number
   get isEmpty(): boolean
   get<T = unknown>(key: string): T
-  set(key: string, value: MixedRefYType): void
+  set(key: string, value: YArray | YMap | YText | boolean | number | string | Record<string, any> | null | undefined): void
   remove(key: string): void
   toJson(): object
 }
