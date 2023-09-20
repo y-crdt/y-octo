@@ -14,10 +14,10 @@ rand          = "0.8"
 rand_chacha   = "0.3"
 yrs           = "=0.16.5"
 
-y-octo-utils = { path = "../../y-octo-utils", features = ["fuzz"] }
+y-octo-utils = { path = "..", features = ["fuzz"] }
 
   [dependencies.y-octo]
-  path = ".."
+  path = "../../y-octo"
 
 # Prevent this from interfering with workspaces
 [workspace]
