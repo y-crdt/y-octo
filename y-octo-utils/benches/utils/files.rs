@@ -10,7 +10,7 @@ pub struct File {
     pub content: Vec<u8>,
 }
 
-const BASE: &str = "src/fixtures/";
+const BASE: &str = "../y-octo/src/fixtures/";
 
 impl File {
     fn new(path: &Path) -> Self {
