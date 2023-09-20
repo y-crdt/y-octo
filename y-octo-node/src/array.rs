@@ -46,7 +46,8 @@ impl YArray {
     }
 
     #[napi(
-        ts_args_type = "index: number, value: YArray | YMap | YText | boolean | number | string | Record<string, any> | null | undefined"
+        ts_args_type = "index: number, value: YArray | YMap | YText | boolean | number | string | Record<string, any> \
+                        | null | undefined"
     )]
     pub fn insert(&mut self, index: i64, value: MixedRefYType) -> Result<()> {
         match value {

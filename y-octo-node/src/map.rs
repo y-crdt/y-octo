@@ -46,7 +46,8 @@ impl YMap {
     }
 
     #[napi(
-        ts_args_type = "key: string, value: YArray | YMap | YText | boolean | number | string | Record<string, any> | null | undefined"
+        ts_args_type = "key: string, value: YArray | YMap | YText | boolean | number | string | Record<string, any> | \
+                        null | undefined"
     )]
     pub fn set(&mut self, key: String, value: MixedRefYType) -> Result<()> {
         match value {
