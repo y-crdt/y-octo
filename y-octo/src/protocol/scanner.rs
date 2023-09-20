@@ -43,8 +43,9 @@ impl<'a> Iterator for SyncMessageScanner<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use proptest::{collection::vec, prelude::*};
+
+    use super::*;
 
     proptest! {
         #[test]

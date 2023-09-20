@@ -20,8 +20,8 @@ y-sync    = "=0.3.0"
 yrs       = "=0.16.5"
 
 [dev-dependencies]
-proptest         = "1.2"
-proptest-derive  = "0.4"
+proptest        = "1.2"
+proptest-derive = "0.4"
 
 [[bin]]
 name = "bench_result_render"

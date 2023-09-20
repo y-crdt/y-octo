@@ -55,9 +55,8 @@ pub fn to_y_message(msg: SyncMessage) -> YMessage {
 mod tests {
     use std::collections::HashMap;
 
-    use y_octo::{read_sync_message, write_sync_message, SyncMessageScanner};
-
     use proptest::{collection::vec, prelude::*};
+    use y_octo::{read_sync_message, write_sync_message, SyncMessageScanner};
     use yrs::updates::{
         decoder::DecoderV1,
         encoder::{Encoder, EncoderV1},
@@ -124,8 +123,8 @@ mod tests {
             any::<HashMap<u64, WrappedAwarenessState>>()
                 .prop_map(|s| SyncMessage::Awareness(s.into_iter().map(|(k, v)| (k, v.0)).collect())),
             Just(SyncMessage::AwarenessQuery),
-            // binary in step1 must be a valid state vector in yrs, but in y-octo, you can parse it after parse the message
-            // any::<Vec<u8>>().prop_map(|s| SyncMessage::Doc(DocMessage::Step1(s))),
+            // binary in step1 must be a valid state vector in yrs, but in y-octo, you can parse it after parse the
+            // message any::<Vec<u8>>().prop_map(|s| SyncMessage::Doc(DocMessage::Step1(s))),
             any::<Vec<u8>>().prop_map(|s| SyncMessage::Doc(DocMessage::Step2(s))),
             any::<Vec<u8>>().prop_map(|s| SyncMessage::Doc(DocMessage::Update(s))),
         ]
