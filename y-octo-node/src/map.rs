@@ -1,4 +1,4 @@
-use napi::{bindgen_prelude::Either4, Env, JsObject, JsUnknown, ValueType};
+use napi::{Env, JsObject, ValueType};
 use y_octo::{Any, Map, Value};
 
 use super::*;
@@ -33,84 +33,59 @@ impl YMap {
     pub fn get(&self, env: Env, key: String) -> Result<MixedYType> {
         if let Some(value) = self.map.get(&key) {
             match value {
-                Value::Any(any) => get_js_unknown_from_any(env, any).map(Either4::D),
-                Value::Array(array) => Ok(Either4::A(YArray::inner_new(array))),
-                Value::Map(map) => Ok(Either4::B(YMap::inner_new(map))),
-                Value::Text(text) => Ok(Either4::C(YText::inner_new(text))),
-                _ => env.get_null().map(|v| v.into_unknown()).map(Either4::D),
+                Value::Any(any) => get_js_unknown_from_any(env, any).map(MixedYType::D),
+                Value::Array(array) => Ok(MixedYType::A(YArray::inner_new(array))),
+                Value::Map(map) => Ok(MixedYType::B(YMap::inner_new(map))),
+                Value::Text(text) => Ok(MixedYType::C(YText::inner_new(text))),
+                _ => env.get_null().map(|v| v.into_unknown()).map(MixedYType::D),
             }
             .map_err(anyhow::Error::from)
         } else {
-            Ok(Either4::D(env.get_null()?.into_unknown()))
+            Ok(MixedYType::D(env.get_null()?.into_unknown()))
         }
     }
 
     #[napi]
-    pub fn set(&mut self, key: String, value: JsUnknown) -> Result<()> {
-        match value.get_type() {
-            Ok(value_type) => match value_type {
-                ValueType::Undefined | ValueType::Null => self.map.insert(key, Any::Null).map_err(anyhow::Error::from),
-                ValueType::Boolean => {
-                    if let Ok(boolean) = value.coerce_to_bool().and_then(|v| v.get_value()) {
-                        self.map.insert(key, boolean).map_err(anyhow::Error::from)
-                    } else {
-                        Err(anyhow::Error::msg("Failed to coerce value to boolean"))
+    pub fn set(&mut self, key: String, value: MixedRefYType) -> Result<()> {
+        match value {
+            MixedRefYType::A(array) => self.map.insert(key, array.array.clone()).map_err(anyhow::Error::from),
+            MixedRefYType::B(map) => self.map.insert(key, map.map.clone()).map_err(anyhow::Error::from),
+            MixedRefYType::C(text) => self.map.insert(key, text.text.clone()).map_err(anyhow::Error::from),
+            MixedRefYType::D(unknown) => match unknown.get_type() {
+                Ok(value_type) => match value_type {
+                    ValueType::Undefined | ValueType::Null => {
+                        self.map.insert(key, Any::Null).map_err(anyhow::Error::from)
                     }
-                }
-                ValueType::Number => {
-                    if let Ok(number) = value.coerce_to_number().and_then(|v| v.get_double()) {
-                        self.map.insert(key, number).map_err(anyhow::Error::from)
-                    } else {
-                        Err(anyhow::Error::msg("Failed to coerce value to number"))
+                    ValueType::Boolean => match unknown.coerce_to_bool().and_then(|v| v.get_value()) {
+                        Ok(boolean) => self.map.insert(key, boolean).map_err(anyhow::Error::from),
+                        Err(e) => Err(anyhow::Error::from(e).context("Failed to coerce value to boolean")),
+                    },
+                    ValueType::Number => match unknown.coerce_to_number().and_then(|v| v.get_double()) {
+                        Ok(number) => self.map.insert(key, number).map_err(anyhow::Error::from),
+                        Err(e) => Err(anyhow::Error::from(e).context("Failed to coerce value to number")),
+                    },
+                    ValueType::String => {
+                        match unknown
+                            .coerce_to_string()
+                            .and_then(|v| v.into_utf8())
+                            .and_then(|s| s.as_str().map(|s| s.to_string()))
+                        {
+                            Ok(string) => self.map.insert(key, string).map_err(anyhow::Error::from),
+                            Err(e) => Err(anyhow::Error::from(e).context("Failed to coerce value to string")),
+                        }
                     }
-                }
-                ValueType::String => {
-                    if let Ok(string) = value
-                        .coerce_to_string()
-                        .and_then(|v| v.into_utf8())
-                        .and_then(|s| s.as_str().map(|s| s.to_string()))
-                    {
-                        self.map.insert(key, string).map_err(anyhow::Error::from)
-                    } else {
-                        Err(anyhow::Error::msg("Failed to coerce value to string"))
-                    }
-                }
-                ValueType::Object => {
-                    if let Ok(object) = value.coerce_to_object() {
-                        let any = get_any_from_js_object(object)?;
-                        self.map.insert(key, Value::Any(any)).map_err(anyhow::Error::from)
-                    } else {
-                        Err(anyhow::Error::msg("Failed to coerce object to array"))
-                    }
-                }
-                ValueType::Symbol => Err(anyhow::Error::msg("Symbol values are not supported")),
-                ValueType::Function => Err(anyhow::Error::msg("Function values are not supported")),
-                ValueType::External => Err(anyhow::Error::msg("External values are not supported")),
-                ValueType::Unknown => Err(anyhow::Error::msg("Unknown values are not supported")),
+                    ValueType::Object => match unknown.coerce_to_object().and_then(get_any_from_js_object) {
+                        Ok(any) => self.map.insert(key, Value::Any(any)).map_err(anyhow::Error::from),
+                        Err(e) => Err(anyhow::Error::from(e).context("Failed to coerce value to object")),
+                    },
+                    ValueType::Symbol => Err(anyhow::Error::msg("Symbol values are not supported")),
+                    ValueType::Function => Err(anyhow::Error::msg("Function values are not supported")),
+                    ValueType::External => Err(anyhow::Error::msg("External values are not supported")),
+                    ValueType::Unknown => Err(anyhow::Error::msg("Unknown values are not supported")),
+                },
+                Err(e) => Err(anyhow::Error::from(e)),
             },
-            Err(e) => Err(anyhow::Error::from(e)),
         }
-    }
-
-    #[napi]
-    pub fn set_array(&mut self, key: String, array: &YArray) -> Result<()> {
-        self.map.insert(key, Value::Array(array.array.clone()))?;
-
-        Ok(())
-    }
-
-    #[napi]
-    pub fn set_map(&mut self, key: String, map: &YMap) -> Result<()> {
-        self.map.insert(key, Value::Map(map.map.clone()))?;
-
-        Ok(())
-    }
-
-    #[napi]
-    pub fn set_text(&mut self, key: String, text: &YText) -> Result<()> {
-        self.map.insert(key, Value::Text(text.text.clone()))?;
-
-        Ok(())
     }
 
     #[napi]

@@ -43,7 +43,7 @@ test("array test", { concurrency: false }, async (t) => {
   await t.test("sub array should can edit", () => {
     let map = doc.getOrCreateMap("map");
     let sub = doc.createArray();
-    map.setArray("sub", sub);
+    map.set("sub", sub);
 
     sub.insert(0, true);
     sub.insert(1, false);
