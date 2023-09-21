@@ -6,6 +6,7 @@ use y_octo::{Any, Value};
 use super::*;
 
 pub type MixedYType = Either4<YArray, YMap, YText, JsUnknown>;
+pub type MixedRefYType<'a> = Either4<&'a YArray, &'a YMap, &'a YText, JsUnknown>;
 
 pub fn get_js_unknown_from_any(env: Env, any: Any) -> Result<JsUnknown> {
     match any {
