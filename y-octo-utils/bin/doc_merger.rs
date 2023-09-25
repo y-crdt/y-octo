@@ -59,6 +59,9 @@ fn jwst_merge(path: &str) {
         println!("apply update{i} {} bytes", update.len());
         doc.apply_update_from_binary(update.clone()).unwrap();
     }
+
+    println!("press enter to continue");
+    std::io::stdin().read_line(&mut String::new()).unwrap();
     let ts = Instant::now();
     let history = doc.history().parse_store(Default::default());
     println!("history: {:?}", ts.elapsed());
@@ -92,6 +95,6 @@ mod tests {
     #[test]
     #[ignore = "only for debug"]
     fn test_gc() {
-        jwst_merge("/Users/ds/Downloads/out", "/Users/ds/Downloads/out.jwst");
+        jwst_merge("/Users/ds/Downloads/out");
     }
 }
