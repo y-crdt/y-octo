@@ -8,11 +8,14 @@ version = "0.0.1"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [features]
-bench = ["regex"]
-fuzz  = ["arbitrary", "phf", "y-octo", "yrs"]
+default = ["merger"]
+bench  = ["regex"]
+fuzz   = ["arbitrary", "phf", "y-octo", "yrs"]
+merger = ["clap", "y-octo", "y-octo/large_refs"]
 
 [dependencies]
-arbitrary = { version = "1.3.0", features = ["derive"], optional = true }
+arbitrary = { version = "1.3", features = ["derive"], optional = true }
+clap      = { version = "4.4", features = ["derive"], optional = true }
 phf       = { version = "0.11", features = ["macros"], optional = true }
 regex     = { version = "1.5", optional = true }
 y-octo    = { workspace = true, optional = true }
@@ -21,3 +24,7 @@ yrs       = { version = "=0.16.5", optional = true }
 [[bin]]
 name = "bench_result_render"
 path = "bin/bench_result_render.rs"
+
+[[bin]]
+name = "doc_merger"
+path = "bin/doc_merger.rs"
