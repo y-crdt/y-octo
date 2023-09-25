@@ -1,9 +1,11 @@
-use std::io::Write;
+use std::{io::Write, sync::Arc};
+
+use lasso::ThreadedRodeo;
 
 use super::*;
 
 pub fn encode_update_with_guid<S: AsRef<str>>(update: Vec<u8>, guid: S) -> JwstCodecResult<Vec<u8>> {
-    let mut encoder = RawEncoder::default();
+    let mut encoder = RawEncoder::new(Default::default());
     encoder.write_var_string(guid)?;
     let mut buffer = encoder.into_inner();
 
@@ -15,7 +17,7 @@ pub fn encode_update_with_guid<S: AsRef<str>>(update: Vec<u8>, guid: S) -> JwstC
 }
 
 pub fn decode_update_with_guid(update: Vec<u8>) -> JwstCodecResult<(String, Vec<u8>)> {
-    let mut decoder = RawDecoder::new(update);
+    let mut decoder = RawDecoder::new(update, Default::default());
     let guid = decoder.read_var_string()?;
     let update = decoder.drain();
 
@@ -55,9 +57,10 @@ pub fn encode_update_as_message(update: Vec<u8>) -> JwstCodecResult<Vec<u8>> {
 }
 
 pub fn merge_updates_v1<V: AsRef<[u8]>, I: IntoIterator<Item = V>>(updates: I) -> JwstCodecResult<Update> {
+    let interner = Arc::new(ThreadedRodeo::new());
     let updates = updates
         .into_iter()
-        .map(|u| Update::from_ybinary1(u.as_ref().to_vec()))
+        .map(|u| Update::from_ybinary1(u.as_ref().to_vec(), interner.clone()))
         .collect::<JwstCodecResult<Vec<_>>>()?;
 
     Ok(Update::merge(updates))

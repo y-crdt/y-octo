@@ -9,12 +9,15 @@ mod update;
 #[cfg(test)]
 mod utils;
 
+use std::sync::Arc;
+
 pub use any::Any;
 pub(crate) use content::Content;
 pub use delete_set::DeleteSet;
 pub use id::{Client, Clock, Id};
 pub use io::{CrdtRead, CrdtReader, CrdtWrite, CrdtWriter, RawDecoder, RawEncoder};
 pub(crate) use item::{Item, ItemFlags, ItemRef, Parent};
+use lasso::ThreadedRodeo;
 pub(crate) use refs::Node;
 pub use update::Update;
 #[cfg(test)]

@@ -217,9 +217,9 @@ mod tests {
     #[test]
     fn test_encode_decode() {
         let delete_set = DeleteSet::from([(1, vec![0..10, 20..30]), (2, vec![0..5, 10..20])]);
-        let mut encoder = RawEncoder::default();
+        let mut encoder = RawEncoder::new(Default::default());
         delete_set.write(&mut encoder).unwrap();
-        let mut decoder = RawDecoder::new(encoder.into_inner());
+        let mut decoder = RawDecoder::new(encoder.into_inner(), Default::default());
         let decoded = DeleteSet::read(&mut decoder).unwrap();
         assert_eq!(delete_set, decoded);
     }

@@ -1,3 +1,5 @@
+use lasso::Spur;
+
 use super::*;
 use crate::sync::{AtomicU8, Ordering};
 
@@ -123,7 +125,8 @@ pub(crate) struct Item {
     #[cfg_attr(all(test, not(loom)), proptest(value = "Somr::none()"))]
     pub right: ItemRef,
     pub parent: Option<Parent>,
-    pub parent_sub: Option<String>,
+    #[cfg_attr(all(test, not(loom)), proptest(value = "Option::<Spur>::None"))]
+    pub parent_sub: Option<Spur>,
     pub content: Content,
     #[cfg_attr(all(test, not(loom)), proptest(value = "ItemFlags::default()"))]
     pub flags: ItemFlags,
@@ -197,7 +200,7 @@ impl Item {
         left: Somr<Item>,
         right: Somr<Item>,
         parent: Option<Parent>,
-        parent_sub: Option<String>,
+        parent_sub: Option<Spur>,
     ) -> Self {
         let flags = ItemFlags::from(if content.countable() {
             item_flags::ITEM_COUNTABLE
@@ -358,7 +361,7 @@ impl Item {
                 }
             },
             parent_sub: if has_not_sibling && has_parent_sub {
-                Some(decoder.read_var_string()?)
+                Some(decoder.read_intern_var_string()?)
             } else {
                 None
             },
@@ -427,7 +430,7 @@ impl Item {
             }
 
             if let Some(parent_sub) = &self.parent_sub {
-                encoder.write_var_string(parent_sub)?;
+                encoder.write_intern_var_string(parent_sub)?;
             }
         }
 
@@ -481,10 +484,10 @@ mod tests {
             item.flags.set_countable();
         }
 
-        let mut encoder = RawEncoder::default();
+        let mut encoder = RawEncoder::new(Default::default());
         item.write(&mut encoder)?;
 
-        let mut decoder = RawDecoder::new(encoder.into_inner());
+        let mut decoder = RawDecoder::new(encoder.into_inner(), Default::default());
 
         let info = decoder.read_info()?;
         let first_5_bit = info & 0b11111;

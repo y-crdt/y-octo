@@ -1,3 +1,5 @@
+use lasso::Spur;
+
 use super::{item::item_flags, *};
 
 pub(crate) struct ItemBuilder {
@@ -47,7 +49,7 @@ impl ItemBuilder {
     }
 
     #[allow(dead_code)]
-    pub fn parent_sub(mut self, parent_sub: Option<String>) -> ItemBuilder {
+    pub fn parent_sub(mut self, parent_sub: Option<Spur>) -> ItemBuilder {
         self.item.parent_sub = parent_sub;
         self
     }

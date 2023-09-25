@@ -280,11 +280,11 @@ mod tests {
     use super::*;
 
     fn content_round_trip(content: &Content) -> JwstCodecResult {
-        let mut writer = RawEncoder::default();
+        let mut writer = RawEncoder::new(Default::default());
         writer.write_u8(content.get_info())?;
         content.write(&mut writer)?;
 
-        let mut reader = RawDecoder::new(writer.into_inner());
+        let mut reader = RawDecoder::new(writer.into_inner(), Default::default());
         let tag_type = reader.read_u8()?;
         assert_eq!(Content::read(&mut reader, tag_type)?, *content);
 

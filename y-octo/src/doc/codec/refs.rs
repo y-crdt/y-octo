@@ -397,13 +397,14 @@ mod tests {
                     .build(),
             ));
 
+            let interner = Arc::new(ThreadedRodeo::new());
             let has_not_parent_id_and_has_parent_with_key = Node::Item(Somr::new(
                 ItemBuilder::new()
                     .id((0, 0).into())
                     .left_id(None)
                     .right_id(None)
                     .parent(Some(Parent::String(String::from("parent"))))
-                    .parent_sub(Some(String::from("parent_sub")))
+                    .parent_sub(Some(interner.get_or_intern("parent_sub")))
                     .content(Content::String(String::from("content")))
                     .build(),
             ));
@@ -428,10 +429,10 @@ mod tests {
             ];
 
             for info in struct_infos {
-                let mut encoder = RawEncoder::default();
+                let mut encoder = RawEncoder::new(interner.clone());
                 info.write(&mut encoder).unwrap();
 
-                let mut decoder = RawDecoder::new(encoder.into_inner());
+                let mut decoder = RawDecoder::new(encoder.into_inner(), interner.clone());
                 let decoded = Node::read(&mut decoder, info.id()).unwrap();
 
                 assert_eq!(info, decoded);
@@ -451,11 +452,11 @@ mod tests {
                 }
             }
         }
-        let mut encoder = RawEncoder::default();
+        let mut encoder = RawEncoder::new(Default::default());
         info.write(&mut encoder)?;
 
         let ret = encoder.into_inner();
-        let mut decoder = RawDecoder::new(ret);
+        let mut decoder = RawDecoder::new(ret, Default::default());
 
         let decoded = Node::read(&mut decoder, info.id())?;
 

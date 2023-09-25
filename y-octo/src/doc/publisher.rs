@@ -45,6 +45,7 @@ impl DocPublisher {
         let mut observer = self.observer.lock().unwrap();
         let observing = self.observing.clone();
         let store = self.store.clone();
+        let interner = store.read().unwrap().interner.clone();
         let history = self.history.clone();
         if observer.is_none() {
             let thread_subscribers = self.subscribers.clone();
@@ -82,7 +83,7 @@ impl DocPublisher {
 
                                 let history = history.parse_update(&update);
 
-                                let mut encoder = RawEncoder::default();
+                                let mut encoder = RawEncoder::new(interner.clone());
                                 if let Err(e) = update.write(&mut encoder) {
                                     warn!("Failed to encode document: {}", e);
                                     continue;

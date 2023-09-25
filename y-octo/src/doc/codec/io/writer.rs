@@ -1,6 +1,7 @@
 use std::io::{Cursor, Error, Write};
 
 use byteorder::{BigEndian, WriteBytesExt};
+use lasso::Spur;
 
 use super::*;
 
@@ -12,6 +13,7 @@ fn map_io_error(e: Error) -> JwstCodecError {
 pub trait CrdtWriter {
     // basic write functions
     fn get_buffer_mut(&mut self) -> &mut Cursor<Vec<u8>>;
+    fn get_string_interner(&mut self) -> Arc<ThreadedRodeo>;
     fn write_var_u64(&mut self, num: u64) -> JwstCodecResult {
         write_var_u64(self.get_buffer_mut(), num).map_err(map_io_error)
     }
@@ -20,6 +22,10 @@ pub trait CrdtWriter {
     }
     fn write_var_string<S: AsRef<str>>(&mut self, s: S) -> JwstCodecResult {
         write_var_string(self.get_buffer_mut(), s).map_err(map_io_error)
+    }
+    fn write_intern_var_string(&mut self, s: &Spur) -> JwstCodecResult {
+        let interner = self.get_string_interner();
+        write_var_string(self.get_buffer_mut(), interner.resolve(s)).map_err(map_io_error)
     }
     fn write_var_buffer(&mut self, buf: &[u8]) -> JwstCodecResult {
         write_var_buffer(self.get_buffer_mut(), buf).map_err(map_io_error)

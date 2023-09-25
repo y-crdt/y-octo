@@ -120,7 +120,7 @@ mod tests {
             array.insert(&mut trx, 11, "!").unwrap();
             let buffer = trx.encode_update_v1().unwrap();
 
-            let mut decoder = RawDecoder::new(buffer);
+            let mut decoder = RawDecoder::new(buffer, Default::default());
             let update = Update::read(&mut decoder).unwrap();
 
             let mut doc = Doc::with_options(options.clone());
@@ -147,7 +147,7 @@ mod tests {
             array.insert(&mut trx, 11, "!").unwrap();
             let buffer = trx.encode_update_v1().unwrap();
 
-            let mut decoder = RawDecoder::new(buffer);
+            let mut decoder = RawDecoder::new(buffer, Default::default());
             let update = Update::read(&mut decoder).unwrap();
 
             let mut doc = Doc::with_options(options.clone());
