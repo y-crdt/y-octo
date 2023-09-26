@@ -44,7 +44,7 @@ test("map test", { concurrency: false }, async (t) => {
   await t.test("map should can be nested", () => {
     let map = doc.getOrCreateMap("map");
     let sub = doc.createMap();
-    map.setMap("sub", sub);
+    map.set("sub", sub);
 
     sub.set("a", true);
     sub.set("b", false);
@@ -67,9 +67,9 @@ test("map test", { concurrency: false }, async (t) => {
     let sub_map = doc.createMap();
     let sub_text = doc.createText();
 
-    map.setArray("array", sub_array);
-    map.setMap("map", sub_map);
-    map.setText("text", sub_text);
+    map.set("array", sub_array);
+    map.set("map", sub_map);
+    map.set("text", sub_text);
 
     sub_array.insert(0, true);
     sub_array.insert(1, false);

@@ -40,7 +40,7 @@ test("text test", { concurrency: false }, async (t) => {
   await t.test("sub text should can edit", () => {
     let map = doc.getOrCreateMap("map");
     let sub = doc.createText();
-    map.setText("sub", sub);
+    map.set("sub", sub);
 
     sub.insert(0, "a");
     sub.insert(1, "b");

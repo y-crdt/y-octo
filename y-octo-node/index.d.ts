@@ -8,10 +8,7 @@ export class YArray {
   get length(): number
   get isEmpty(): boolean
   get<T = unknown>(index: number): T
-  insert(index: number, value: unknown): void
-  setArray(index: number, array: YArray): void
-  setMap(index: number, map: YMap): void
-  setText(index: number, text: YText): void
+  insert(index: number, value: YArray | YMap | YText | boolean | number | string | Record<string, any> | null | undefined): void
   remove(index: number, len: number): void
   toJson(): JsArray
 }
@@ -36,10 +33,7 @@ export class YMap {
   get length(): number
   get isEmpty(): boolean
   get<T = unknown>(key: string): T
-  set(key: string, value: unknown): void
-  setArray(key: string, array: YArray): void
-  setMap(key: string, map: YMap): void
-  setText(key: string, text: YText): void
+  set(key: string, value: YArray | YMap | YText | boolean | number | string | Record<string, any> | null | undefined): void
   remove(key: string): void
   toJson(): object
 }
