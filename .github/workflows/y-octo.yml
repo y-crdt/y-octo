@@ -134,7 +134,7 @@ jobs:
           toolchain: ${{ env.nightly }}
 
       - name: fuzzing
-        working-directory: ./y-octo
+        working-directory: ./y-octo-utils
         run: |
           cargo install cargo-fuzz
           cargo +${{ env.nightly }} fuzz run apply_update -- -max_total_time=30
@@ -154,7 +154,7 @@ jobs:
         uses: actions/upload-artifact@v3
         with:
           name: fuzz-artifact
-          path: ./y-octo/fuzz/artifacts/**/*
+          path: ./y-octo-utils/fuzz/artifacts/**/*
 
   miri:
     name: miri code check
