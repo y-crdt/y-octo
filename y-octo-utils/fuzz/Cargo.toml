@@ -14,10 +14,10 @@ rand          = "0.8"
 rand_chacha   = "0.3"
 yrs           = "=0.16.5"
 
-y-octo-utils = { path = "../../y-octo-utils", features = ["fuzz"] }
+y-octo-utils = { path = "..", features = ["fuzz"] }
 
   [dependencies.y-octo]
-  path = ".."
+  path = "../../y-octo"
 
 # Prevent this from interfering with workspaces
 [workspace]
@@ -88,5 +88,6 @@ path = "fuzz_targets/apply_update.rs"
 test = false
 
 [patch.crates-io]
-lib0 = { git = "https://github.com/toeverything/y-crdt", rev = "a700f09" }
-yrs  = { git = "https://github.com/toeverything/y-crdt", rev = "a700f09" }
+lib0   = { git = "https://github.com/toeverything/y-crdt", rev = "a700f09" }
+y-sync = { git = "https://github.com/toeverything/y-sync", rev = "5626851" }
+yrs    = { git = "https://github.com/toeverything/y-crdt", rev = "a700f09" }

@@ -53,12 +53,7 @@ ordered-float    = { version = "3.9", features = ["proptest"] }
 path-ext         = "0.1"
 proptest         = "1.2"
 proptest-derive  = "0.4"
-y-sync           = "=0.3.0"
 yrs              = "=0.16.5"
-
-[[bin]]
-name = "memory_leak_test"
-path = "bin/memory_leak_test.rs"
 
 [[bench]]
 harness = false

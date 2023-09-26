@@ -8,18 +8,28 @@ version = "0.0.1"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [features]
+bench   = ["regex"]
 default = ["merger"]
-bench  = ["regex"]
-fuzz   = ["arbitrary", "phf", "y-octo", "yrs"]
-merger = ["clap", "y-octo", "y-octo/large_refs"]
+fuzz    = ["arbitrary", "phf"]
+merger  = ["clap", "y-octo", "y-octo/large_refs"]
 
 [dependencies]
-arbitrary = { version = "1.3", features = ["derive"], optional = true }
-clap      = { version = "4.4", features = ["derive"], optional = true }
-phf       = { version = "0.11", features = ["macros"], optional = true }
-regex     = { version = "1.5", optional = true }
-y-octo    = { workspace = true, optional = true }
-yrs       = { version = "=0.16.5", optional = true }
+arbitrary   = { version = "1.3.0", features = ["derive"], optional = true }
+clap        = { version = "4.4", features = ["derive"], optional = true }
+lib0        = { version = "=0.16.5", features = ["lib0-serde"] }
+phf         = { version = "0.11", features = ["macros"], optional = true }
+rand        = "0.8"
+rand_chacha = "0.3"
+regex       = { version = "1.5", optional = true }
+y-octo      = { workspace = true }
+y-sync      = "=0.3.1"
+yrs         = "=0.16.5"
+
+[dev-dependencies]
+criterion       = { version = "0.5", features = ["html_reports"] }
+path-ext        = "0.1"
+proptest        = "1.2"
+proptest-derive = "0.4"
 
 [[bin]]
 name = "bench_result_render"
@@ -28,3 +38,30 @@ path = "bin/bench_result_render.rs"
 [[bin]]
 name = "doc_merger"
 path = "bin/doc_merger.rs"
+
+[[bin]]
+name = "memory_leak_test"
+path = "bin/memory_leak_test.rs"
+
+[[bench]]
+harness = false
+name    = "array_ops_benchmarks"
+
+[[bench]]
+harness = false
+name    = "codec_benchmarks"
+
+[[bench]]
+harness = false
+name    = "map_ops_benchmarks"
+
+[[bench]]
+harness = false
+name    = "text_ops_benchmarks"
+
+[[bench]]
+harness = false
+name    = "update_benchmarks"
+
+[lib]
+bench = true
