@@ -5,7 +5,7 @@ use super::*;
 pub(crate) enum Parent {
     #[cfg_attr(test, proptest(skip))]
     Type(YTypeRef),
-    #[cfg_attr(all(test, not(loom)), proptest(value = "Parent::String(SmolStr::default())"))]
+    #[cfg_attr(test, proptest(value = "Parent::String(SmolStr::default())"))]
     String(SmolStr),
     Id(Id),
 }
