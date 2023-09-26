@@ -13,12 +13,12 @@ pub use codec::*;
 pub use common::*;
 pub use document::{Doc, DocOptions};
 pub use history::{History, HistoryOptions, StoreHistory};
+use smol_str::SmolStr;
 pub(crate) use store::DocStore;
 pub use types::*;
 pub use utils::*;
 
 use super::*;
-use smol_str::SmolStr;
 
 /// NOTE:
 ///   - We do not use [HashMap::with_capacity(num_of_clients)] directly here
