@@ -4,8 +4,6 @@ use std::{
     ops::{Deref, Range},
 };
 
-use lasso::ThreadedRodeo;
-
 use super::*;
 use crate::{
     doc::StateVector,
@@ -23,10 +21,6 @@ pub(crate) struct DocStore {
 
     // following fields are only used in memory
     pub types: HashMap<String, YTypeRef>,
-
-    // string interner
-    pub interner: Arc<ThreadedRodeo>,
-
     // types created from this store but with no names,
     // we store it here to keep the ownership inside store without being released.
     pub dangling_types: HashMap<usize, YTypeRef>,
@@ -178,7 +172,6 @@ impl DocStore {
         parent_sub: Option<String>,
     ) -> ItemRef {
         let id = (self.client(), self.get_state(self.client())).into();
-        let parent_sub = parent_sub.map(|s| self.interner.get_or_intern(s));
         let item = Somr::new(Item::new(id, content, left, right, parent, parent_sub));
 
         if let Content::Type(ty) = &item.get().unwrap().content {
@@ -487,11 +480,7 @@ impl DocStore {
                         let mut conflict = if let Some(left) = left.get() {
                             left.right.clone()
                         } else if let Some(parent_sub) = &this.parent_sub {
-                            parent
-                                .map
-                                .get(self.interner.resolve(&parent_sub))
-                                .cloned()
-                                .unwrap_or(Somr::none())
+                            parent.map.get(parent_sub).cloned().unwrap_or(Somr::none())
                         } else {
                             parent.start.clone()
                         };
@@ -551,11 +540,7 @@ impl DocStore {
                     } else {
                         // no left, parent.start = this
                         right = if let Some(parent_sub) = &this.parent_sub {
-                            parent
-                                .map
-                                .get(self.interner.resolve(&parent_sub))
-                                .map(|n| Node::Item(n.clone()).head())
-                                .into()
+                            parent.map.get(parent_sub).map(|n| Node::Item(n.clone()).head()).into()
                         } else {
                             mem::replace(&mut parent.start, item_owner_ref.clone())
                         };
@@ -573,9 +558,7 @@ impl DocStore {
                     } else {
                         // no right, parent.start = this, delete this.left
                         if let Some(parent_sub) = &this.parent_sub {
-                            parent
-                                .map
-                                .insert(self.interner.resolve(&parent_sub).to_string(), item_owner_ref.clone());
+                            parent.map.insert(parent_sub.to_string(), item_owner_ref.clone());
 
                             if let Some(left) = this.left.get() {
                                 self.delete_item(left, Some(parent));
@@ -738,7 +721,6 @@ impl DocStore {
         let mut update = Update {
             structs: update_structs,
             delete_set: Self::generate_delete_set(&self.items),
-            interner: self.interner.clone(),
             ..Update::default()
         };
 

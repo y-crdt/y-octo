@@ -3,7 +3,6 @@ use std::{
     sync::Arc,
 };
 
-use lasso::ThreadedRodeo;
 use serde::{Deserialize, Serialize};
 
 use super::{store::StoreRef, *};
@@ -26,17 +25,14 @@ pub struct HistoryOptions {
 
 #[derive(Debug, Clone, Default)]
 pub struct StoreHistory {
-    interner: Arc<ThreadedRodeo>,
     store: StoreRef,
     parents: Arc<RwLock<HashMap<Id, Somr<Item>>>>,
 }
 
 impl StoreHistory {
     pub(crate) fn new(store: &StoreRef) -> Self {
-        let interner = store.read().unwrap().interner.clone();
         Self {
             store: store.clone(),
-            interner,
             ..Default::default()
         }
     }
@@ -122,7 +118,7 @@ impl StoreHistory {
 
             histories.push(History {
                 id: item.id.to_string(),
-                parent: self.parse_path(item, &parents),
+                parent: Self::parse_path(item, &parents),
                 content: Value::from(&item.content).to_string(),
             })
         }
@@ -130,12 +126,12 @@ impl StoreHistory {
         histories
     }
 
-    fn parse_path(&self, item: &Item, parents: &HashMap<Id, Somr<Item>>) -> Vec<String> {
+    fn parse_path(item: &Item, parents: &HashMap<Id, Somr<Item>>) -> Vec<String> {
         let mut path = Vec::new();
         let mut cur = item.clone();
 
         while let Some(node) = cur.find_node_with_parent_info() {
-            path.push(self.get_node_name(&node));
+            path.push(Self::get_node_name(&node));
 
             match Self::get_parent(parents, &node.parent) {
                 ParentNode::Root(name) => {
@@ -159,9 +155,9 @@ impl StoreHistory {
         path
     }
 
-    fn get_node_name(&self, item: &Item) -> String {
-        if let Some(name) = item.parent_sub.as_ref() {
-            self.interner.resolve(&name).to_string()
+    fn get_node_name(item: &Item) -> String {
+        if let Some(name) = item.parent_sub.clone() {
+            name
         } else {
             let mut curr = item.clone();
             let mut idx = 0;

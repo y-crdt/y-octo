@@ -1,7 +1,4 @@
-use lasso::Spur;
-
 use super::*;
-use crate::sync::{AtomicU8, Ordering};
 
 #[derive(Debug, Clone)]
 #[cfg_attr(test, derive(proptest_derive::Arbitrary))]
@@ -10,108 +7,6 @@ pub(crate) enum Parent {
     Type(YTypeRef),
     String(String),
     Id(Id),
-}
-
-#[rustfmt::skip]
-#[allow(dead_code)]
-pub mod item_flags {
-    pub const ITEM_KEEP                 : u8 = 0b0000_0001;
-    pub const ITEM_COUNTABLE            : u8 = 0b0000_0010;
-    pub const ITEM_DELETED              : u8 = 0b0000_0100;
-    pub const ITEM_MARKED               : u8 = 0b0000_1000;
-    pub const ITEM_HAS_PARENT_SUB       : u8 = 0b0010_0000;
-    pub const ITEM_HAS_RIGHT_ID         : u8 = 0b0100_0000;
-    pub const ITEM_HAS_LEFT_ID          : u8 = 0b1000_0000;
-    pub const ITEM_HAS_SIBLING          : u8 = 0b1100_0000;
-}
-
-#[derive(Debug)]
-pub struct ItemFlags(AtomicU8);
-
-impl Default for ItemFlags {
-    fn default() -> Self {
-        Self(AtomicU8::new(0))
-    }
-}
-
-impl Clone for ItemFlags {
-    fn clone(&self) -> Self {
-        Self(AtomicU8::new(self.0.load(Ordering::Acquire)))
-    }
-}
-
-impl From<u8> for ItemFlags {
-    fn from(flags: u8) -> Self {
-        Self(AtomicU8::new(flags))
-    }
-}
-
-#[allow(dead_code)]
-impl ItemFlags {
-    #[inline(always)]
-    pub fn set(&self, flag: u8) {
-        self.0.fetch_or(flag, Ordering::SeqCst);
-    }
-
-    #[inline(always)]
-    pub fn clear(&self, flag: u8) {
-        self.0.fetch_and(flag, Ordering::SeqCst);
-    }
-
-    #[inline(always)]
-    pub fn check(&self, flag: u8) -> bool {
-        self.0.load(Ordering::Acquire) & flag == flag
-    }
-
-    #[inline(always)]
-    pub fn not(&self, flag: u8) -> bool {
-        self.0.load(Ordering::Acquire) & flag == 0
-    }
-
-    #[inline(always)]
-    pub fn keep(&self) -> bool {
-        self.check(item_flags::ITEM_KEEP)
-    }
-
-    #[inline(always)]
-    pub fn set_keep(&self) {
-        self.set(item_flags::ITEM_KEEP);
-    }
-
-    #[inline(always)]
-    pub fn clear_keep(&self) {
-        self.clear(item_flags::ITEM_KEEP);
-    }
-
-    #[inline(always)]
-    pub fn countable(&self) -> bool {
-        self.check(item_flags::ITEM_COUNTABLE)
-    }
-
-    #[inline(always)]
-    pub fn set_countable(&self) {
-        self.set(item_flags::ITEM_COUNTABLE);
-    }
-
-    #[inline(always)]
-    pub fn clear_countable(&self) {
-        self.clear(!item_flags::ITEM_COUNTABLE);
-    }
-
-    #[inline(always)]
-    pub fn deleted(&self) -> bool {
-        self.check(item_flags::ITEM_DELETED)
-    }
-
-    #[inline(always)]
-    pub fn set_deleted(&self) {
-        self.set(item_flags::ITEM_DELETED);
-    }
-
-    #[inline(always)]
-    pub fn clear_deleted(&self) {
-        self.clear(!item_flags::ITEM_DELETED);
-    }
 }
 
 #[derive(Clone)]
@@ -125,11 +20,10 @@ pub(crate) struct Item {
     #[cfg_attr(all(test, not(loom)), proptest(value = "Somr::none()"))]
     pub right: ItemRef,
     pub parent: Option<Parent>,
-    #[cfg_attr(all(test, not(loom)), proptest(value = "Option::<Spur>::None"))]
-    pub parent_sub: Option<Spur>,
+    pub parent_sub: Option<String>,
     pub content: Content,
-    #[cfg_attr(all(test, not(loom)), proptest(value = "ItemFlags::default()"))]
-    pub flags: ItemFlags,
+    #[cfg_attr(all(test, not(loom)), proptest(value = "ItemFlag::default()"))]
+    pub flags: ItemFlag,
 }
 
 // make all Item readonly
@@ -188,7 +82,7 @@ impl Default for Item {
             parent: None,
             parent_sub: None,
             content: Content::Deleted(0),
-            flags: ItemFlags::from(0),
+            flags: ItemFlag::from(0),
         }
     }
 }
@@ -200,9 +94,9 @@ impl Item {
         left: Somr<Item>,
         right: Somr<Item>,
         parent: Option<Parent>,
-        parent_sub: Option<Spur>,
+        parent_sub: Option<String>,
     ) -> Self {
-        let flags = ItemFlags::from(if content.countable() {
+        let flags = ItemFlag::from(if content.countable() {
             item_flags::ITEM_COUNTABLE
         } else {
             0
@@ -328,7 +222,7 @@ impl Item {
     }
 
     pub fn read<R: CrdtReader>(decoder: &mut R, id: Id, info: u8, first_5_bit: u8) -> JwstCodecResult<Self> {
-        let flags: ItemFlags = info.into();
+        let flags: ItemFlag = info.into();
         let has_left_id = flags.check(item_flags::ITEM_HAS_LEFT_ID);
         let has_right_id = flags.check(item_flags::ITEM_HAS_RIGHT_ID);
         let has_parent_sub = flags.check(item_flags::ITEM_HAS_PARENT_SUB);
@@ -361,7 +255,7 @@ impl Item {
                 }
             },
             parent_sub: if has_not_sibling && has_parent_sub {
-                Some(decoder.read_intern_var_string()?)
+                Some(decoder.read_var_string()?)
             } else {
                 None
             },
@@ -373,7 +267,7 @@ impl Item {
             },
             left: Somr::none(),
             right: Somr::none(),
-            flags: ItemFlags::from(0),
+            flags: ItemFlag::from(0),
         };
 
         if item.content.countable() {
@@ -430,7 +324,7 @@ impl Item {
             }
 
             if let Some(parent_sub) = &self.parent_sub {
-                encoder.write_intern_var_string(parent_sub)?;
+                encoder.write_var_string(parent_sub)?;
             }
         }
 
@@ -484,10 +378,10 @@ mod tests {
             item.flags.set_countable();
         }
 
-        let mut encoder = RawEncoder::new(Default::default());
+        let mut encoder = RawEncoder::default();
         item.write(&mut encoder)?;
 
-        let mut decoder = RawDecoder::new(encoder.into_inner(), Default::default());
+        let mut decoder = RawDecoder::new(encoder.into_inner());
 
         let info = decoder.read_info()?;
         let first_5_bit = info & 0b11111;

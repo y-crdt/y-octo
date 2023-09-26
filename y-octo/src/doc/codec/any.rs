@@ -596,11 +596,11 @@ mod tests {
             .collect(),
         );
 
-        let mut encoder = RawEncoder::new(Default::default());
+        let mut encoder = RawEncoder::default();
         any.write(&mut encoder).unwrap();
         let encoded = encoder.into_inner();
 
-        let mut decoder = RawDecoder::new(encoded, Default::default());
+        let mut decoder = RawDecoder::new(encoded);
         let decoded = Any::read(&mut decoder).unwrap();
 
         assert_eq!(any, decoded);
@@ -611,11 +611,11 @@ mod tests {
         #[cfg_attr(miri, ignore)]
         fn test_random_any(any in vec(any::<Any>(), 0..100)) {
             for any in &any {
-                let mut encoder = RawEncoder::new(Default::default());
+                let mut encoder = RawEncoder::default();
                 any.write(&mut encoder).unwrap();
                 let encoded = encoder.into_inner();
 
-                let mut decoder = RawDecoder::new(encoded, Default::default());
+                let mut decoder = RawDecoder::new(encoded);
                 let decoded = Any::read(&mut decoder).unwrap();
 
                 assert_eq!(any, &decoded);

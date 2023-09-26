@@ -1,7 +1,6 @@
 use std::io::{Cursor, Error};
 
 use byteorder::{BigEndian, ReadBytesExt};
-use lasso::Spur;
 
 use super::*;
 
@@ -30,7 +29,6 @@ pub trait CrdtReader {
     // basic read functions
     fn get_buffer(&self) -> &Cursor<Vec<u8>>;
     fn get_buffer_mut(&mut self) -> &mut Cursor<Vec<u8>>;
-    fn get_string_interner(&self) -> Arc<ThreadedRodeo>;
     fn read_var_u64(&mut self) -> JwstCodecResult<u64> {
         read_with_cursor(self.get_buffer_mut(), read_var_u64)
     }
@@ -39,10 +37,6 @@ pub trait CrdtReader {
     }
     fn read_var_string(&mut self) -> JwstCodecResult<String> {
         read_with_cursor(self.get_buffer_mut(), read_var_string)
-    }
-    fn read_intern_var_string(&mut self) -> JwstCodecResult<Spur> {
-        let string = read_with_cursor(self.get_buffer_mut(), read_var_string)?;
-        Ok(self.get_string_interner().get_or_intern(string))
     }
     fn read_var_buffer(&mut self) -> JwstCodecResult<Vec<u8>> {
         read_with_cursor(self.get_buffer_mut(), |i| {

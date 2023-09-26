@@ -222,7 +222,7 @@ impl Doc {
     }
 
     pub fn apply_update_from_binary(&mut self, update: Vec<u8>) -> JwstCodecResult<Update> {
-        let mut decoder = RawDecoder::new(update, self.store.read().unwrap().interner.clone());
+        let mut decoder = RawDecoder::new(update);
         let update = Update::read(&mut decoder)?;
         self.apply_update(update)
     }
@@ -346,7 +346,7 @@ impl Doc {
     pub fn encode_state_as_update_v1(&self, sv: &StateVector) -> JwstCodecResult<Vec<u8>> {
         let update = self.encode_state_as_update(sv)?;
 
-        let mut encoder = RawEncoder::new(self.store.read().unwrap().interner.clone());
+        let mut encoder = RawEncoder::default();
         update.write(&mut encoder)?;
         Ok(encoder.into_inner())
     }

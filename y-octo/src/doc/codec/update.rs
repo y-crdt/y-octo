@@ -11,8 +11,6 @@ pub struct Update {
     pub(crate) structs: HashMap<u64, VecDeque<Node>>,
     pub(crate) delete_set: DeleteSet,
 
-    pub(crate) interner: Arc<ThreadedRodeo>,
-
     /// all unapplicable items that we can't integrate into doc
     /// any item with inconsistent id clock or missing dependency will be put
     /// here
@@ -92,14 +90,12 @@ impl<W: CrdtWriter> CrdtWrite<W> for Update {
 
 impl Update {
     // decode from ydoc v1
-    pub fn from_ybinary1(buffer: Vec<u8>, interner: Arc<ThreadedRodeo>) -> JwstCodecResult<Update> {
-        let mut update = Update::read(&mut RawDecoder::new(buffer, interner.clone()))?;
-        update.interner = interner;
-        Ok(update)
+    pub fn from_ybinary1(buffer: Vec<u8>) -> JwstCodecResult<Update> {
+        Update::read(&mut RawDecoder::new(buffer))
     }
 
     pub fn into_ybinary1(self) -> JwstCodecResult<Vec<u8>> {
-        let mut encoder = RawEncoder::new(self.interner.clone());
+        let mut encoder = RawEncoder::default();
         self.write(&mut encoder)?;
         Ok(encoder.into_inner())
     }
@@ -462,7 +458,7 @@ mod tests {
     }
 
     fn parse_doc_update(input: Vec<u8>) -> JwstCodecResult<Update> {
-        Update::from_ybinary1(input, Default::default())
+        Update::from_ybinary1(input)
     }
 
     #[test]
