@@ -18,6 +18,7 @@ pub use types::*;
 pub use utils::*;
 
 use super::*;
+use smol_str::SmolStr;
 
 /// NOTE:
 ///   - We do not use [HashMap::with_capacity(num_of_clients)] directly here

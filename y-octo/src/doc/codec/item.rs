@@ -5,7 +5,8 @@ use super::*;
 pub(crate) enum Parent {
     #[cfg_attr(test, proptest(skip))]
     Type(YTypeRef),
-    String(String),
+    #[cfg_attr(all(test, not(loom)), proptest(value = "Parent::String(SmolStr::default())"))]
+    String(SmolStr),
     Id(Id),
 }
 
@@ -20,7 +21,8 @@ pub(crate) struct Item {
     #[cfg_attr(all(test, not(loom)), proptest(value = "Somr::none()"))]
     pub right: ItemRef,
     pub parent: Option<Parent>,
-    pub parent_sub: Option<String>,
+    #[cfg_attr(all(test, not(loom)), proptest(value = "Option::<SmolStr>::None"))]
+    pub parent_sub: Option<SmolStr>,
     pub content: Content,
     #[cfg_attr(all(test, not(loom)), proptest(value = "ItemFlag::default()"))]
     pub flags: ItemFlag,
@@ -94,7 +96,7 @@ impl Item {
         left: Somr<Item>,
         right: Somr<Item>,
         parent: Option<Parent>,
-        parent_sub: Option<String>,
+        parent_sub: Option<SmolStr>,
     ) -> Self {
         let flags = ItemFlag::from(if content.countable() {
             item_flags::ITEM_COUNTABLE
@@ -246,7 +248,7 @@ impl Item {
                 if has_not_sibling {
                     let has_parent = decoder.read_var_u64()? == 1;
                     Some(if has_parent {
-                        Parent::String(decoder.read_var_string()?)
+                        Parent::String(SmolStr::new(decoder.read_var_string()?))
                     } else {
                         Parent::Id(decoder.read_item_id()?)
                     })
@@ -255,7 +257,7 @@ impl Item {
                 }
             },
             parent_sub: if has_not_sibling && has_parent_sub {
-                Some(decoder.read_var_string()?)
+                Some(SmolStr::new(decoder.read_var_string()?))
             } else {
                 None
             },
