@@ -11,7 +11,7 @@ version = "0.0.1"
 bench   = ["regex"]
 default = ["merger"]
 fuzz    = ["arbitrary", "phf"]
-merger  = ["clap", "y-octo", "y-octo/large_refs"]
+merger  = ["clap", "y-octo/large_refs"]
 
 [dependencies]
 arbitrary   = { version = "1.3.0", features = ["derive"], optional = true }
