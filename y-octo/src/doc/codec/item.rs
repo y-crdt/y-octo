@@ -199,6 +199,13 @@ impl Item {
             self.parent_sub.clone(),
         );
 
+        if left_item.deleted() {
+            left_item.flags.set_deleted();
+        }
+        if left_item.keep() {
+            left_item.flags.set_keep();
+        }
+
         Ok((left_item, right_item))
     }
 
@@ -322,6 +329,8 @@ impl Item {
                     }
                 }
             } else {
+                // if item delete, it must not exists in crdt state tree
+                debug_assert!(!self.deleted());
                 return Err(JwstCodecError::ParentNotFound);
             }
 

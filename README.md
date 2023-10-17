@@ -82,7 +82,7 @@ Put everything to the test! We've established various test suites, but we're con
 
 ## Why not [yrs](https://github.com/y-crdt/y-crdt/)
 
-See [Why we're not using yrs](./y-octo/yrs-is-unsafe/README.md)
+See [Why we're not using yrs](./y-octo-utils/yrs-is-unsafe/README.md)
 
 ## License
 
