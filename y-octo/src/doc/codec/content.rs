@@ -219,7 +219,10 @@ impl Content {
         match self {
             Self::Deleted(len) => *len,
             Self::Json(strings) => strings.len() as u64,
-            Self::String(string) => string.encode_utf16().count() as u64,
+            Self::String(string) => string
+                .chars()
+                .map(|c| if c as u32 <= 0xFFFF { 1 } else { 2 })
+                .sum::<u64>(),
             Self::Any(any) => any.len() as u64,
             Self::Binary(_) | Self::Embed(_) | Self::Format { .. } | Self::Type(_) | Self::Doc { .. } => 1,
         }
