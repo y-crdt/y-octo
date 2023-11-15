@@ -1,5 +1,5 @@
 use std::{
-    collections::{hash_map::Entry, HashMap},
+    collections::{hash_map::Entry, HashMap, VecDeque},
     ops::{Deref, DerefMut, Range},
 };
 
@@ -28,10 +28,10 @@ impl<R: CrdtReader> CrdtRead<R> for OrderRange {
         if num_of_deletes == 1 {
             Ok(OrderRange::Range(Range::<u64>::read(decoder)?))
         } else {
-            let mut deletes = Vec::with_capacity(num_of_deletes);
+            let mut deletes = VecDeque::with_capacity(num_of_deletes);
 
             for _ in 0..num_of_deletes {
-                deletes.push(Range::<u64>::read(decoder)?);
+                deletes.push_back(Range::<u64>::read(decoder)?);
             }
 
             Ok(OrderRange::Fragment(deletes))
@@ -106,7 +106,6 @@ impl DeleteSet {
         }
     }
 
-    #[allow(dead_code)]
     pub fn batch_push(&mut self, client: Client, ranges: Vec<Range<u64>>) {
         match self.0.entry(client) {
             Entry::Occupied(e) => {
@@ -188,7 +187,7 @@ mod tests {
         {
             let mut delete_set = delete_set;
             delete_set.add(1, 5, 10);
-            assert_eq!(delete_set.get(&1), Some(&OrderRange::Fragment(vec![0..15, 20..30])));
+            assert_eq!(delete_set.get(&1), Some(&OrderRange::from(vec![0..15, 20..30])));
         }
     }
 
@@ -210,7 +209,7 @@ mod tests {
         {
             let mut delete_set = delete_set;
             delete_set.batch_push(1, vec![40..50, 10..20]);
-            assert_eq!(delete_set.get(&1), Some(&OrderRange::Fragment(vec![0..30, 40..50])));
+            assert_eq!(delete_set.get(&1), Some(&OrderRange::from(vec![0..30, 40..50])));
         }
     }
 

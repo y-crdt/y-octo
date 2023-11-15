@@ -5,12 +5,9 @@ mod text;
 mod value;
 mod xml;
 
-use std::{
-    collections::{hash_map::Entry, HashMap},
-    sync::Weak,
-};
+use std::{collections::hash_map::Entry, sync::Weak};
 
-use ahash::RandomState;
+use ahash::HashMap;
 pub use array::*;
 use list::*;
 pub use map::*;
@@ -31,7 +28,7 @@ use crate::{
 pub(crate) struct YType {
     pub start: Somr<Item>,
     pub item: Somr<Item>,
-    pub map: HashMap<String, Somr<Item>, RandomState>,
+    pub map: HashMap<String, Somr<Item>>,
     pub len: u64,
     /// The tag name of XMLElement and XMLHook type
     pub name: Option<String>,

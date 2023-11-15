@@ -1,7 +1,6 @@
-use std::{
-    collections::{HashMap, VecDeque},
-    ops::Range,
-};
+use std::{collections::VecDeque, ops::Range};
+
+use ahash::{HashMap, HashMapExt};
 
 use super::*;
 use crate::doc::StateVector;
@@ -531,7 +530,7 @@ mod tests {
     fn test_update_iterator() {
         loom_model!({
             let mut update = Update {
-                structs: HashMap::from([
+                structs: HashMap::from_iter([
                     (
                         0,
                         VecDeque::from([
@@ -571,7 +570,7 @@ mod tests {
         loom_model!({
             let mut update = Update {
                 // an item with higher sequence id than local state
-                structs: HashMap::from([(0, VecDeque::from([struct_item((0, 4), 1)]))]),
+                structs: HashMap::from_iter([(0, VecDeque::from([struct_item((0, 4), 1)]))]),
                 ..Update::default()
             };
 
@@ -623,7 +622,7 @@ mod tests {
     fn should_add_skip_when_clock_not_continuous() {
         loom_model!({
             let update = Update {
-                structs: HashMap::from([(
+                structs: HashMap::from_iter([(
                     0,
                     VecDeque::from([
                         struct_item((0, 0), 1),
@@ -655,7 +654,7 @@ mod tests {
     fn merged_update_should_not_be_released_in_next_turn() {
         loom_model!({
             let update = Update {
-                structs: HashMap::from([(
+                structs: HashMap::from_iter([(
                     0,
                     VecDeque::from([
                         struct_item((0, 0), 1),
@@ -670,7 +669,7 @@ mod tests {
             let merged = Update::merge([update]);
 
             let update2 = Update {
-                structs: HashMap::from([(
+                structs: HashMap::from_iter([(
                     0,
                     VecDeque::from([struct_item((0, 30), 1), Node::new_gc((0, 32).into(), 1)]),
                 )]),
