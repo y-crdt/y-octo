@@ -791,11 +791,15 @@ impl DocStore {
         let mut delete_set = DeleteSet::default();
 
         for (client, nodes) in refs {
-            for node in nodes {
-                if node.deleted() {
-                    delete_set.add(*client, node.id().clock, node.len());
-                }
-            }
+            let ranges = nodes
+                .iter()
+                .filter(|n| n.deleted())
+                .map(|n| {
+                    let clock = n.id().clock;
+                    clock..clock + n.len()
+                })
+                .collect();
+            delete_set.batch_push(*client, ranges);
         }
 
         delete_set
