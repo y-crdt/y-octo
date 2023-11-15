@@ -256,7 +256,7 @@ impl OrderRange {
             merged.push(cur);
 
             if merged.len() == 1 {
-                *self = OrderRange::Range(ranges[0].clone());
+                *self = OrderRange::Range(merged[0].clone());
             } else if changed {
                 mem::swap(ranges, &mut merged.into_iter().collect());
             }
