@@ -1,9 +1,10 @@
-use ahash::RandomState;
 use std::{
     collections::{hash_map::Entry, HashMap, HashSet, VecDeque},
     mem,
     ops::{Deref, Range},
 };
+
+use ahash::RandomState;
 
 use super::*;
 use crate::{
@@ -799,8 +800,10 @@ impl DocStore {
                     let clock = n.id().clock;
                     clock..clock + n.len()
                 })
-                .collect();
-            delete_set.batch_push(*client, ranges);
+                .collect::<Vec<_>>();
+            if ranges.len() > 0 {
+                delete_set.batch_push(*client, ranges);
+            }
         }
 
         delete_set

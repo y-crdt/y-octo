@@ -1,8 +1,9 @@
-use ahash::{HashMapExt, RandomState};
 use std::{
     collections::HashMap,
     ops::{Deref, DerefMut},
 };
+
+use ahash::{HashMapExt, RandomState};
 
 use crate::{Client, Clock, CrdtRead, CrdtReader, CrdtWrite, CrdtWriter, Id, JwstCodecResult, HASHMAP_SAFE_CAPACITY};
 
