@@ -1,3 +1,4 @@
+use ahash::RandomState;
 use std::{
     collections::{hash_map::Entry, HashMap, HashSet, VecDeque},
     mem,
@@ -16,7 +17,7 @@ unsafe impl Sync for DocStore {}
 #[derive(Default, Debug)]
 pub(crate) struct DocStore {
     client: Client,
-    pub items: HashMap<Client, VecDeque<Node>>,
+    pub items: HashMap<Client, VecDeque<Node>, RandomState>,
     pub delete_set: DeleteSet,
 
     // following fields are only used in memory
@@ -101,7 +102,7 @@ impl DocStore {
         Self::items_as_state_vector(&self.items)
     }
 
-    fn items_as_state_vector(items: &HashMap<Client, VecDeque<Node>>) -> StateVector {
+    fn items_as_state_vector(items: &HashMap<Client, VecDeque<Node>, RandomState>) -> StateVector {
         let mut state = StateVector::default();
         for (client, structs) in items.iter() {
             if let Some(last_struct) = structs.back() {
@@ -747,7 +748,7 @@ impl DocStore {
     }
 
     fn diff_structs(
-        map: &HashMap<Client, VecDeque<Node>>,
+        map: &HashMap<Client, VecDeque<Node>, RandomState>,
         sv: &StateVector,
     ) -> JwstCodecResult<HashMap<Client, VecDeque<Node>>> {
         let local_state_vector = Self::items_as_state_vector(map);
@@ -787,7 +788,7 @@ impl DocStore {
         Ok(update_structs)
     }
 
-    fn generate_delete_set(refs: &HashMap<Client, VecDeque<Node>>) -> DeleteSet {
+    fn generate_delete_set(refs: &HashMap<Client, VecDeque<Node>, RandomState>) -> DeleteSet {
         let mut delete_set = DeleteSet::default();
 
         for (client, nodes) in refs {

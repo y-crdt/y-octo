@@ -10,6 +10,7 @@ use std::{
     sync::Weak,
 };
 
+use ahash::RandomState;
 pub use array::*;
 use list::*;
 pub use map::*;
@@ -30,7 +31,7 @@ use crate::{
 pub(crate) struct YType {
     pub start: Somr<Item>,
     pub item: Somr<Item>,
-    pub map: HashMap<String, Somr<Item>>,
+    pub map: HashMap<String, Somr<Item>, RandomState>,
     pub len: u64,
     /// The tag name of XMLElement and XMLHook type
     pub name: Option<String>,

@@ -35,7 +35,7 @@ pub struct DocOptions {
 
 impl Default for DocOptions {
     fn default() -> Self {
-        if cfg!(test) {
+        if cfg!(any(test, feature = "bench")) {
             Self {
                 client_id: 1,
                 guid: "test".into(),
