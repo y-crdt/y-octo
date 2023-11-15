@@ -9,7 +9,7 @@ mod store;
 mod types;
 mod utils;
 
-pub use ahash::{HashMap, HashMapExt};
+pub use ahash::{HashMap, HashMapExt, HashSet, HashSetExt};
 pub use awareness::{Awareness, AwarenessEvent};
 pub use codec::*;
 pub use common::*;

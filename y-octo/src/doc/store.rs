@@ -1,5 +1,5 @@
 use std::{
-    collections::{hash_map::Entry, HashSet, VecDeque},
+    collections::{hash_map::Entry, VecDeque},
     mem,
     ops::{Deref, Range},
 };
