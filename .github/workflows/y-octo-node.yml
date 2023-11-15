@@ -38,7 +38,6 @@ jobs:
     runs-on: ${{ matrix.settings.host }}
     env:
       RUSTFLAGS: "-C debuginfo=1"
-    environment: development
     steps:
       - uses: actions/checkout@v3
       - name: Setup Node.js
