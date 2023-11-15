@@ -4,8 +4,6 @@ use std::{
     ops::{Deref, Range},
 };
 
-use ahash::{HashMap, HashMapExt};
-
 use super::*;
 use crate::{
     doc::StateVector,
@@ -18,7 +16,7 @@ unsafe impl Sync for DocStore {}
 #[derive(Default, Debug)]
 pub(crate) struct DocStore {
     client: Client,
-    pub items: HashMap<Client, VecDeque<Node>>,
+    pub items: ClientMap<VecDeque<Node>>,
     pub delete_set: DeleteSet,
 
     // following fields are only used in memory
@@ -103,7 +101,7 @@ impl DocStore {
         Self::items_as_state_vector(&self.items)
     }
 
-    fn items_as_state_vector(items: &HashMap<Client, VecDeque<Node>>) -> StateVector {
+    fn items_as_state_vector(items: &ClientMap<VecDeque<Node>>) -> StateVector {
         let mut state = StateVector::default();
         for (client, structs) in items.iter() {
             if let Some(last_struct) = structs.back() {
@@ -760,13 +758,10 @@ impl DocStore {
         Ok(update)
     }
 
-    fn diff_structs(
-        map: &HashMap<Client, VecDeque<Node>>,
-        sv: &StateVector,
-    ) -> JwstCodecResult<HashMap<Client, VecDeque<Node>>> {
+    fn diff_structs(map: &ClientMap<VecDeque<Node>>, sv: &StateVector) -> JwstCodecResult<ClientMap<VecDeque<Node>>> {
         let local_state_vector = Self::items_as_state_vector(map);
         let diff = Self::diff_state_vectors(&local_state_vector, sv);
-        let mut update_structs = HashMap::new();
+        let mut update_structs = ClientMap::new();
 
         for (client, clock) in diff {
             // We have made sure that the client is in the local state vector in
@@ -801,7 +796,7 @@ impl DocStore {
         Ok(update_structs)
     }
 
-    fn generate_delete_set(refs: &HashMap<Client, VecDeque<Node>>) -> DeleteSet {
+    fn generate_delete_set(refs: &ClientMap<VecDeque<Node>>) -> DeleteSet {
         let mut delete_set = DeleteSet::default();
 
         for (client, nodes) in refs {

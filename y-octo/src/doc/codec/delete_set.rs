@@ -1,5 +1,5 @@
 use std::{
-    collections::{hash_map::Entry, HashMap, VecDeque},
+    collections::{hash_map::Entry, VecDeque},
     ops::{Deref, DerefMut, Range},
 };
 
@@ -59,10 +59,10 @@ impl<W: CrdtWriter> CrdtWrite<W> for OrderRange {
 }
 
 #[derive(Debug, Default, Clone, PartialEq)]
-pub struct DeleteSet(pub HashMap<Client, OrderRange>);
+pub struct DeleteSet(pub ClientMap<OrderRange>);
 
 impl Deref for DeleteSet {
-    type Target = HashMap<Client, OrderRange>;
+    type Target = ClientMap<OrderRange>;
 
     fn deref(&self) -> &Self::Target {
         &self.0
@@ -71,7 +71,7 @@ impl Deref for DeleteSet {
 
 impl<const N: usize> From<[(Client, Vec<Range<u64>>); N]> for DeleteSet {
     fn from(value: [(Client, Vec<Range<u64>>); N]) -> Self {
-        let mut map = HashMap::with_capacity(N);
+        let mut map = ClientMap::with_capacity(N);
         for (client, ranges) in value {
             map.insert(client, ranges.into());
         }
@@ -135,7 +135,7 @@ impl<R: CrdtReader> CrdtRead<R> for DeleteSet {
     fn read(decoder: &mut R) -> JwstCodecResult<Self> {
         let num_of_clients = decoder.read_var_u64()? as usize;
         // See: [HASHMAP_SAFE_CAPACITY]
-        let mut map = HashMap::with_capacity(num_of_clients.min(HASHMAP_SAFE_CAPACITY));
+        let mut map = ClientMap::with_capacity(num_of_clients.min(HASHMAP_SAFE_CAPACITY));
 
         for _ in 0..num_of_clients {
             let client = decoder.read_var_u64()?;

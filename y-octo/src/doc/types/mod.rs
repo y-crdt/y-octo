@@ -7,7 +7,6 @@ mod xml;
 
 use std::{collections::hash_map::Entry, sync::Weak};
 
-use ahash::HashMap;
 pub use array::*;
 use list::*;
 pub use map::*;
