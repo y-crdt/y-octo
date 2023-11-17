@@ -1,7 +1,5 @@
-use std::collections::HashMap;
-
 use napi::{bindgen_prelude::Either4, Env, Error, JsObject, JsUnknown, Result, Status, ValueType};
-use y_octo::{Any, Value};
+use y_octo::{AHashMap, Any, HashMapExt, Value};
 
 use super::*;
 
@@ -55,7 +53,7 @@ pub fn get_any_from_js_object(object: JsObject) -> Result<Any> {
         }
         Ok(Any::Array(array))
     } else {
-        let mut map = HashMap::new();
+        let mut map = AHashMap::new();
         let keys = object.get_property_names()?;
         if let Ok(length) = keys.get_array_length() {
             for i in 0..length {
