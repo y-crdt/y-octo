@@ -5,7 +5,7 @@ use std::{
 
 use super::Client;
 
-pub struct ClientHasher(u64);
+pub struct ClientHasher(Client);
 
 impl Hasher for ClientHasher {
     fn finish(&self) -> u64 {
