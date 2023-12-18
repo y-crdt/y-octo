@@ -25,7 +25,7 @@
     "@types/prompts": "^2.4.4",
     "c8": "^8.0.1",
     "prompts": "^2.4.2",
-    "ts-node": "^10.9.1",
+    "ts-node": "^10.9.2",
     "typescript": "^5.1.6",
     "yjs": "^13.6.8"
   },
@@ -39,7 +39,7 @@
     "universal": "napi universal",
     "test": "NODE_NO_WARNINGS=1 yarn exec ts-node-esm ./scripts/run-test.mts all",
     "test:watch": "yarn exec ts-node-esm ./scripts/run-test.ts all --watch",
-    "test:coverage": "c8 yarn exec ts-node-esm ./scripts/run-test.mts all",
+    "test:coverage": "NODE_OPTIONS=\"--loader ts-node/esm\" c8 node ./scripts/run-test.mts all",
     "version": "napi version"
   },
   "version": "0.0.1",
