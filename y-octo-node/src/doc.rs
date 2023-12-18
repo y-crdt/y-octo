@@ -87,8 +87,8 @@ impl Doc {
     #[napi]
     pub fn apply_update(&mut self, update: JsBuffer) -> Result<JsBuffer> {
         self.doc
-            .apply_update_from_binary(update.to_vec())
-            .and_then(|u| u.into_ybinary1().map(|v| v.into()))
+            .apply_update_from_binary_v1(update)
+            .and_then(|u| u.encode_v1().map(|v| v.into()))
             .map_err(anyhow::Error::from)
     }
 
