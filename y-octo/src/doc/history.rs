@@ -64,7 +64,7 @@ impl StoreHistory {
 
         // make items as reference
         let mut store_items = store_items.iter().collect::<Vec<_>>();
-        store_items.sort_by(|a, b| a.id.cmp(&b.id));
+        store_items.sort_by(|a, b| a.id.clock.cmp(&b.id.clock));
 
         self.parse_items(store_items)
     }
@@ -130,7 +130,7 @@ impl StoreHistory {
 
         // make items as reference
         let mut store_items = store_items.iter().collect::<Vec<_>>();
-        store_items.sort_by(|a, b| a.id.cmp(&b.id));
+        store_items.sort_by(|a, b| a.id.clock.cmp(&b.id.clock));
 
         self.parse_items(store_items)
     }

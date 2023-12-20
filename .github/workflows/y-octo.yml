@@ -34,7 +34,7 @@ jobs:
       - name: Setup Rust
         uses: ./.github/actions/setup-rust
         with:
-          toolchain: nightly-2023-08-19
+          toolchain: nightly
           components: clippy, rustfmt
 
       - name: Install Node.js
@@ -53,8 +53,7 @@ jobs:
 
       - name: Build & Check
         run: |
-          cargo vendor > .cargo/config.toml
-          cargo clippy --all-features --message-format=json -- -D warnings | clippy-sarif | tee rust-clippy-results.sarif | sarif-fmt
+          cargo +nightly clippy --all-features --message-format=json -- -D warnings | clippy-sarif | tee rust-clippy-results.sarif | sarif-fmt
           RUSTDOCFLAGS="-D rustdoc::broken-intra-doc-links" cargo doc --workspace --all-features --no-deps
         env:
           CARGO_TERM_COLOR: always
@@ -63,7 +62,7 @@ jobs:
         run: |
           yarn prettier --check .
           yarn taplo fmt --check .
-          cargo +nightly-2023-08-19 fmt --all --check
+          cargo +nightly fmt --all --check
 
       - name: Upload analysis results to GitHub
         uses: github/codeql-action/upload-sarif@v2

@@ -9,6 +9,7 @@ pub struct YText {
 
 #[napi]
 impl YText {
+    #[allow(clippy::new_without_default)]
     #[napi(constructor)]
     pub fn new() -> Self {
         unimplemented!()
@@ -43,6 +44,7 @@ impl YText {
         self.text.len() as i64
     }
 
+    #[allow(clippy::inherent_to_string)]
     #[napi]
     pub fn to_string(&self) -> String {
         self.text.to_string()
