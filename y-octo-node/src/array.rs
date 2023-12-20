@@ -10,6 +10,7 @@ pub struct YArray {
 
 #[napi]
 impl YArray {
+    #[allow(clippy::new_without_default)]
     #[napi(constructor)]
     pub fn new() -> Self {
         unimplemented!()
