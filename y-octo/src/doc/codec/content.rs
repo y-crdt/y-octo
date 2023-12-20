@@ -219,7 +219,8 @@ impl Content {
         match self {
             Self::Deleted(len) => *len,
             Self::Json(strings) => strings.len() as u64,
-            Self::String(string) => string.encode_utf16().count() as u64,
+            // TODO: need a custom wrapper with length cached, this cost too much
+            Self::String(string) => string.chars().map(|c| c.len_utf16()).sum::<usize>() as u64,
             Self::Any(any) => any.len() as u64,
             Self::Binary(_) | Self::Embed(_) | Self::Format { .. } | Self::Type(_) | Self::Doc { .. } => 1,
         }
@@ -283,8 +284,9 @@ mod tests {
         let mut writer = RawEncoder::default();
         writer.write_u8(content.get_info())?;
         content.write(&mut writer)?;
+        let update = writer.into_inner();
 
-        let mut reader = RawDecoder::new(writer.into_inner());
+        let mut reader = RawDecoder::new(&update);
         let tag_type = reader.read_u8()?;
         assert_eq!(Content::read(&mut reader, tag_type)?, *content);
 

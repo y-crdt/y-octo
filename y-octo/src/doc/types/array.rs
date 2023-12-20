@@ -13,7 +13,7 @@ impl Iterator for ArrayIter<'_> {
         for item in self.0.by_ref() {
             if let Some(item) = item.get() {
                 if item.countable() {
-                    return Some(Value::try_from(&item.content).unwrap());
+                    return Some(Value::from(&item.content));
                 }
             }
         }
@@ -40,7 +40,7 @@ impl Array {
             // TODO: rewrite to content.read(&mut [Any])
             return match &item.content {
                 Content::Any(any) => return any.get(offset as usize).map(|any| Value::Any(any.clone())),
-                _ => Value::try_from(&item.content).map_or_else(|_| None, Some),
+                _ => Some(Value::from(&item.content)),
             };
         }
 
@@ -120,7 +120,7 @@ mod tests {
             array.insert(&mut trx, 11, "!").unwrap();
             let buffer = trx.encode_update_v1().unwrap();
 
-            let mut decoder = RawDecoder::new(buffer);
+            let mut decoder = RawDecoder::new(&buffer);
             let update = Update::read(&mut decoder).unwrap();
 
             let mut doc = Doc::with_options(options.clone());
@@ -147,7 +147,7 @@ mod tests {
             array.insert(&mut trx, 11, "!").unwrap();
             let buffer = trx.encode_update_v1().unwrap();
 
-            let mut decoder = RawDecoder::new(buffer);
+            let mut decoder = RawDecoder::new(&buffer);
             let update = Update::read(&mut decoder).unwrap();
 
             let mut doc = Doc::with_options(options.clone());
@@ -178,7 +178,7 @@ mod tests {
         };
 
         loom_model!({
-            let doc = Doc::new_from_binary_with_options(
+            let doc = Doc::try_from_binary_v1_with_options(
                 update.clone(),
                 DocOptions {
                     guid: String::from("1"),

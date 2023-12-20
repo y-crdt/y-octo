@@ -1,4 +1,4 @@
-use std::collections::hash_map::Iter;
+use std::{collections::hash_map::Iter, rc::Rc};
 
 use super::*;
 use crate::{
@@ -71,10 +71,10 @@ pub(crate) trait MapType: AsInner<Inner = YTypeRef> {
         let ty = self.as_inner().ty();
 
         if let Some(ty) = ty {
-            let ty = Arc::new(ty);
+            let ty = Rc::new(ty);
 
             EntriesInnerIterator {
-                iter: Some(unsafe { &*Arc::as_ptr(&ty) }.map.iter()),
+                iter: Some(unsafe { &*Rc::as_ptr(&ty) }.map.iter()),
                 _lock: Some(ty),
             }
         } else {
@@ -99,7 +99,7 @@ pub(crate) trait MapType: AsInner<Inner = YTypeRef> {
 }
 
 pub(crate) struct EntriesInnerIterator<'a> {
-    _lock: Option<Arc<RwLockReadGuard<'a, YType>>>,
+    _lock: Option<Rc<RwLockReadGuard<'a, YType>>>,
     iter: Option<Iter<'a, SmolStr, ItemRef>>,
 }
 
@@ -247,7 +247,7 @@ mod tests {
             map.insert("2".to_string(), false).unwrap();
 
             let binary = doc.encode_update_v1().unwrap();
-            let new_doc = Doc::new_from_binary(binary).unwrap();
+            let new_doc = Doc::try_from_binary_v1(binary).unwrap();
             let map = new_doc.get_or_create_map("map").unwrap();
             assert_eq!(map.get("1").unwrap(), Value::Any(Any::String("value".to_string())));
             assert_eq!(map.get("2").unwrap(), Value::Any(Any::False));
@@ -279,7 +279,7 @@ mod tests {
             };
 
             {
-                let doc = Doc::new_from_binary(binary).unwrap();
+                let doc = Doc::try_from_binary_v1(binary).unwrap();
                 let map = doc.get_or_create_map("map").unwrap();
                 assert_eq!(map.get("1").unwrap(), Value::Any(Any::String("value1".to_string())));
                 assert_eq!(map.get("2").unwrap(), Value::Any(Any::String("value2".to_string())));

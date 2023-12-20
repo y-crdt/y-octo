@@ -77,7 +77,6 @@ Put everything to the test! We've established various test suites, but we're con
 
 - [DarkSky](https://github.com/darkskygit)
 - [liuyi](https://github.com/forehalo)
-- [X1a0t](https://github.com/thorseraq)
 - [LongYinan](https://github.com/Brooooooklyn)
 
 ## Why not [yrs](https://github.com/y-crdt/y-crdt/)

@@ -61,6 +61,10 @@ name    = "text_ops_benchmarks"
 
 [[bench]]
 harness = false
+name    = "apply_benchmarks"
+
+[[bench]]
+harness = false
 name    = "update_benchmarks"
 
 [lib]

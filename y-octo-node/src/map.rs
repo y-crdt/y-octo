@@ -10,6 +10,7 @@ pub struct YMap {
 
 #[napi]
 impl YMap {
+    #[allow(clippy::new_without_default)]
     #[napi(constructor)]
     pub fn new() -> Self {
         unimplemented!()
