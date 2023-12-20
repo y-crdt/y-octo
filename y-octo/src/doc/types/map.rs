@@ -115,7 +115,7 @@ impl<'a> Iterator for EntriesInnerIterator<'a> {
             for (k, v) in iter {
                 if let Some(item) = v.get() {
                     if !item.deleted() {
-                        return Some((&k.as_str(), item));
+                        return Some((k.as_str(), item));
                     }
                 }
             }

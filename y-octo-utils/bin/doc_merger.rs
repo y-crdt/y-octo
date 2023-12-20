@@ -57,7 +57,7 @@ fn jwst_merge(path: &str) {
     let mut doc = Doc::default();
     for (i, update) in updates.iter().enumerate() {
         println!("apply update{i} {} bytes", update.len());
-        doc.apply_update_from_binary(update.clone()).unwrap();
+        doc.apply_update_from_binary_v1(update.clone()).unwrap();
     }
 
     println!("press enter to continue");
@@ -81,7 +81,7 @@ fn jwst_merge(path: &str) {
 
     {
         let mut doc = Doc::default();
-        doc.apply_update_from_binary(binary.clone()).unwrap();
+        doc.apply_update_from_binary_v1(binary.clone()).unwrap();
         let new_binary = doc.encode_update_v1().unwrap();
 
         println!("re-encoded {} bytes", new_binary.len(),);
