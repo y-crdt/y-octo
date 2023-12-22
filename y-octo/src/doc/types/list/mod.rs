@@ -16,16 +16,13 @@ pub(crate) struct ItemPosition {
 
 impl ItemPosition {
     pub fn forward(&mut self) {
-        if let Some(right) = self.right.get() {
-            if !right.deleted() {
-                self.index += right.len();
-            }
-
-            self.left = self.right.clone();
-            self.right = right.right.clone();
-        } else {
-            // FAIL
+        let right = unsafe { self.right.get_unchecked() };
+        if !right.deleted() {
+            self.index += right.len();
         }
+
+        self.left = self.right.clone();
+        self.right = right.right.clone();
     }
 
     /// we found a position cursor point in between a splitable item,

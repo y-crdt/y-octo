@@ -10,7 +10,7 @@ use std::{
 
 use crate::sync::Ordering;
 const DANGLING_PTR: usize = usize::MAX;
-#[inline]
+#[inline(always)]
 fn is_dangling<T>(ptr: NonNull<T>) -> bool {
     ptr.as_ptr() as usize == DANGLING_PTR
 }
@@ -103,12 +103,12 @@ impl<T> SomrInner<T> {
 }
 
 impl<T> Somr<T> {
-    #[inline]
+    #[inline(always)]
     pub fn is_none(&self) -> bool {
         self.dangling() || self.inner().data_ref().is_none()
     }
 
-    #[inline]
+    #[inline(always)]
     pub fn is_some(&self) -> bool {
         !self.dangling() && self.inner().data_ref().is_some()
     }
@@ -122,16 +122,7 @@ impl<T> Somr<T> {
     }
 
     pub unsafe fn get_unchecked(&self) -> &T {
-        if self.dangling() {
-            panic!("Try to visit Somr data that has already been dropped.")
-        }
-
-        match &self.inner().data_ref() {
-            Some(data) => data,
-            None => {
-                panic!("Try to unwrap on None")
-            }
-        }
+        &*self.inner().data.as_ref().unwrap().get()
     }
 
     #[allow(unused)]
@@ -167,7 +158,7 @@ impl<T> Somr<T> {
         }
     }
 
-    #[inline]
+    #[inline(always)]
     pub fn is_owned(&self) -> bool {
         matches!(self, Self::Owned(_))
     }
@@ -182,20 +173,20 @@ impl<T> Somr<T> {
         r
     }
 
-    #[inline]
+    #[inline(always)]
     fn inner(&self) -> &SomrInner<T> {
         debug_assert!(!self.dangling());
         unsafe { self.ptr().as_ref() }
     }
 
-    #[inline]
+    #[inline(always)]
     #[allow(clippy::mut_from_ref)]
     fn inner_mut(&self) -> &mut SomrInner<T> {
         debug_assert!(!self.dangling());
         unsafe { self.ptr().as_mut() }
     }
 
-    #[inline]
+    #[inline(always)]
     pub fn ptr(&self) -> NonNull<SomrInner<T>> {
         match self {
             Somr::Owned(ptr) => ptr.0,
@@ -203,12 +194,12 @@ impl<T> Somr<T> {
         }
     }
 
-    #[inline]
+    #[inline(always)]
     pub fn ptr_eq(&self, other: &Self) -> bool {
         self.ptr().as_ptr() as usize == other.ptr().as_ptr() as usize
     }
 
-    #[inline]
+    #[inline(always)]
     fn dangling(&self) -> bool {
         is_dangling(self.ptr())
     }
