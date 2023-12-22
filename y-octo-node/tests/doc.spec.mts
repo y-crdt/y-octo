@@ -40,7 +40,7 @@ test("doc test", { concurrency: false }, async (t) => {
     text.insert(2, "c");
 
     let doc2 = new Doc(client_id);
-    doc2.applyUpdate(doc.encodeUpdateV1());
+    doc2.applyUpdate(doc.encodeStateAsUpdateV1());
 
     let array2 = doc2.getOrCreateArray("array");
     let map2 = doc2.getOrCreateMap("map");
