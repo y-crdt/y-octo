@@ -14,7 +14,7 @@ pub mod item_flags {
 }
 
 #[derive(Debug)]
-pub struct ItemFlag(AtomicU8);
+pub struct ItemFlag(pub(self) AtomicU8);
 
 impl Default for ItemFlag {
     fn default() -> Self {
@@ -43,7 +43,7 @@ impl ItemFlag {
 
     #[inline(always)]
     pub fn clear(&self, flag: u8) {
-        self.0.fetch_and(flag, Ordering::SeqCst);
+        self.0.fetch_and(!flag, Ordering::SeqCst);
     }
 
     #[inline(always)]
@@ -83,7 +83,7 @@ impl ItemFlag {
 
     #[inline(always)]
     pub fn clear_countable(&self) {
-        self.clear(!item_flags::ITEM_COUNTABLE);
+        self.clear(item_flags::ITEM_COUNTABLE);
     }
 
     #[inline(always)]
@@ -98,6 +98,73 @@ impl ItemFlag {
 
     #[inline(always)]
     pub fn clear_deleted(&self) {
-        self.clear(!item_flags::ITEM_DELETED);
+        self.clear(item_flags::ITEM_DELETED);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_flag_set_and_clear() {
+        {
+            let flag = super::ItemFlag::default();
+            assert_eq!(flag.keep(), false);
+            flag.set_keep();
+            assert_eq!(flag.keep(), true);
+            flag.clear_keep();
+            assert_eq!(flag.keep(), false);
+            assert_eq!(
+                flag.0.load(Ordering::SeqCst),
+                ItemFlag::default().0.load(Ordering::SeqCst)
+            );
+        }
+
+        {
+            let flag = super::ItemFlag::default();
+            assert_eq!(flag.countable(), false);
+            flag.set_countable();
+            assert_eq!(flag.countable(), true);
+            flag.clear_countable();
+            assert_eq!(flag.countable(), false);
+            assert_eq!(
+                flag.0.load(Ordering::SeqCst),
+                ItemFlag::default().0.load(Ordering::SeqCst)
+            );
+        }
+
+        {
+            let flag = super::ItemFlag::default();
+            assert_eq!(flag.deleted(), false);
+            flag.set_deleted();
+            assert_eq!(flag.deleted(), true);
+            flag.clear_deleted();
+            assert_eq!(flag.deleted(), false);
+            assert_eq!(
+                flag.0.load(Ordering::SeqCst),
+                ItemFlag::default().0.load(Ordering::SeqCst)
+            );
+        }
+
+        {
+            let flag = super::ItemFlag::default();
+            flag.set_keep();
+            flag.set_countable();
+            flag.set_deleted();
+            assert_eq!(flag.keep(), true);
+            assert_eq!(flag.countable(), true);
+            assert_eq!(flag.deleted(), true);
+            flag.clear_keep();
+            flag.clear_countable();
+            flag.clear_deleted();
+            assert_eq!(flag.keep(), false);
+            assert_eq!(flag.countable(), false);
+            assert_eq!(flag.deleted(), false);
+            assert_eq!(
+                flag.0.load(Ordering::SeqCst),
+                ItemFlag::default().0.load(Ordering::SeqCst)
+            );
+        }
     }
 }
