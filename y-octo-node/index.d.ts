@@ -23,8 +23,8 @@ export class Doc {
   createArray(): YArray
   createText(): YText
   createMap(): YMap
-  applyUpdate(update: Buffer): Buffer
-  encodeUpdateV1(): Buffer
+  applyUpdate(update: Buffer): void
+  encodeStateAsUpdateV1(state?: Buffer | undefined | null): Buffer
   gc(): void
   onUpdate(callback: (result: Uint8Array) => void): void
 }
