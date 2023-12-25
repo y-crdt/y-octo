@@ -2,7 +2,7 @@ use napi::{
     bindgen_prelude::{Buffer as JsBuffer, JsFunction},
     threadsafe_function::{ErrorStrategy, ThreadsafeFunction, ThreadsafeFunctionCallMode},
 };
-use y_octo::{Doc as YDoc, History};
+use y_octo::{CrdtRead, Doc as YDoc, History, RawDecoder, StateVector};
 
 use super::*;
 
@@ -85,19 +85,24 @@ impl Doc {
     }
 
     #[napi]
-    pub fn apply_update(&mut self, update: JsBuffer) -> Result<JsBuffer> {
-        self.doc
-            .apply_update_from_binary_v1(update)
-            .and_then(|u| u.encode_v1().map(|v| v.into()))
-            .map_err(anyhow::Error::from)
+    pub fn apply_update(&mut self, update: JsBuffer) -> Result<()> {
+        self.doc.apply_update_from_binary_v1(update)?;
+
+        Ok(())
     }
 
     #[napi]
-    pub fn encode_update_v1(&self) -> Result<JsBuffer> {
-        self.doc
-            .encode_update_v1()
-            .map(|v| v.into())
-            .map_err(anyhow::Error::from)
+    pub fn encode_state_as_update_v1(&self, state: Option<JsBuffer>) -> Result<JsBuffer> {
+        let result = match state {
+            Some(state) => {
+                let mut decoder = RawDecoder::new(state.as_ref());
+                let state = StateVector::read(&mut decoder)?;
+                self.doc.encode_state_as_update_v1(&state)
+            }
+            None => self.doc.encode_update_v1(),
+        };
+
+        result.map(|v| v.into()).map_err(anyhow::Error::from)
     }
 
     #[napi]

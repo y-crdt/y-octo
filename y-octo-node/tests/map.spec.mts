@@ -84,7 +84,7 @@ test("map test", { concurrency: false }, async (t) => {
     sub_text.insert(2, "c");
 
     let doc2 = new Y.Doc();
-    Y.applyUpdate(doc2, doc.encodeUpdateV1());
+    Y.applyUpdate(doc2, doc.encodeStateAsUpdateV1());
 
     let map2 = doc2.getMap<any>("map");
     let sub_array2 = map2.get("array") as Y.Array<any>;
