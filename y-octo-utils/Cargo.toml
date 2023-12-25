@@ -8,11 +8,14 @@ version = "0.0.1"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [features]
-bench = ["regex"]
-fuzz  = ["arbitrary", "phf"]
+bench   = ["regex"]
+default = ["merger"]
+fuzz    = ["arbitrary", "phf"]
+merger  = ["clap", "y-octo/large_refs"]
 
 [dependencies]
 arbitrary   = { version = "1.3", features = ["derive"], optional = true }
+clap        = { version = "4.4", features = ["derive"], optional = true }
 lib0        = { version = "=0.16.5", features = ["lib0-serde"] }
 phf         = { version = "0.11", features = ["macros"], optional = true }
 rand        = "0.8"
@@ -31,6 +34,10 @@ proptest-derive = "0.4"
 [[bin]]
 name = "bench_result_render"
 path = "bin/bench_result_render.rs"
+
+[[bin]]
+name = "doc_merger"
+path = "bin/doc_merger.rs"
 
 [[bin]]
 name = "memory_leak_test"
