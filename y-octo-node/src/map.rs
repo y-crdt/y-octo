@@ -3,7 +3,7 @@ use y_octo::{Any, Map, Value};
 
 use super::*;
 
-#[napi]
+#[napi(js_name = "Map")]
 pub struct YMap {
     pub(crate) map: Map,
 }
@@ -114,7 +114,7 @@ mod tests {
 
     #[test]
     fn test_map_init() {
-        let doc = Doc::new(None);
+        let doc = YDoc::new(None);
         let text = doc.get_or_create_map("map".into()).unwrap();
         assert_eq!(text.length(), 0);
     }

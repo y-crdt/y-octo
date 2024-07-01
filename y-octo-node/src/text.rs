@@ -2,7 +2,7 @@ use y_octo::Text;
 
 use super::*;
 
-#[napi]
+#[napi(js_name = "Text")]
 pub struct YText {
     pub(crate) text: Text,
 }
@@ -57,14 +57,14 @@ mod tests {
 
     #[test]
     fn test_text_init() {
-        let doc = Doc::new(None);
+        let doc = YDoc::new(None);
         let text = doc.get_or_create_text("text".into()).unwrap();
         assert_eq!(text.len(), 0);
     }
 
     #[test]
     fn test_text_edit() {
-        let doc = Doc::new(None);
+        let doc = YDoc::new(None);
         let mut text = doc.get_or_create_text("text".into()).unwrap();
         text.insert(0, "hello".into()).unwrap();
         assert_eq!(text.to_string(), "hello");

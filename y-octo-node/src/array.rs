@@ -3,13 +3,20 @@ use y_octo::{Any, Array, Value};
 
 use super::*;
 
-#[napi]
+#[napi(js_name = "Array")]
+#[derive(Clone)]
 pub struct YArray {
     pub(crate) array: Array,
 }
 
 #[napi]
 impl YArray {
+    // patch for Array define in node port
+    #[napi(constructor)]
+    pub fn new() -> Self {
+        unimplemented!()
+    }
+
     pub(crate) fn inner_new(array: Array) -> Self {
         Self { array }
     }
@@ -163,7 +170,7 @@ mod tests {
 
     #[test]
     fn test_array_init() {
-        let doc = Doc::new(None);
+        let doc = YDoc::new(None);
         let array = doc.get_or_create_array("array".into()).unwrap();
         assert_eq!(array.length(), 0);
     }

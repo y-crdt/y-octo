@@ -2,24 +2,24 @@ use napi::{
     bindgen_prelude::{Buffer as JsBuffer, JsFunction},
     threadsafe_function::{ErrorStrategy, ThreadsafeFunction, ThreadsafeFunctionCallMode},
 };
-use y_octo::{CrdtRead, Doc as YDoc, History, RawDecoder, StateVector};
+use y_octo::{CrdtRead, Doc, History, RawDecoder, StateVector};
 
 use super::*;
 
-#[napi]
-pub struct Doc {
-    doc: YDoc,
+#[napi(js_name = "Doc")]
+pub struct YDoc {
+    doc: Doc,
 }
 
 #[napi]
-impl Doc {
+impl YDoc {
     #[napi(constructor)]
     pub fn new(client_id: Option<i64>) -> Self {
         Self {
             doc: if let Some(client_id) = client_id {
-                YDoc::with_client(client_id as u64)
+                Doc::with_client(client_id as u64)
             } else {
-                YDoc::default()
+                Doc::default()
             },
         }
     }
@@ -130,33 +130,33 @@ mod tests {
     #[test]
     fn test_doc_client() {
         let client_id = 1;
-        let doc = Doc::new(Some(client_id));
+        let doc = YDoc::new(Some(client_id));
         assert_eq!(doc.client_id(), 1);
     }
 
     #[test]
     fn test_doc_guid() {
-        let doc = Doc::new(None);
+        let doc = YDoc::new(None);
         assert_eq!(doc.guid().len(), 21);
     }
 
     #[test]
     fn test_create_array() {
-        let doc = Doc::new(None);
+        let doc = YDoc::new(None);
         let array = doc.get_or_create_array("array".into()).unwrap();
         assert_eq!(array.length(), 0);
     }
 
     #[test]
     fn test_create_text() {
-        let doc = Doc::new(None);
+        let doc = YDoc::new(None);
         let text = doc.get_or_create_text("text".into()).unwrap();
         assert_eq!(text.len(), 0);
     }
 
     #[test]
     fn test_keys() {
-        let doc = Doc::new(None);
+        let doc = YDoc::new(None);
         doc.get_or_create_array("array".into()).unwrap();
         doc.get_or_create_text("text".into()).unwrap();
         doc.get_or_create_map("map".into()).unwrap();

@@ -8,7 +8,7 @@ mod text;
 mod utils;
 
 pub use array::YArray;
-pub use doc::Doc;
+pub use doc::YDoc;
 pub use map::YMap;
 pub use text::YText;
 use utils::{
