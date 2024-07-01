@@ -1,4 +1,4 @@
-#!/usr/bin/env ts-node-esm
+#!/usr/bin/env tsx
 import { resolve } from "node:path";
 
 import prompts from "prompts";

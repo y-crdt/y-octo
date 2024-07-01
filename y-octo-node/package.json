@@ -25,9 +25,9 @@
     "@types/prompts": "^2.4.4",
     "c8": "^8.0.1",
     "prompts": "^2.4.2",
-    "ts-node": "^10.9.2",
+    "tsx": "^4.16.2",
     "typescript": "^5.1.6",
-    "yjs": "^13.6.8"
+    "yjs": "^13.6.18"
   },
   "engines": {
     "node": ">= 10"
@@ -37,16 +37,16 @@
     "build": "napi build --platform --release --no-const-enum",
     "build:debug": "napi build --platform --no-const-enum",
     "universal": "napi universal",
-    "test": "NODE_NO_WARNINGS=1 yarn exec ts-node-esm ./scripts/run-test.mts all",
-    "test:watch": "yarn exec ts-node-esm ./scripts/run-test.ts all --watch",
-    "test:coverage": "NODE_OPTIONS=\"--loader ts-node/esm\" c8 node ./scripts/run-test.mts all",
+    "test": "NODE_NO_WARNINGS=1 yarn exec tsx --no-warnings ./scripts/run-test.mts all",
+    "test:watch": "yarn exec tsx ./scripts/run-test.mts all --watch",
+    "test:coverage": "NODE_OPTIONS=\"--import tsx\" c8 node ./scripts/run-test.mts all",
     "version": "napi version"
   },
   "version": "0.0.1",
   "sharedConfig": {
     "nodeArgs": [
-      "--loader",
-      "ts-node/esm",
+      "--import",
+      "tsx",
       "--es-module-specifier-resolution=node"
     ],
     "env": {
