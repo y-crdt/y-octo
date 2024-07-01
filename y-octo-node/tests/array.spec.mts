@@ -35,9 +35,14 @@ test("array test", { concurrency: false }, async (t) => {
     equal(arr.get(2), 1);
     equal(arr.get(3), "hello world");
     equal(arr.length, 4);
-    arr.remove(1, 1);
+    arr.delete(1, 1);
     equal(arr.length, 3);
     equal(arr.get(2), "hello world");
+    deepEqual(arr.slice(1, 3), [1, "hello world"]);
+    deepEqual(
+      arr.map((v) => v),
+      [true, 1, "hello world"],
+    );
   });
 
   await t.test("sub array should can edit", () => {
@@ -58,5 +63,12 @@ test("array test", { concurrency: false }, async (t) => {
     equal(sub2.get(2), 1);
     equal(sub2.get(3), "hello world");
     equal(sub2.length, 4);
+    deepEqual(sub2.slice(1, 3), [false, 1]);
+    deepEqual(
+      sub2.map((v) => v),
+      [true, false, 1, "hello world"],
+    );
+  });
+
   });
 });

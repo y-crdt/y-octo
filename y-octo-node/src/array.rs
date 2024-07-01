@@ -1,4 +1,4 @@
-use napi::{bindgen_prelude::Array as JsArray, Env, JsUnknown, ValueType};
+use napi::{bindgen_prelude::Array as JsArray, Env, JsFunction, JsUnknown, ValueType};
 use y_octo::{Any, Array, Value};
 
 use super::*;
@@ -10,12 +10,6 @@ pub struct YArray {
 
 #[napi]
 impl YArray {
-    #[allow(clippy::new_without_default)]
-    #[napi(constructor)]
-    pub fn new() -> Self {
-        unimplemented!()
-    }
-
     pub(crate) fn inner_new(array: Array) -> Self {
         Self { array }
     }
@@ -44,6 +38,26 @@ impl YArray {
         } else {
             Ok(MixedYType::D(env.get_null()?.into_unknown()))
         }
+    }
+
+    #[napi(ts_generic_types = "T = unknown", ts_return_type = "Array<T>")]
+    pub fn slice(&self, env: Env, start: i64, end: i64) -> Result<JsArray> {
+        let mut js_array = env.create_array(0)?;
+        for value in self.array.iter().skip(start as usize).take((end - start) as usize) {
+            js_array.insert(get_js_unknown_from_value(env, value)?)?;
+        }
+        Ok(js_array)
+    }
+
+    #[napi(ts_generic_types = "T = unknown", ts_return_type = "Array<T>")]
+    pub fn map(&self, env: Env, callback: JsFunction) -> Result<JsArray> {
+        let mut js_array = env.create_array(0)?;
+        for value in self.array.iter() {
+            let js_value = get_js_unknown_from_value(env, value)?;
+            let result = callback.call(None, &[js_value.into_unknown()])?;
+            js_array.insert(result)?;
+        }
+        Ok(js_array)
     }
 
     #[napi(
@@ -113,8 +127,22 @@ impl YArray {
         }
     }
 
+    #[napi(
+        ts_args_type = "value: YArray | YMap | YText | boolean | number | string | Record<string, any> | null | undefined"
+    )]
+    pub fn push(&mut self, value: MixedRefYType) -> Result<()> {
+        self.insert(self.length(), value)
+    }
+
+    #[napi(
+        ts_args_type = "value: YArray | YMap | YText | boolean | number | string | Record<string, any> | null | undefined"
+    )]
+    pub fn unshift(&mut self, value: MixedRefYType) -> Result<()> {
+        self.insert(0, value)
+    }
+
     #[napi]
-    pub fn remove(&mut self, index: i64, len: i64) -> Result<()> {
+    pub fn delete(&mut self, index: i64, len: i64) -> Result<()> {
         self.array.remove(index as u64, len as u64).map_err(anyhow::Error::from)
     }
 
