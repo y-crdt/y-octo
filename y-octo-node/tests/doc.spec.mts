@@ -1,15 +1,15 @@
 import assert, { equal } from "node:assert";
 import { test } from "node:test";
 
-import { Doc } from "../index";
+import * as YOcto from "../index";
 import * as Y from "yjs";
 
 test("doc test", { concurrency: false }, async (t) => {
   let client_id: number;
-  let doc: Doc;
+  let doc: YOcto.Doc;
   t.beforeEach(async () => {
     client_id = (Math.random() * 100000) | 0;
-    doc = new Doc(client_id);
+    doc = new YOcto.Doc(client_id);
   });
 
   t.afterEach(async () => {
@@ -39,7 +39,7 @@ test("doc test", { concurrency: false }, async (t) => {
     text.insert(1, "b");
     text.insert(2, "c");
 
-    let doc2 = new Doc(client_id);
+    let doc2 = new YOcto.Doc(client_id);
     doc2.applyUpdate(doc.encodeStateAsUpdateV1());
 
     let array2 = doc2.getOrCreateArray("array");

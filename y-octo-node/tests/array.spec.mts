@@ -1,7 +1,7 @@
 import assert, { equal, deepEqual } from "node:assert";
 import { test } from "node:test";
 
-import { Doc, YArray } from "../index";
+import { Doc, Array } from "../index";
 
 test("array test", { concurrency: false }, async (t) => {
   let client_id: number;
@@ -56,7 +56,7 @@ test("array test", { concurrency: false }, async (t) => {
     sub.insert(3, "hello world");
     equal(sub.length, 4);
 
-    let sub2 = map.get<YArray>("sub");
+    let sub2 = map.get<Array>("sub");
     assert(sub2);
     equal(sub2.get(0), true);
     equal(sub2.get(1), false);

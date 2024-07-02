@@ -176,6 +176,10 @@ impl Doc {
         self.client_id
     }
 
+    pub fn set_client(&mut self, client_id: u64) {
+        self.client_id = client_id;
+    }
+
     pub fn clients(&self) -> Vec<u64> {
         self.store.read().unwrap().clients()
     }

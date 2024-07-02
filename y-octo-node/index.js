@@ -252,9 +252,12 @@ if (!nativeBinding) {
   throw new Error(`Failed to load native binding`)
 }
 
-const { Array, Doc, Map, Text } = nativeBinding
+const { Array, Doc, encodeStateAsUpdate, applyUpdate, mergeUpdates, Map, Text } = nativeBinding
 
 module.exports.Array = Array
 module.exports.Doc = Doc
+module.exports.encodeStateAsUpdate = encodeStateAsUpdate
+module.exports.applyUpdate = applyUpdate
+module.exports.mergeUpdates = mergeUpdates
 module.exports.Map = Map
 module.exports.Text = Text
