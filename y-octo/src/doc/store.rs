@@ -101,6 +101,10 @@ impl DocStore {
         Self::items_as_state_vector(&self.items)
     }
 
+    pub fn get_delete_sets(&self) -> DeleteSet {
+        self.delete_set.clone()
+    }
+
     fn items_as_state_vector(items: &ClientMap<VecDeque<Node>>) -> StateVector {
         let mut state = StateVector::default();
         for (client, structs) in items.iter() {

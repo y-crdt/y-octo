@@ -365,6 +365,10 @@ impl Doc {
         self.store.read().unwrap().get_state_vector()
     }
 
+    pub fn get_delete_sets(&self) -> DeleteSet {
+        self.store.read().unwrap().get_delete_sets()
+    }
+
     pub fn subscribe(&self, cb: impl Fn(&[u8], &[History]) + Sync + Send + 'static) {
         self.publisher.subscribe(cb);
     }

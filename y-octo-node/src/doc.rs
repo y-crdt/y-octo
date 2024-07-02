@@ -8,7 +8,7 @@ use super::*;
 
 #[napi(js_name = "Doc")]
 pub struct YDoc {
-    doc: Doc,
+    pub(crate) doc: Doc,
 }
 
 #[napi]
@@ -32,6 +32,11 @@ impl YDoc {
     #[napi(getter)]
     pub fn guid(&self) -> &str {
         self.doc.guid()
+    }
+
+    #[napi(getter)]
+    pub fn store(&self) -> YStore {
+        YStore { doc: self.doc.clone() }
     }
 
     #[napi(getter)]

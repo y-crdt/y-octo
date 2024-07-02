@@ -7,9 +7,9 @@ mod sync;
 pub use codec::*;
 pub use doc::{
     encode_awareness_as_message, encode_update_as_message, merge_updates_v1, Any, Array, Awareness, AwarenessEvent,
-    Client, ClientMap, Clock, CrdtRead, CrdtReader, CrdtWrite, CrdtWriter, Doc, DocOptions, HashMap as AHashMap,
-    HashMapExt, History, HistoryOptions, Id, Map, RawDecoder, RawEncoder, StateVector, StoreHistory, Text, Update,
-    Value,
+    Client, ClientMap, Clock, CrdtRead, CrdtReader, CrdtWrite, CrdtWriter, DeleteSet, Doc, DocOptions,
+    HashMap as AHashMap, HashMapExt, History, HistoryOptions, Id, Map, RawDecoder, RawEncoder, StateVector,
+    StoreHistory, Text, Update, Value,
 };
 pub(crate) use doc::{Content, Item};
 use log::{debug, warn};
