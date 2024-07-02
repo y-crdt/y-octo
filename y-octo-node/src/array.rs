@@ -3,7 +3,7 @@ use y_octo::{Any, Array, Value};
 
 use super::*;
 
-#[napi(js_name = "Array")]
+#[napi]
 #[derive(Clone)]
 pub struct YArray {
     pub(crate) array: Array,
@@ -160,6 +160,43 @@ impl YArray {
             js_array.insert(get_js_unknown_from_value(env, value)?)?;
         }
         Ok(js_array)
+    }
+    #[napi]
+    pub fn iter(&self, env: Env) -> YArrayIterator {
+        YArrayIterator {
+            array: self.clone(),
+            env,
+            current: 0,
+        }
+    }
+}
+
+#[napi(iterator)]
+pub struct YArrayIterator {
+    array: YArray,
+    env: Env,
+    current: i64,
+}
+
+#[napi]
+impl Generator for YArrayIterator {
+    type Yield = MixedYType;
+
+    type Next = Option<i64>;
+
+    type Return = ();
+
+    fn next(&mut self, value: Option<Self::Next>) -> Option<Self::Yield> {
+        if self.array.length() <= self.current {
+            return None;
+        }
+        let ret = self.array.get(self.env, self.current).ok();
+        self.current = if let Some(value) = value.and_then(|v| v) {
+            value
+        } else {
+            self.current + 1
+        };
+        ret
     }
 }
 

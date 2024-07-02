@@ -70,5 +70,29 @@ test("array test", { concurrency: false }, async (t) => {
     );
   });
 
+  await t.test("array should support iterator", () => {
+    let arr = doc.getOrCreateArray("arr");
+    arr.insert(0, true);
+    arr.insert(1, false);
+    arr.insert(2, 1);
+    arr.insert(3, "hello world");
+    let i = 0;
+    for (let v of arr.iter()) {
+      switch (i) {
+        case 0:
+          equal(v, true);
+          break;
+        case 1:
+          equal(v, false);
+          break;
+        case 2:
+          equal(v, 1);
+          break;
+        case 3:
+          equal(v, "hello world");
+          break;
+      }
+      i++;
+    }
   });
 });

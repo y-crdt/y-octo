@@ -25,6 +25,10 @@ export class Array {
   unshift(value: YArray | YMap | YText | boolean | number | string | Record<string, any> | null | undefined): void
   delete(index: number, len: number): void
   toJson(): JsArray
+  iter(): YArrayIterator
+}
+export class YArrayIterator {
+  [Symbol.iterator](): Iterator<MixedYType, void, number | undefined | null>
 }
 export type YDoc = Doc
 export class Doc {
