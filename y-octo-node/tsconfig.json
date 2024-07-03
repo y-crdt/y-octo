@@ -5,7 +5,7 @@
     "outDir": "lib",
     "composite": true
   },
-  "include": ["index.d.ts", "tests/**/*.mts"],
+  "include": ["index.d.ts", "tests/**/*.(mts|ts)"],
   "ts-node": {
     "esm": true,
     "experimentalSpecifierResolution": "node"

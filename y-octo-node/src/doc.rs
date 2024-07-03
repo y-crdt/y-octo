@@ -130,7 +130,6 @@ impl YDoc {
     #[napi]
     pub fn transact(&mut self, callback: JsFunction) -> Result<()> {
         callback.call_without_args(None)?;
-        self.doc.gc()?;
 
         Ok(())
     }

@@ -1,4 +1,4 @@
-use napi::{bindgen_prelude::Array as JsArray, Env, JsFunction, JsUnknown, ValueType};
+use napi::{bindgen_prelude::Array as JsArray, iterator::Generator, Env, JsFunction, JsUnknown, ValueType};
 use y_octo::{Any, Array, Value};
 
 use super::*;
@@ -50,7 +50,20 @@ impl YArray {
     #[napi(ts_generic_types = "T = unknown", ts_return_type = "Array<T>")]
     pub fn slice(&self, env: Env, start: i64, end: Option<i64>) -> Result<JsArray> {
         let mut js_array = env.create_array(0)?;
-        let end = (end.unwrap_or(self.length()) - start) as usize;
+        let end = end
+            .map(|end| {
+                if end.is_negative() {
+                    self.length() + end
+                } else {
+                    let end = end - start;
+                    if end.is_negative() {
+                        0
+                    } else {
+                        end
+                    }
+                }
+            })
+            .unwrap_or(self.length() - start) as usize;
         for value in self.array.iter().skip(start as usize).take(end) {
             js_array.insert(get_js_unknown_from_value(env, value)?)?;
         }

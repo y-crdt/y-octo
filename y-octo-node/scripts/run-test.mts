@@ -11,6 +11,10 @@ import pkg from "../package.json" assert { type: "json" };
 const root = fileURLToPath(new URL("..", import.meta.url));
 const testDir = resolve(root, "tests");
 const files = await readdir(testDir);
+const yjsTestDir = resolve(testDir, "yjs");
+const yjsFiles = (await readdir(yjsTestDir)).filter((f) =>
+  f.endsWith(".spec.mts"),
+);
 
 const watchMode = process.argv.includes("--watch");
 
@@ -30,7 +34,11 @@ const env = {
 if (process.argv[2] === "all") {
   const cp = spawn(
     "node",
-    [...sharedArgs, ...files.map((f) => resolve(testDir, f))],
+    [
+      ...sharedArgs,
+      ...files.map((f) => resolve(testDir, f)),
+      ...yjsFiles.map((f) => resolve(yjsTestDir, f)),
+    ],
     {
       cwd: root,
       env,
