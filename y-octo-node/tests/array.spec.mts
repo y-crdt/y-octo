@@ -1,14 +1,14 @@
 import assert, { equal, deepEqual } from "node:assert";
 import { test } from "node:test";
 
-import { Doc, Array } from "../index";
+import * as YOcto from "../yocto";
 
 test("array test", { concurrency: false }, async (t) => {
   let client_id: number;
-  let doc: Doc;
+  let doc: YOcto.Doc;
   t.beforeEach(async () => {
     client_id = (Math.random() * 100000) | 0;
-    doc = new Doc(client_id);
+    doc = new YOcto.Doc(client_id);
   });
 
   t.afterEach(async () => {
@@ -56,7 +56,7 @@ test("array test", { concurrency: false }, async (t) => {
     sub.insert(3, "hello world");
     equal(sub.length, 4);
 
-    let sub2 = map.get<Array>("sub");
+    let sub2 = map.get<YOcto.Array>("sub");
     assert(sub2);
     equal(sub2.get(0), true);
     equal(sub2.get(1), false);

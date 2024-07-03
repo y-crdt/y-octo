@@ -252,9 +252,10 @@ if (!nativeBinding) {
   throw new Error(`Failed to load native binding`)
 }
 
-const { Array, Doc, encodeStateAsUpdate, encodeStateVector, createDeleteSetFromStructStore, equalDeleteSets, snapshot, encodeSnapshot, applyUpdate, mergeUpdates, isAbstractType, Map, Text, Store, DeleteSet, YSnapshot } = nativeBinding
+const { YArray, YArrayIterator, Doc, encodeStateAsUpdate, encodeStateVector, createDeleteSetFromStructStore, equalDeleteSets, snapshot, encodeSnapshot, applyUpdate, mergeUpdates, isAbstractType, YMap, YText, Store, DeleteSet, YSnapshot } = nativeBinding
 
-module.exports.Array = Array
+module.exports.YArray = YArray
+module.exports.YArrayIterator = YArrayIterator
 module.exports.Doc = Doc
 module.exports.encodeStateAsUpdate = encodeStateAsUpdate
 module.exports.encodeStateVector = encodeStateVector
@@ -265,8 +266,8 @@ module.exports.encodeSnapshot = encodeSnapshot
 module.exports.applyUpdate = applyUpdate
 module.exports.mergeUpdates = mergeUpdates
 module.exports.isAbstractType = isAbstractType
-module.exports.Map = Map
-module.exports.Text = Text
+module.exports.YMap = YMap
+module.exports.YText = YText
 module.exports.Store = Store
 module.exports.DeleteSet = DeleteSet
 module.exports.YSnapshot = YSnapshot

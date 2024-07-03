@@ -2,14 +2,14 @@ import assert, { equal, deepEqual } from "node:assert";
 import { test } from "node:test";
 
 import * as Y from "yjs";
-import { Doc, Array, Map, Text } from "../index";
+import * as YOcto from "../yocto";
 
 test("map test", { concurrency: false }, async (t) => {
   let client_id: number;
-  let doc: Doc;
+  let doc: YOcto.Doc;
   t.beforeEach(async () => {
     client_id = (Math.random() * 100000) | 0;
-    doc = new Doc(client_id);
+    doc = new YOcto.Doc(client_id);
   });
 
   t.afterEach(async () => {
@@ -52,7 +52,7 @@ test("map test", { concurrency: false }, async (t) => {
     sub.set("d", "hello world");
     equal(sub.length, 4);
 
-    let sub2 = map.get<Map>("sub");
+    let sub2 = map.get<YOcto.Map>("sub");
     assert(sub2);
     equal(sub2.get("a"), true);
     equal(sub2.get("b"), false);
@@ -131,9 +131,9 @@ test("map test", { concurrency: false }, async (t) => {
     doc.applyUpdate(Buffer.from(Y.encodeStateAsUpdate(doc2)));
 
     let map = doc.getOrCreateMap("map");
-    let sub_array = map.get<Array>("array");
-    let sub_map = map.get<Map>("map");
-    let sub_text = map.get<Text>("text");
+    let sub_array = map.get<YOcto.Array>("array");
+    let sub_map = map.get<YOcto.Map>("map");
+    let sub_text = map.get<YOcto.Text>("text");
 
     assert(sub_array);
     equal(sub_array.length, 4);

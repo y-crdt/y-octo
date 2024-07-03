@@ -12,8 +12,7 @@ export declare function encodeSnapshot(snapshot: YSnapshot): Buffer
 export declare function applyUpdate(doc: Doc, update: Buffer): void
 export declare function mergeUpdates(updates: Array<Buffer>): Buffer
 export declare function isAbstractType(unknown: unknown): boolean
-export type YArray = Array
-export class Array {
+export class YArray {
   constructor()
   get length(): number
   get isEmpty(): boolean
@@ -40,10 +39,10 @@ export class Doc {
   get guid(): string
   get store(): YStore
   get keys(): Array<string>
-  getOrCreateArray(key: string): Array
+  getOrCreateArray(key: string): YArray
   getOrCreateText(key: string): YText
   getOrCreateMap(key: string): YMap
-  createArray(): Array
+  createArray(): YArray
   createText(): YText
   createMap(): YMap
   applyUpdate(update: Buffer): void
@@ -52,8 +51,7 @@ export class Doc {
   onUpdate(callback: (result: Uint8Array) => void): void
   transact(callback: (...args: any[]) => any): void
 }
-export type YMap = Map
-export class Map {
+export class YMap {
   constructor()
   get length(): number
   get isEmpty(): boolean
@@ -64,8 +62,7 @@ export class Map {
   observe(callback: (...args: any[]) => any): void
   observeDeep(callback: (...args: any[]) => any): void
 }
-export type YText = Text
-export class Text {
+export class YText {
   constructor()
   get len(): number
   get isEmpty(): boolean

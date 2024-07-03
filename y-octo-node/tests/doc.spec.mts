@@ -1,7 +1,7 @@
 import assert, { equal } from "node:assert";
 import { test } from "node:test";
 
-import * as YOcto from "../index";
+import * as YOcto from "../yocto";
 import * as Y from "yjs";
 
 test("doc test", { concurrency: false }, async (t) => {

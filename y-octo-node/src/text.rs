@@ -2,7 +2,7 @@ use y_octo::Text;
 
 use super::*;
 
-#[napi(js_name = "Text")]
+#[napi]
 pub struct YText {
     pub(crate) text: Text,
 }

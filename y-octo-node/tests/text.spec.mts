@@ -1,14 +1,14 @@
 import assert, { equal, deepEqual } from "node:assert";
 import { test } from "node:test";
 
-import { Doc, Text } from "../index";
+import * as YOcto from "../yocto";
 
 test("text test", { concurrency: false }, async (t) => {
   let client_id: number;
-  let doc: Doc;
+  let doc: YOcto.Doc;
   t.beforeEach(async () => {
     client_id = (Math.random() * 100000) | 0;
-    doc = new Doc(client_id);
+    doc = new YOcto.Doc(client_id);
   });
 
   t.afterEach(async () => {

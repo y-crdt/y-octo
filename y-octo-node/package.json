@@ -1,8 +1,8 @@
 {
   "name": "@y-octo/node",
   "private": true,
-  "main": "index.js",
-  "types": "index.d.ts",
+  "main": "yocto.js",
+  "types": "yocto.d.ts",
   "napi": {
     "name": "y-octo",
     "triples": {

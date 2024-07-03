@@ -3,7 +3,7 @@ use y_octo::{Any, Map, Value};
 
 use super::*;
 
-#[napi(js_name = "Map")]
+#[napi]
 pub struct YMap {
     pub(crate) map: Map,
 }
