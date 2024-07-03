@@ -1,4 +1,4 @@
-use napi::{Env, JsObject, ValueType};
+use napi::{Env, JsFunction, JsObject, ValueType};
 use y_octo::{Any, Map, Value};
 
 use super::*;
@@ -104,6 +104,18 @@ impl YMap {
             js_object.set(key, get_js_unknown_from_value(env, value))?;
         }
         Ok(js_object)
+    }
+
+    // TODO(@darkskygit): impl type based observe
+    #[napi]
+    pub fn observe(&mut self, _callback: JsFunction) -> Result<()> {
+        Ok(())
+    }
+
+    // TODO(@darkskygit): impl type based observe
+    #[napi]
+    pub fn observe_deep(&mut self, _callback: JsFunction) -> Result<()> {
+        Ok(())
     }
 }
 

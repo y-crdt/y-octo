@@ -18,14 +18,17 @@ export class Array {
   get length(): number
   get isEmpty(): boolean
   get<T = unknown>(index: number): T
-  slice<T = unknown>(start: number, end: number): Array<T>
+  slice<T = unknown>(start: number, end?: number | undefined | null): Array<T>
   map<T = unknown>(callback: (...args: any[]) => any): Array<T>
   insert(index: number, value: YArray | YMap | YText | boolean | number | string | Record<string, any> | null | undefined): void
   push(value: YArray | YMap | YText | boolean | number | string | Record<string, any> | null | undefined): void
   unshift(value: YArray | YMap | YText | boolean | number | string | Record<string, any> | null | undefined): void
-  delete(index: number, len: number): void
-  toJson(): JsArray
+  delete(index: number, len?: number | undefined | null): void
   iter(): YArrayIterator
+  toArray(): JsArray
+  toJSON(): JsArray
+  observe(callback: (...args: any[]) => any): void
+  observeDeep(callback: (...args: any[]) => any): void
 }
 export class YArrayIterator {
   [Symbol.iterator](): Iterator<MixedYType, void, number | undefined | null>
@@ -47,6 +50,7 @@ export class Doc {
   encodeStateAsUpdateV1(state?: Buffer | undefined | null): Buffer
   gc(): void
   onUpdate(callback: (result: Uint8Array) => void): void
+  transact(callback: (...args: any[]) => any): void
 }
 export type YMap = Map
 export class Map {
@@ -57,6 +61,8 @@ export class Map {
   set(key: string, value: YArray | YMap | YText | boolean | number | string | Record<string, any> | null | undefined): void
   remove(key: string): void
   toJson(): object
+  observe(callback: (...args: any[]) => any): void
+  observeDeep(callback: (...args: any[]) => any): void
 }
 export type YText = Text
 export class Text {

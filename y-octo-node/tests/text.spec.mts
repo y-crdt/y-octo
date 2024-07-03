@@ -1,7 +1,7 @@
 import assert, { equal, deepEqual } from "node:assert";
 import { test } from "node:test";
 
-import { Doc, YText } from "../index";
+import { Doc, Text } from "../index";
 
 test("text test", { concurrency: false }, async (t) => {
   let client_id: number;
@@ -47,7 +47,7 @@ test("text test", { concurrency: false }, async (t) => {
     sub.insert(2, "c");
     equal(sub.toString(), "abc");
 
-    let sub2 = map.get<YText>("sub");
+    let sub2 = map.get<Text>("sub");
     assert(sub2);
     equal(sub2.toString(), "abc");
   });

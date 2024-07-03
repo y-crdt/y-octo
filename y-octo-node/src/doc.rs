@@ -126,6 +126,14 @@ impl YDoc {
         self.doc.subscribe(Box::new(callback));
         Ok(())
     }
+
+    #[napi]
+    pub fn transact(&mut self, callback: JsFunction) -> Result<()> {
+        callback.call_without_args(None)?;
+        self.doc.gc()?;
+
+        Ok(())
+    }
 }
 
 #[cfg(test)]

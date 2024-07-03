@@ -48,9 +48,10 @@ impl YArray {
     }
 
     #[napi(ts_generic_types = "T = unknown", ts_return_type = "Array<T>")]
-    pub fn slice(&self, env: Env, start: i64, end: i64) -> Result<JsArray> {
+    pub fn slice(&self, env: Env, start: i64, end: Option<i64>) -> Result<JsArray> {
         let mut js_array = env.create_array(0)?;
-        for value in self.array.iter().skip(start as usize).take((end - start) as usize) {
+        let end = (end.unwrap_or(self.length()) - start) as usize;
+        for value in self.array.iter().skip(start as usize).take(end) {
             js_array.insert(get_js_unknown_from_value(env, value)?)?;
         }
         Ok(js_array)
@@ -149,18 +150,12 @@ impl YArray {
     }
 
     #[napi]
-    pub fn delete(&mut self, index: i64, len: i64) -> Result<()> {
-        self.array.remove(index as u64, len as u64).map_err(anyhow::Error::from)
+    pub fn delete(&mut self, index: i64, len: Option<i64>) -> Result<()> {
+        self.array
+            .remove(index as u64, len.unwrap_or(1) as u64)
+            .map_err(anyhow::Error::from)
     }
 
-    #[napi]
-    pub fn to_json(&self, env: Env) -> Result<JsArray> {
-        let mut js_array = env.create_array(0)?;
-        for value in self.array.iter() {
-            js_array.insert(get_js_unknown_from_value(env, value)?)?;
-        }
-        Ok(js_array)
-    }
     #[napi]
     pub fn iter(&self, env: Env) -> YArrayIterator {
         YArrayIterator {
@@ -168,6 +163,36 @@ impl YArray {
             env,
             current: 0,
         }
+    }
+
+    #[napi]
+    pub fn to_array(&self, env: Env) -> Result<JsArray> {
+        let mut js_array = env.create_array(0)?;
+        for value in self.array.iter() {
+            js_array.insert(get_js_unknown_from_value(env, value)?)?;
+        }
+        Ok(js_array)
+    }
+
+    #[napi(js_name = "toJSON")]
+    pub fn to_json(&self, env: Env) -> Result<JsArray> {
+        let mut js_array = env.create_array(0)?;
+        for value in self.array.iter() {
+            js_array.insert(get_js_unknown_from_value(env, value)?)?;
+        }
+        Ok(js_array)
+    }
+
+    // TODO(@darkskygit): impl type based observe
+    #[napi]
+    pub fn observe(&mut self, _callback: JsFunction) -> Result<()> {
+        Ok(())
+    }
+
+    // TODO(@darkskygit): impl type based observe
+    #[napi]
+    pub fn observe_deep(&mut self, _callback: JsFunction) -> Result<()> {
+        Ok(())
     }
 }
 
