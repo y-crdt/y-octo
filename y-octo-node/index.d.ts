@@ -36,6 +36,7 @@ export type YDoc = Doc
 export class Doc {
   constructor(clientId?: number | undefined | null)
   get clientId(): number
+  set clientId(clientId: number)
   get guid(): string
   get store(): YStore
   get keys(): Array<string>

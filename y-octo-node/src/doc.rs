@@ -29,6 +29,11 @@ impl YDoc {
         self.doc.client() as i64
     }
 
+    #[napi(setter)]
+    pub fn set_client_id(&mut self, client_id: i64) {
+        self.doc.set_client(client_id as u64);
+    }
+
     #[napi(getter)]
     pub fn guid(&self) -> &str {
         self.doc.guid()
