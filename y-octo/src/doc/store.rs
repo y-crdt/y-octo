@@ -941,6 +941,39 @@ impl DocStore {
         // return the index of processed items
         idx - pos
     }
+
+    pub fn deep_compare(&self, other: &Self) -> bool {
+        if self.items.len() != other.items.len() {
+            return false;
+        }
+
+        for (client, structs) in self.items.iter() {
+            if let Some(other_structs) = other.items.get(client) {
+                if structs.len() != other_structs.len() {
+                    return false;
+                }
+
+                for (struct_info, other_struct_info) in structs.iter().zip(other_structs.iter()) {
+                    if struct_info != other_struct_info {
+                        return false;
+                    }
+                    if let (Node::Item(item), Node::Item(other_item)) = (struct_info, other_struct_info) {
+                        if !match (item.get(), other_item.get()) {
+                            (Some(item), Some(other_item)) => item.deep_compare(other_item),
+                            (None, None) => true,
+                            _ => false,
+                        } {
+                            return false;
+                        }
+                    }
+                }
+            } else {
+                return false;
+            }
+        }
+
+        true
+    }
 }
 
 #[cfg(test)]

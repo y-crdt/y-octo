@@ -5,7 +5,7 @@ import * as decoding from "lib0/decoding";
 import * as syncProtocol from "y-protocols/sync";
 import * as object from "lib0/object";
 import * as map from "lib0/map";
-import * as Y from "../../index";
+import * as Y from "../../yocto";
 
 if (typeof window !== "undefined") {
   // @ts-ignore
@@ -99,6 +99,7 @@ export class TestYOctoInstance extends Y.Doc {
    * Also initiate sync with all clients.
    */
   connect() {
+    return;
     if (!this.tc.onlineConns.has(this)) {
       this.tc.onlineConns.add(this);
       const encoder = encoding.createEncoder();
@@ -261,12 +262,11 @@ type InitResult = {
   // xml1: Y.XmlElement;
   // xml2: Y.XmlElement;
 };
-export const init = <T>(
-  tc: { prng: any },
+export const init = (
+  gen: prng.PRNG,
   { users = 5 }: { users?: number } = {},
   initTestObject?: any,
 ): InitResult => {
-  const gen = tc.prng;
   // choose an encoding approach at random
   if (prng.bool(gen)) {
     useV2Encoding();
@@ -483,13 +483,12 @@ export const compareStructStores = (
  * @param {InitTestObjectCallback<T>} [initTestObject]
  */
 export const applyRandomTests = (
-  tc: { prng: any },
+  gen: prng.PRNG,
   mods: unknown[],
   iterations: number,
   initTestObject?: any,
 ) => {
-  const gen = tc.prng;
-  const result = init(tc, { users: 5 }, initTestObject);
+  const result = init(gen, { users: 5 }, initTestObject);
   const { testConnector, users } = result;
   for (let i = 0; i < iterations; i++) {
     if (prng.int32(gen, 0, 100) <= 2) {

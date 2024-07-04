@@ -203,6 +203,13 @@ impl Doc {
         }
     }
 
+    pub fn store_compare(&self, other: &Doc) -> bool {
+        let store = self.store.read().unwrap();
+        let other_store = other.store.read().unwrap();
+
+        store.deep_compare(&other_store)
+    }
+
     pub fn options(&self) -> &DocOptions {
         &self.opts
     }

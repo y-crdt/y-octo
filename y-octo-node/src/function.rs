@@ -18,6 +18,11 @@ pub fn encode_state_vector(doc: &YDoc) -> Result<JsBuffer> {
     Ok(encoder.into_inner().into())
 }
 
+#[napi]
+pub fn compare_struct_stores(store: &YStore, other: &YStore) -> bool {
+    store.doc.store_compare(&other.doc)
+}
+
 // delete set
 
 #[napi]
