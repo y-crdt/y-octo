@@ -1,4 +1,4 @@
-use napi::{Env, JsFunction, JsObject, ValueType};
+use napi::{bindgen_prelude::Array as JsArray, iterator::Generator, Env, JsFunction, JsObject, ValueType};
 use y_octo::{Any, Map, Value};
 
 use super::*;
@@ -10,12 +10,6 @@ pub struct YMap {
 
 #[napi]
 impl YMap {
-    #[allow(clippy::new_without_default)]
-    #[napi(constructor)]
-    pub fn new() -> Self {
-        unimplemented!()
-    }
-
     pub(crate) fn inner_new(map: Map) -> Self {
         Self { map }
     }
@@ -106,6 +100,23 @@ impl YMap {
         Ok(js_object)
     }
 
+    #[napi]
+    pub fn entries(&self, env: Env) -> YMapEntriesIterator {
+        YMapEntriesIterator {
+            entries: self.map.iter().map(|(k, v)| (k.to_owned(), v)).collect(),
+            env,
+            current: 0,
+        }
+    }
+
+    #[napi]
+    pub fn keys(&self) -> YMapKeyIterator {
+        YMapKeyIterator {
+            keys: self.map.keys().map(ToOwned::to_owned).collect(),
+            current: 0,
+        }
+    }
+
     // TODO(@darkskygit): impl type based observe
     #[napi]
     pub fn observe(&mut self, _callback: JsFunction) -> Result<()> {
@@ -116,6 +127,74 @@ impl YMap {
     #[napi]
     pub fn observe_deep(&mut self, _callback: JsFunction) -> Result<()> {
         Ok(())
+    }
+}
+
+#[napi(iterator)]
+pub struct YMapEntriesIterator {
+    entries: Vec<(String, Value)>,
+    env: Env,
+    current: i64,
+}
+
+#[napi]
+impl Generator for YMapEntriesIterator {
+    type Yield = JsArray;
+
+    type Next = Option<i64>;
+
+    type Return = ();
+
+    fn next(&mut self, value: Option<Self::Next>) -> Option<Self::Yield> {
+        let current = self.current as usize;
+        if self.entries.len() <= current {
+            return None;
+        }
+        let ret = if let Some((string, value)) = self.entries.get(current) {
+            let mut js_array = self.env.create_array(2).ok()?;
+            js_array.set(0, string).ok()?;
+            js_array
+                .set(1, get_js_unknown_from_value(self.env, value.clone()).ok()?)
+                .ok()?;
+            Some(js_array)
+        } else {
+            None
+        };
+        self.current = if let Some(value) = value.and_then(|v| v) {
+            value
+        } else {
+            self.current + 1
+        };
+        ret
+    }
+}
+
+#[napi(iterator)]
+pub struct YMapKeyIterator {
+    keys: Vec<String>,
+    current: i64,
+}
+
+#[napi]
+impl Generator for YMapKeyIterator {
+    type Yield = String;
+
+    type Next = Option<i64>;
+
+    type Return = ();
+
+    fn next(&mut self, value: Option<Self::Next>) -> Option<Self::Yield> {
+        let current = self.current as usize;
+        if self.keys.len() <= current {
+            return None;
+        }
+        let ret = self.keys.get(current).cloned();
+        self.current = if let Some(value) = value.and_then(|v| v) {
+            value
+        } else {
+            self.current + 1
+        };
+        ret
     }
 }
 

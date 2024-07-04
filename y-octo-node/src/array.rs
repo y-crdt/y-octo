@@ -11,12 +11,6 @@ pub struct YArray {
 
 #[napi]
 impl YArray {
-    // patch for Array define in node port
-    #[napi(constructor)]
-    pub fn new() -> Self {
-        unimplemented!()
-    }
-
     pub(crate) fn inner_new(array: Array) -> Self {
         Self { array }
     }

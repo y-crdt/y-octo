@@ -178,7 +178,12 @@ pub(crate) trait ListType: AsInner<Inner = YTypeRef> {
             return Ok(());
         }
 
-        if idx >= self.content_len() {
+        let content_len = self.content_len();
+        if content_len == 0 {
+            return Ok(());
+        }
+
+        if idx >= content_len {
             return Err(JwstCodecError::IndexOutOfBound(idx));
         }
 
