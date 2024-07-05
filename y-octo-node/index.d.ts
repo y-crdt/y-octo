@@ -5,6 +5,7 @@
 
 export declare function encodeStateAsUpdate(doc: Doc, state?: Buffer | undefined | null): Buffer
 export declare function encodeStateVector(doc: Doc): Buffer
+export declare function compareStructStores(store: YStore, other: YStore): boolean
 export declare function createDeleteSetFromStructStore(store: YStore): YDeleteSet
 export declare function equalDeleteSets(a: YDeleteSet, b: YDeleteSet): boolean
 export declare function snapshot(doc: Doc): YSnapshot
@@ -13,7 +14,6 @@ export declare function applyUpdate(doc: Doc, update: Buffer): void
 export declare function mergeUpdates(updates: Array<Buffer>): Buffer
 export declare function isAbstractType(unknown: unknown): boolean
 export class YArray {
-  constructor()
   get length(): number
   get isEmpty(): boolean
   get<T = unknown>(index: number): T
@@ -53,15 +53,22 @@ export class Doc {
   transact(callback: (...args: any[]) => any): void
 }
 export class YMap {
-  constructor()
   get length(): number
   get isEmpty(): boolean
   get<T = unknown>(key: string): T
   set(key: string, value: YArray | YMap | YText | boolean | number | string | Record<string, any> | null | undefined): void
   remove(key: string): void
   toJson(): object
+  entries(): YMapEntriesIterator
+  keys(): YMapKeyIterator
   observe(callback: (...args: any[]) => any): void
   observeDeep(callback: (...args: any[]) => any): void
+}
+export class YMapEntriesIterator {
+  [Symbol.iterator](): Iterator<JsArray, void, number | undefined | null>
+}
+export class YMapKeyIterator {
+  [Symbol.iterator](): Iterator<string, void, number | undefined | null>
 }
 export class YText {
   constructor()

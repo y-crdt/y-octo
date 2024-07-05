@@ -1,4 +1,8 @@
-use napi::{bindgen_prelude::Array as JsArray, iterator::Generator, Env, JsFunction, JsUnknown, ValueType};
+use napi::{
+    bindgen_prelude::{Array as JsArray, FromNapiValue},
+    iterator::Generator,
+    Env, JsFunction, JsUnknown, ValueType,
+};
 use y_octo::{Any, Array, Value};
 
 use super::*;
@@ -122,10 +126,8 @@ impl YArray {
                     {
                         Ok((object, length)) => {
                             for i in 0..length {
-                                if let Ok(any) = object.get_element::<JsUnknown>(i).and_then(get_any_from_js_unknown) {
-                                    self.array
-                                        .insert(index as u64 + i as u64, Value::Any(any))
-                                        .map_err(anyhow::Error::from)?;
+                                if let Ok(unknown) = object.get_element::<JsUnknown>(i) {
+                                    self.insert(index + i as i64, MixedRefYType::from_unknown(unknown)?)?;
                                 }
                             }
                             Ok(())
