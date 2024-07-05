@@ -23,6 +23,7 @@
     "@napi-rs/cli": "^2.16.2",
     "@types/node": "^18.17.5",
     "@types/prompts": "^2.4.4",
+    "ava": "^6.1.3",
     "c8": "^8.0.1",
     "prompts": "^2.4.2",
     "tsx": "^4.16.2",
@@ -38,7 +39,7 @@
     "build": "napi build --platform --release --no-const-enum",
     "build:debug": "napi build --platform --no-const-enum",
     "universal": "napi universal",
-    "test": "NODE_NO_WARNINGS=1 yarn exec tsx --no-warnings ./scripts/run-test.mts all",
+    "test": "ava --concurrency 1 --serial",
     "test:watch": "yarn exec tsx ./scripts/run-test.mts all --watch",
     "test:coverage": "NODE_OPTIONS=\"--import tsx\" c8 node ./scripts/run-test.mts all",
     "version": "napi version"
@@ -55,6 +56,26 @@
       "TS_NODE_PROJECT": "./tsconfig.json",
       "NODE_ENV": "development",
       "DEBUG": "napi:*"
+    }
+  },
+  "ava": {
+    "timeout": "1m",
+    "extensions": {
+      "ts": "module"
+    },
+    "workerThreads": false,
+    "nodeArguments": [
+      "--trace-sigint",
+      "--import",
+      "tsx",
+      "--es-module-specifier-resolution=node"
+    ],
+    "files": [
+      "tests/**/*.spec.ts"
+    ],
+    "environmentVariables": {
+      "TS_NODE_PROJECT": "./tests/tsconfig.json",
+      "NODE_ENV": "test"
     }
   },
   "c8": {
