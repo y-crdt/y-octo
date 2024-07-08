@@ -34,7 +34,7 @@ test("map editing", (t) => {
   t.is(map.get("c"), 1);
   t.is(map.get("d"), "hello world");
   t.is(map.length, 4);
-  map.remove("b");
+  map.delete("b");
   t.is(map.length, 3);
   t.is(map.get("d"), "hello world");
 });

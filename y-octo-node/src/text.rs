@@ -1,3 +1,4 @@
+use napi::{bindgen_prelude::Array as JsArray, Env, JsFunction};
 use y_octo::Text;
 
 use super::*;
@@ -35,7 +36,7 @@ impl YText {
     }
 
     #[napi]
-    pub fn remove(&mut self, index: i64, len: i64) -> Result<()> {
+    pub fn delete(&mut self, index: i64, len: i64) -> Result<()> {
         self.text.remove(index as u64, len as u64).map_err(anyhow::Error::from)
     }
 
@@ -44,10 +45,32 @@ impl YText {
         self.text.len() as i64
     }
 
+    #[napi]
+    pub fn apply_delta(&mut self, env: Env, _delta: JsArray) -> Result<()> {
+        unimplemented!()
+    }
+
+    #[napi]
+    pub fn to_delta(&self, env: Env) -> Result<JsArray> {
+        unimplemented!()
+    }
+
     #[allow(clippy::inherent_to_string)]
     #[napi]
     pub fn to_string(&self) -> String {
         self.text.to_string()
+    }
+
+    // TODO(@darkskygit): impl type based observe
+    #[napi]
+    pub fn observe(&mut self, _callback: JsFunction) -> Result<()> {
+        Ok(())
+    }
+
+    // TODO(@darkskygit): impl type based observe
+    #[napi]
+    pub fn observe_deep(&mut self, _callback: JsFunction) -> Result<()> {
+        Ok(())
     }
 }
 
@@ -70,7 +93,7 @@ mod tests {
         assert_eq!(text.to_string(), "hello");
         text.insert(5, " world".into()).unwrap();
         assert_eq!(text.to_string(), "hello world");
-        text.remove(5, 6).unwrap();
+        text.delete(5, 6).unwrap();
         assert_eq!(text.to_string(), "hello");
     }
 }

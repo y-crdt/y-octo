@@ -20,6 +20,11 @@ impl YMap {
     }
 
     #[napi(getter)]
+    pub fn size(&self) -> i64 {
+        self.length()
+    }
+
+    #[napi(getter)]
     pub fn is_empty(&self) -> bool {
         self.map.is_empty()
     }
@@ -41,25 +46,52 @@ impl YMap {
     }
 
     #[napi(
-        ts_args_type = "key: string, value: YArray | YMap | YText | boolean | number | string | Record<string, any> | \
-                        null | undefined"
+        ts_generic_types = "T = YArray | YMap | YText | boolean | number | string | Record<string, any> | null | undefined",
+        ts_args_type = "key: string, value: T",
+        ts_return_type = "T"
     )]
-    pub fn set(&mut self, key: String, value: MixedRefYType) -> Result<()> {
+    pub fn set(&mut self, env: Env, key: String, value: MixedRefYType) -> Result<MixedYType> {
         match value {
-            MixedRefYType::A(array) => self.map.insert(key, array.array.clone()).map_err(anyhow::Error::from),
-            MixedRefYType::B(map) => self.map.insert(key, map.map.clone()).map_err(anyhow::Error::from),
-            MixedRefYType::C(text) => self.map.insert(key, text.text.clone()).map_err(anyhow::Error::from),
+            MixedRefYType::A(array) => {
+                self.map.insert(key, array.array.clone()).map_err(anyhow::Error::from)?;
+                Ok(MixedYType::A(YArray::inner_new(array.array.clone())))
+            }
+            MixedRefYType::B(map) => {
+                self.map.insert(key, map.map.clone()).map_err(anyhow::Error::from)?;
+                Ok(MixedYType::B(YMap::inner_new(map.map.clone())))
+            }
+            MixedRefYType::C(text) => {
+                self.map.insert(key, text.text.clone()).map_err(anyhow::Error::from)?;
+                Ok(MixedYType::C(YText::inner_new(text.text.clone())))
+            }
             MixedRefYType::D(unknown) => match unknown.get_type() {
                 Ok(value_type) => match value_type {
                     ValueType::Undefined | ValueType::Null => {
-                        self.map.insert(key, Any::Null).map_err(anyhow::Error::from)
+                        self.map.insert(key, Any::Null).map_err(anyhow::Error::from)?;
+                        Ok(MixedYType::D(
+                            env.get_null().map(|v| v.into_unknown()).map_err(anyhow::Error::from)?,
+                        ))
                     }
                     ValueType::Boolean => match unknown.coerce_to_bool().and_then(|v| v.get_value()) {
-                        Ok(boolean) => self.map.insert(key, boolean).map_err(anyhow::Error::from),
+                        Ok(boolean) => {
+                            self.map.insert(key, boolean).map_err(anyhow::Error::from)?;
+                            Ok(MixedYType::D(
+                                env.get_boolean(boolean)
+                                    .map(|v| v.into_unknown())
+                                    .map_err(anyhow::Error::from)?,
+                            ))
+                        }
                         Err(e) => Err(anyhow::Error::from(e).context("Failed to coerce value to boolean")),
                     },
                     ValueType::Number => match unknown.coerce_to_number().and_then(|v| v.get_double()) {
-                        Ok(number) => self.map.insert(key, number).map_err(anyhow::Error::from),
+                        Ok(number) => {
+                            self.map.insert(key, number).map_err(anyhow::Error::from)?;
+                            Ok(MixedYType::D(
+                                env.create_double(number)
+                                    .map(|v| v.into_unknown())
+                                    .map_err(anyhow::Error::from)?,
+                            ))
+                        }
                         Err(e) => Err(anyhow::Error::from(e).context("Failed to coerce value to number")),
                     },
                     ValueType::String => {
@@ -68,12 +100,26 @@ impl YMap {
                             .and_then(|v| v.into_utf8())
                             .and_then(|s| s.as_str().map(|s| s.to_string()))
                         {
-                            Ok(string) => self.map.insert(key, string).map_err(anyhow::Error::from),
+                            Ok(string) => {
+                                self.map.insert(key, string.clone()).map_err(anyhow::Error::from)?;
+                                Ok(MixedYType::D(
+                                    env.create_string(&string)
+                                        .map(|v| v.into_unknown())
+                                        .map_err(anyhow::Error::from)?,
+                                ))
+                            }
                             Err(e) => Err(anyhow::Error::from(e).context("Failed to coerce value to string")),
                         }
                     }
                     ValueType::Object => match unknown.coerce_to_object().and_then(get_any_from_js_object) {
-                        Ok(any) => self.map.insert(key, Value::Any(any)).map_err(anyhow::Error::from),
+                        Ok(any) => {
+                            self.map
+                                .insert(key, Value::Any(any.clone()))
+                                .map_err(anyhow::Error::from)?;
+                            Ok(MixedYType::D(
+                                get_js_unknown_from_any(env, any).map_err(anyhow::Error::from)?.into(),
+                            ))
+                        }
                         Err(e) => Err(anyhow::Error::from(e).context("Failed to coerce value to object")),
                     },
                     ValueType::Symbol => Err(anyhow::Error::msg("Symbol values are not supported")),
@@ -87,8 +133,16 @@ impl YMap {
     }
 
     #[napi]
-    pub fn remove(&mut self, key: String) {
+    pub fn delete(&mut self, key: String) {
         self.map.remove(&key);
+    }
+
+    #[napi]
+    pub fn clear(&mut self) {
+        let keys = self.map.keys().map(ToOwned::to_owned).collect::<Vec<_>>();
+        for key in keys {
+            self.map.remove(&key);
+        }
     }
 
     #[napi]

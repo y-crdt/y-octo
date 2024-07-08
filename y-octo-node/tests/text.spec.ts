@@ -27,11 +27,11 @@ test("text editing", (t) => {
   text.insert(1, "b");
   text.insert(2, "c");
   t.is(text.toString(), "abc");
-  text.remove(0, 1);
+  text.delete(0, 1);
   t.is(text.toString(), "bc");
-  text.remove(1, 1);
+  text.delete(1, 1);
   t.is(text.toString(), "b");
-  text.remove(0, 1);
+  text.delete(0, 1);
   t.is(text.toString(), "");
 });
 

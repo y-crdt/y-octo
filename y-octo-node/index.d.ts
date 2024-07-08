@@ -54,10 +54,12 @@ export class Doc {
 }
 export class YMap {
   get length(): number
+  get size(): number
   get isEmpty(): boolean
   get<T = unknown>(key: string): T
-  set(key: string, value: YArray | YMap | YText | boolean | number | string | Record<string, any> | null | undefined): void
-  remove(key: string): void
+  set<T = YArray | YMap | YText | boolean | number | string | Record<string, any> | null | undefined>(key: string, value: T): T
+  delete(key: string): void
+  clear(): void
   toJson(): object
   entries(): YMapEntriesIterator
   keys(): YMapKeyIterator
@@ -75,9 +77,13 @@ export class YText {
   get len(): number
   get isEmpty(): boolean
   insert(index: number, str: string): void
-  remove(index: number, len: number): void
+  delete(index: number, len: number): void
   get length(): number
+  applyDelta(delta: JsArray): void
+  toDelta(): JsArray
   toString(): string
+  observe(callback: (...args: any[]) => any): void
+  observeDeep(callback: (...args: any[]) => any): void
 }
 export type YStore = Store
 export class Store { }
