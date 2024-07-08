@@ -29,6 +29,11 @@ impl YMap {
         self.map.is_empty()
     }
 
+    #[napi(getter)]
+    pub fn item_id(&self) -> Option<YId> {
+        self.map.id().map(|id| YId { id })
+    }
+
     #[napi(ts_generic_types = "T = unknown", ts_return_type = "T")]
     pub fn get(&self, env: Env, key: String) -> Result<MixedYType> {
         if let Some(value) = self.map.get(&key) {
@@ -53,44 +58,34 @@ impl YMap {
     pub fn set(&mut self, env: Env, key: String, value: MixedRefYType) -> Result<MixedYType> {
         match value {
             MixedRefYType::A(array) => {
-                self.map.insert(key, array.array.clone()).map_err(anyhow::Error::from)?;
+                self.map.insert(key, array.array.clone())?;
                 Ok(MixedYType::A(YArray::inner_new(array.array.clone())))
             }
             MixedRefYType::B(map) => {
-                self.map.insert(key, map.map.clone()).map_err(anyhow::Error::from)?;
+                self.map.insert(key, map.map.clone())?;
                 Ok(MixedYType::B(YMap::inner_new(map.map.clone())))
             }
             MixedRefYType::C(text) => {
-                self.map.insert(key, text.text.clone()).map_err(anyhow::Error::from)?;
+                self.map.insert(key, text.text.clone())?;
                 Ok(MixedYType::C(YText::inner_new(text.text.clone())))
             }
             MixedRefYType::D(unknown) => match unknown.get_type() {
                 Ok(value_type) => match value_type {
                     ValueType::Undefined | ValueType::Null => {
-                        self.map.insert(key, Any::Null).map_err(anyhow::Error::from)?;
-                        Ok(MixedYType::D(
-                            env.get_null().map(|v| v.into_unknown()).map_err(anyhow::Error::from)?,
-                        ))
+                        self.map.insert(key, Any::Null)?;
+                        Ok(MixedYType::D(env.get_null().map(|v| v.into_unknown())?))
                     }
                     ValueType::Boolean => match unknown.coerce_to_bool().and_then(|v| v.get_value()) {
                         Ok(boolean) => {
-                            self.map.insert(key, boolean).map_err(anyhow::Error::from)?;
-                            Ok(MixedYType::D(
-                                env.get_boolean(boolean)
-                                    .map(|v| v.into_unknown())
-                                    .map_err(anyhow::Error::from)?,
-                            ))
+                            self.map.insert(key, boolean)?;
+                            Ok(MixedYType::D(env.get_boolean(boolean).map(|v| v.into_unknown())?))
                         }
                         Err(e) => Err(anyhow::Error::from(e).context("Failed to coerce value to boolean")),
                     },
                     ValueType::Number => match unknown.coerce_to_number().and_then(|v| v.get_double()) {
                         Ok(number) => {
-                            self.map.insert(key, number).map_err(anyhow::Error::from)?;
-                            Ok(MixedYType::D(
-                                env.create_double(number)
-                                    .map(|v| v.into_unknown())
-                                    .map_err(anyhow::Error::from)?,
-                            ))
+                            self.map.insert(key, number)?;
+                            Ok(MixedYType::D(env.create_double(number).map(|v| v.into_unknown())?))
                         }
                         Err(e) => Err(anyhow::Error::from(e).context("Failed to coerce value to number")),
                     },
@@ -101,24 +96,16 @@ impl YMap {
                             .and_then(|s| s.as_str().map(|s| s.to_string()))
                         {
                             Ok(string) => {
-                                self.map.insert(key, string.clone()).map_err(anyhow::Error::from)?;
-                                Ok(MixedYType::D(
-                                    env.create_string(&string)
-                                        .map(|v| v.into_unknown())
-                                        .map_err(anyhow::Error::from)?,
-                                ))
+                                self.map.insert(key, string.clone())?;
+                                Ok(MixedYType::D(env.create_string(&string).map(|v| v.into_unknown())?))
                             }
                             Err(e) => Err(anyhow::Error::from(e).context("Failed to coerce value to string")),
                         }
                     }
                     ValueType::Object => match unknown.coerce_to_object().and_then(get_any_from_js_object) {
                         Ok(any) => {
-                            self.map
-                                .insert(key, Value::Any(any.clone()))
-                                .map_err(anyhow::Error::from)?;
-                            Ok(MixedYType::D(
-                                get_js_unknown_from_any(env, any).map_err(anyhow::Error::from)?.into(),
-                            ))
+                            self.map.insert(key, Value::Any(any.clone()))?;
+                            Ok(MixedYType::D(get_js_unknown_from_any(env, any)?.into()))
                         }
                         Err(e) => Err(anyhow::Error::from(e).context("Failed to coerce value to object")),
                     },

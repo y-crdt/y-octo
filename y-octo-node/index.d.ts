@@ -45,7 +45,7 @@ export class Doc {
   getOrCreateText(key: string): YText
   getOrCreateMap(key: string): YMap
   createArray(): YArray
-  createText(): YText
+  createText(text?: string | undefined | null): YText
   createMap(): YMap
   applyUpdate(update: Buffer): void
   encodeStateAsUpdateV1(state?: Buffer | undefined | null): Buffer

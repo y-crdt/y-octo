@@ -82,11 +82,12 @@ impl YDoc {
     }
 
     #[napi]
-    pub fn create_text(&self) -> Result<YText> {
-        self.doc
-            .create_text()
-            .map(YText::inner_new)
-            .map_err(anyhow::Error::from)
+    pub fn create_text(&self, text: Option<String>) -> Result<YText> {
+        let mut ytext = self.doc.create_text().map(YText::inner_new)?;
+        if let Some(text) = text {
+            ytext.insert(0, text)?;
+        }
+        Ok(ytext)
     }
 
     #[napi]
