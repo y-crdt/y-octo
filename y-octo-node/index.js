@@ -252,7 +252,7 @@ if (!nativeBinding) {
   throw new Error(`Failed to load native binding`)
 }
 
-const { YArray, YArrayIterator, Doc, encodeStateAsUpdate, encodeStateVector, compareStructStores, createDeleteSetFromStructStore, equalDeleteSets, snapshot, encodeSnapshot, applyUpdate, mergeUpdates, isAbstractType, YMap, YMapEntriesIterator, YMapKeyIterator, YText, Store, DeleteSet, YSnapshot } = nativeBinding
+const { YArray, YArrayIterator, Doc, encodeStateAsUpdate, encodeStateVector, compareStructStores, compareIds, createDeleteSetFromStructStore, equalDeleteSets, snapshot, encodeSnapshot, applyUpdate, mergeUpdates, isAbstractType, YMap, YMapEntriesIterator, YMapKeyIterator, YText, Id, Store, DeleteSet, YSnapshot } = nativeBinding
 
 module.exports.YArray = YArray
 module.exports.YArrayIterator = YArrayIterator
@@ -260,6 +260,7 @@ module.exports.Doc = Doc
 module.exports.encodeStateAsUpdate = encodeStateAsUpdate
 module.exports.encodeStateVector = encodeStateVector
 module.exports.compareStructStores = compareStructStores
+module.exports.compareIds = compareIds
 module.exports.createDeleteSetFromStructStore = createDeleteSetFromStructStore
 module.exports.equalDeleteSets = equalDeleteSets
 module.exports.snapshot = snapshot
@@ -271,6 +272,7 @@ module.exports.YMap = YMap
 module.exports.YMapEntriesIterator = YMapEntriesIterator
 module.exports.YMapKeyIterator = YMapKeyIterator
 module.exports.YText = YText
+module.exports.Id = Id
 module.exports.Store = Store
 module.exports.DeleteSet = DeleteSet
 module.exports.YSnapshot = YSnapshot

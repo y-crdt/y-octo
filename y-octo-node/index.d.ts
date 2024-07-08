@@ -6,6 +6,7 @@
 export declare function encodeStateAsUpdate(doc: Doc, state?: Buffer | undefined | null): Buffer
 export declare function encodeStateVector(doc: Doc): Buffer
 export declare function compareStructStores(store: YStore, other: YStore): boolean
+export declare function compareIds(a?: YId | undefined | null, b?: YId | undefined | null): boolean
 export declare function createDeleteSetFromStructStore(store: YStore): YDeleteSet
 export declare function equalDeleteSets(a: YDeleteSet, b: YDeleteSet): boolean
 export declare function snapshot(doc: Doc): YSnapshot
@@ -56,6 +57,7 @@ export class YMap {
   get length(): number
   get size(): number
   get isEmpty(): boolean
+  get itemId(): YId | null
   get<T = unknown>(key: string): T
   set<T = YArray | YMap | YText | boolean | number | string | Record<string, any> | null | undefined>(key: string, value: T): T
   delete(key: string): void
@@ -85,6 +87,8 @@ export class YText {
   observe(callback: (...args: any[]) => any): void
   observeDeep(callback: (...args: any[]) => any): void
 }
+export type YId = Id
+export class Id { }
 export type YStore = Store
 export class Store { }
 export type YDeleteSet = DeleteSet

@@ -114,7 +114,7 @@ test.skip("testLengthIssue2", (t) => {
 
 test.skip("testDeleteInsert", (t) => {
   const { users, array0 } = init(gen, { users: 2 });
-  assert(array0);
+
   array0.delete(0, 0);
   t.notThrows(() => {
     array0.delete(1, 1);
@@ -129,8 +129,7 @@ test.skip("testDeleteInsert", (t) => {
 // TODO: impl sync protocol encode in rust
 test.skip("testInsertThreeElementsTryRegetProperty", (t) => {
   const { testConnector, users, array0, array1 } = init(gen, { users: 2 });
-  assert(array0);
-  assert(array1);
+
   array0.insert(0, [1, true, false]);
   t.deepEqual(array0.toJSON(), [1, true, false], ".toJSON() works");
   testConnector.flushAllMessages();
@@ -140,9 +139,7 @@ test.skip("testInsertThreeElementsTryRegetProperty", (t) => {
 
 test.skip("testConcurrentInsertWithThreeConflicts", (t) => {
   const { users, array0, array1, array2 } = init(gen, { users: 3 });
-  assert(array0);
-  assert(array1);
-  assert(array2);
+
   array0.insert(0, [0]);
   array1.insert(0, [1]);
   array2.insert(0, [2]);
@@ -153,9 +150,7 @@ test.skip("testConcurrentInsertDeleteWithThreeConflicts", (t) => {
   const { testConnector, users, array0, array1, array2 } = init(gen, {
     users: 3,
   });
-  assert(array0);
-  assert(array1);
-  assert(array2);
+
   array0.insert(0, ["x", "y", "z"]);
   testConnector.flushAllMessages();
   array0.insert(1, [0]);
@@ -169,9 +164,7 @@ test.skip("testInsertionsInLateSync", (t) => {
   const { testConnector, users, array0, array1, array2 } = init(gen, {
     users: 3,
   });
-  assert(array0);
-  assert(array1);
-  assert(array2);
+
   array0.insert(0, ["x", "y"]);
   testConnector.flushAllMessages();
   users[1].disconnect();
@@ -187,8 +180,7 @@ test.skip("testInsertionsInLateSync", (t) => {
 
 test.skip("testDisconnectReallyPreventsSendingMessages", (t) => {
   const { testConnector, users, array0, array1 } = init(gen, { users: 3 });
-  assert(array0);
-  assert(array1);
+
   array0.insert(0, ["x", "y"]);
   testConnector.flushAllMessages();
   users[1].disconnect();
@@ -204,8 +196,7 @@ test.skip("testDisconnectReallyPreventsSendingMessages", (t) => {
 
 test.skip("testDeletionsInLateSync", (t) => {
   const { testConnector, users, array0, array1 } = init(gen, { users: 2 });
-  assert(array0);
-  assert(array1);
+
   array0.insert(0, ["x", "y"]);
   testConnector.flushAllMessages();
   users[1].disconnect();
@@ -217,8 +208,7 @@ test.skip("testDeletionsInLateSync", (t) => {
 
 test.skip("testInsertThenMergeDeleteOnSync", (t) => {
   const { testConnector, users, array0, array1 } = init(gen, { users: 2 });
-  assert(array0);
-  assert(array1);
+
   array0.insert(0, ["x", "y", "z"]);
   testConnector.flushAllMessages();
   users[0].disconnect();
@@ -229,7 +219,7 @@ test.skip("testInsertThenMergeDeleteOnSync", (t) => {
 
 test.skip("testInsertAndDeleteEvents", (t) => {
   const { array0, users } = init(gen, { users: 2 });
-  assert(array0);
+
   let event: Record<string, any> | null = null;
   array0.observe((e) => {
     event = e;
@@ -248,7 +238,7 @@ test.skip("testInsertAndDeleteEvents", (t) => {
 
 test.skip("testNestedObserverEvents", (t) => {
   const { array0, users } = init(gen, { users: 2 });
-  assert(array0);
+
   const vals: number[] = [];
   array0.observe((e) => {
     if (array0.length === 1) {
@@ -269,7 +259,7 @@ test.skip("testNestedObserverEvents", (t) => {
 
 test.skip("testInsertAndDeleteEventsForTypes", (t) => {
   const { array0, users } = init(gen, { users: 2 });
-  assert(array0);
+
   let event: Record<string, any> | null = null;
   array0.observe((e) => {
     event = e;
@@ -292,7 +282,7 @@ test.skip("testInsertAndDeleteEventsForTypes", (t) => {
  */
 test.skip("testObserveDeepEventOrder", (t) => {
   const { array0, users } = init(gen, { users: 2 });
-  assert(array0);
+
   let events: any[] = [];
   array0.observeDeep((e) => {
     events = e;
@@ -332,7 +322,7 @@ test.skip("testObservedeepIndexes", (t) => {
 
 test.skip("testChangeEvent", (t) => {
   const { array0, users } = init(gen, { users: 2 });
-  assert(array0);
+
   let changes: any = null;
   array0.observe((e) => {
     changes = e.changes;
@@ -360,7 +350,7 @@ test.skip("testChangeEvent", (t) => {
 
 test.skip("testInsertAndDeleteEventsForTypes2", (t) => {
   const { array0, users } = init(gen, { users: 2 });
-  assert(array0);
+
   const events: Record<string, any>[] = [];
   array0.observe((e) => {
     events.push(e);
@@ -381,7 +371,7 @@ test.skip("testInsertAndDeleteEventsForTypes2", (t) => {
  */
 test.skip("testNewChildDoesNotEmitEventInTransaction", (t) => {
   const { array0, users } = init(gen, { users: 2 });
-  assert(array0);
+
   let fired = false;
   users[0].transact(() => {
     const newMap = new Y.Map();
@@ -396,7 +386,7 @@ test.skip("testNewChildDoesNotEmitEventInTransaction", (t) => {
 
 test.skip("testGarbageCollector", (t) => {
   const { testConnector, users, array0 } = init(gen, { users: 3 });
-  assert(array0);
+
   array0.insert(0, ["x", "y", "z"]);
   testConnector.flushAllMessages();
   users[0].disconnect();
@@ -408,7 +398,7 @@ test.skip("testGarbageCollector", (t) => {
 
 test.skip("testEventTargetIsSetCorrectlyOnLocal", (t) => {
   const { array0, users } = init(gen, { users: 3 });
-  assert(array0);
+
   let event: any;
   array0.observe((e) => {
     event = e;
@@ -420,8 +410,7 @@ test.skip("testEventTargetIsSetCorrectlyOnLocal", (t) => {
 
 test.skip("testEventTargetIsSetCorrectlyOnRemote", (t) => {
   const { testConnector, array0, array1, users } = init(gen, { users: 3 });
-  assert(array0);
-  assert(array1);
+
   let event: any;
   array0.observe((e) => {
     event = e;

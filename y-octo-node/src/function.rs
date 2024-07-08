@@ -23,6 +23,15 @@ pub fn compare_struct_stores(store: &YStore, other: &YStore) -> bool {
     store.doc.store_compare(&other.doc)
 }
 
+#[napi]
+pub fn compare_ids(a: Option<&YId>, b: Option<&YId>) -> bool {
+    match (a, b) {
+        (Some(a), Some(b)) => a.id == b.id,
+        (None, None) => true,
+        _ => false,
+    }
+}
+
 // delete set
 
 #[napi]

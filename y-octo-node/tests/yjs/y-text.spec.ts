@@ -1660,8 +1660,6 @@ test.skip("testDeltaBug2", (t) => {
  */
 test.skip("testDeltaAfterConcurrentFormatting", (t) => {
   const { text0, text1, testConnector } = init(gen, { users: 2 });
-  assert(text0);
-  assert(text1);
   text0.insert(0, "abcde");
   testConnector.flushAllMessages();
   text0.format(0, 3, { bold: true });
@@ -1686,8 +1684,6 @@ test.skip("testDeltaAfterConcurrentFormatting", (t) => {
 
 test.skip("testBasicInsertAndDelete", (t) => {
   const { users, text0 } = init(gen, { users: 2 });
-  assert(text0);
-
   let delta;
 
   text0.observe((event) => {
@@ -1720,8 +1716,6 @@ test.skip("testBasicInsertAndDelete", (t) => {
 
 test.skip("testBasicFormat", (t) => {
   const { users, text0 } = init(gen, { users: 2 });
-  assert(text0);
-
   let delta;
   text0.observe((event) => {
     delta = event.delta;
@@ -1772,8 +1766,6 @@ test.skip("testBasicFormat", (t) => {
 
 test.skip("testFalsyFormats", (t) => {
   const { users, text0 } = init(gen, { users: 2 });
-  assert(text0);
-
   let delta;
   text0.observe((event) => {
     delta = event.delta;
@@ -1866,7 +1858,6 @@ test.skip("testPreserveAttributesThroughDelete", (t) => {
 
 test.skip("testGetDeltaWithEmbeds", (t) => {
   const { text0 } = init(gen, { users: 1 });
-  assert(text0);
   text0.applyDelta([
     {
       insert: { linebreak: "s" },
@@ -1906,8 +1897,6 @@ test.skip("testTypesAsEmbed", (t) => {
 
 test.skip("testSnapshot", (t) => {
   const { text0 } = init(gen, { users: 1 });
-  assert(text0);
-
   const doc0 = text0.doc;
   doc0.gc = false;
   text0.applyDelta([
@@ -1985,15 +1974,12 @@ test.skip("testSnapshotDeleteAfter", (t) => {
 
 test.skip("testToJson", (t) => {
   const { text0 } = init(gen, { users: 1 });
-  assert(text0);
   text0.insert(0, "abc", { bold: true });
   t.assert(text0.toJSON() === "abc", "toJSON returns the unformatted text");
 });
 
 test.skip("testToDeltaEmbedAttributes", (t) => {
   const { text0 } = init(gen, { users: 1 });
-  assert(text0);
-
   text0.insert(0, "ab", { bold: true });
   text0.insertEmbed(1, { image: "imageSrc.png" }, { width: 100 });
   const delta0 = text0.toDelta();
@@ -2006,8 +1992,6 @@ test.skip("testToDeltaEmbedAttributes", (t) => {
 
 test.skip("testToDeltaEmbedNoAttributes", (t) => {
   const { text0 } = init(gen, { users: 1 });
-  assert(text0);
-
   text0.insert(0, "ab", { bold: true });
   text0.insertEmbed(1, { image: "imageSrc.png" });
   const delta0 = text0.toDelta();
@@ -2024,8 +2008,6 @@ test.skip("testToDeltaEmbedNoAttributes", (t) => {
 
 test.skip("testFormattingRemoved", (t) => {
   const { text0 } = init(gen, { users: 1 });
-  assert(text0);
-
   text0.insert(0, "ab", { bold: true });
   text0.delete(0, 2);
   t.assert(Y.getTypeChildren(text0).length === 1);
@@ -2075,8 +2057,6 @@ test.skip("testFormattingDeltaUnnecessaryAttributeChange", (t) => {
 test.skip("testInsertAndDeleteAtRandomPositions", (t) => {
   const N = 100000;
   const { text0 } = init(gen, { users: 1 });
-  assert(text0);
-
   // create initial content
   // let expectedResult = init
   text0.insert(0, prng.word(gen, N / 2, N / 2));
@@ -2102,8 +2082,6 @@ test.skip("testInsertAndDeleteAtRandomPositions", (t) => {
 test.skip("testAppendChars", (t) => {
   const N = 10000;
   const { text0 } = init(gen, { users: 1 });
-  assert(text0);
-
   // apply changes
   for (let i = 0; i < N; i++) {
     text0.insert(text0.length, "a");
@@ -2237,7 +2215,6 @@ test.skip("testIncrementalUpdatesPerformanceOnLargeFragmentedDocument", (t) => {
 test.skip("testSplitSurrogateCharacter", (t) => {
   {
     const { users, text0 } = init(gen, { users: 2 });
-    assert(text0);
     users[1].disconnect(); // disconnecting forces the user to encode the split surrogate
     text0.insert(0, "👾"); // insert surrogate character
     // split surrogate, which should not lead to an encoding error
@@ -2246,7 +2223,6 @@ test.skip("testSplitSurrogateCharacter", (t) => {
   }
   {
     const { users, text0 } = init(gen, { users: 2 });
-    assert(text0);
     users[1].disconnect(); // disconnecting forces the user to encode the split surrogate
     text0.insert(0, "👾👾"); // insert surrogate character
     // partially delete surrogate
@@ -2255,7 +2231,6 @@ test.skip("testSplitSurrogateCharacter", (t) => {
   }
   {
     const { users, text0 } = init(gen, { users: 2 });
-    assert(text0);
     users[1].disconnect(); // disconnecting forces the user to encode the split surrogate
     text0.insert(0, "👾👾"); // insert surrogate character
     // formatting will also split surrogates
@@ -2269,8 +2244,6 @@ test.skip("testSplitSurrogateCharacter", (t) => {
  */
 test.skip("testSearchMarkerBug1", (t) => {
   const { users, text0, text1, testConnector } = init(gen, { users: 2 });
-  assert(text0);
-
   users[0].onUpdate((update) => {
     users[0].transact(() => {
       Y.applyUpdate(users[0], update);

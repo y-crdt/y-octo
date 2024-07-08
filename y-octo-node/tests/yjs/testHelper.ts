@@ -247,17 +247,17 @@ export class TestConnector {
 type InitResult = {
   testConnector: TestConnector;
   users: Array<TestYOctoInstance>;
-  testObjects?: Array<any>;
-  array0?: Y.Array;
-  array1?: Y.Array;
-  array2?: Y.Array;
-  map0?: Y.Map;
-  map1?: Y.Map;
-  map2?: Y.Map;
-  map3?: Y.Map;
-  text0?: Y.Text;
-  text1?: Y.Text;
-  text2?: Y.Text;
+  testObjects: Array<any>;
+  array0: Y.Array;
+  array1: Y.Array;
+  array2: Y.Array;
+  map0: Y.Map;
+  map1: Y.Map;
+  map2: Y.Map;
+  map3: Y.Map;
+  text0: Y.Text;
+  text1: Y.Text;
+  text2: Y.Text;
   // xml0: Y.XmlElement;
   // xml1: Y.XmlElement;
   // xml2: Y.XmlElement;
@@ -274,6 +274,7 @@ export const init = (
     useV1Encoding();
   }
 
+  // @ts-expect-error expect
   const result: InitResult = {
     users: [],
     testConnector: new TestConnector(gen),

@@ -1,6 +1,11 @@
-use y_octo::{CrdtWrite, DeleteSet, Doc, RawEncoder, StateVector};
+use y_octo::{CrdtWrite, DeleteSet, Doc, Id, RawEncoder, StateVector};
 
 use super::*;
+
+#[napi(js_name = "Id")]
+pub struct YId {
+    pub(crate) id: Id,
+}
 
 #[napi(js_name = "Store")]
 pub struct YStore {
