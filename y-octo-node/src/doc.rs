@@ -1,6 +1,7 @@
 use napi::{
-    bindgen_prelude::{Buffer as JsBuffer, JsFunction},
+    bindgen_prelude::{Array as JsArray, Buffer as JsBuffer, JsFunction},
     threadsafe_function::{ErrorStrategy, ThreadsafeFunction, ThreadsafeFunctionCallMode},
+    Env, JsString, JsUnknown,
 };
 use y_octo::{CrdtRead, Doc, History, RawDecoder, StateVector};
 
@@ -91,8 +92,24 @@ impl YDoc {
     }
 
     #[napi]
-    pub fn create_map(&self) -> Result<YMap> {
-        self.doc.create_map().map(YMap::inner_new).map_err(anyhow::Error::from)
+    pub fn create_map(&self, env: Env, entries: Option<JsArray>) -> Result<YMap> {
+        let mut ymap = self.doc.create_map().map(YMap::inner_new)?;
+        if let Some(entries) = entries {
+            for i in 0..entries.len() {
+                if let Ok(Some(value)) = entries.get::<JsArray>(i) {
+                    let key = value.get::<JsString>(0)?;
+                    let value = value.get::<JsUnknown>(1)?;
+                    if let (Some(key), Some(value)) = (key, value) {
+                        ymap.set(env, key.into_utf8()?.into_owned()?, MixedRefYType::D(value))?;
+                        continue;
+                    }
+                }
+
+                return Err(anyhow::anyhow!("Invalid entry"));
+            }
+        }
+
+        Ok(ymap)
     }
 
     #[napi]

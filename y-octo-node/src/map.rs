@@ -1,4 +1,4 @@
-use napi::{bindgen_prelude::Array as JsArray, iterator::Generator, Env, JsFunction, JsObject, ValueType};
+use napi::{bindgen_prelude::Array as JsArray, iterator::Generator, Env, JsFunction, JsObject, JsUnknown, ValueType};
 use y_octo::{Any, Map, Value};
 
 use super::*;
@@ -158,6 +158,15 @@ impl YMap {
         }
     }
 
+    #[napi]
+    pub fn values(&self, env: Env) -> YMapValuesIterator {
+        YMapValuesIterator {
+            entries: self.map.iter().map(|(_, v)| v).collect(),
+            env,
+            current: 0,
+        }
+    }
+
     // TODO(@darkskygit): impl type based observe
     #[napi]
     pub fn observe(&mut self, _callback: JsFunction) -> Result<()> {
@@ -230,6 +239,40 @@ impl Generator for YMapKeyIterator {
             return None;
         }
         let ret = self.keys.get(current).cloned();
+        self.current = if let Some(value) = value.and_then(|v| v) {
+            value
+        } else {
+            self.current + 1
+        };
+        ret
+    }
+}
+
+#[napi(iterator)]
+pub struct YMapValuesIterator {
+    entries: Vec<Value>,
+    env: Env,
+    current: i64,
+}
+
+#[napi]
+impl Generator for YMapValuesIterator {
+    type Yield = JsUnknown;
+
+    type Next = Option<i64>;
+
+    type Return = ();
+
+    fn next(&mut self, value: Option<Self::Next>) -> Option<Self::Yield> {
+        let current = self.current as usize;
+        if self.entries.len() <= current {
+            return None;
+        }
+        let ret = if let Some(value) = self.entries.get(current) {
+            get_js_unknown_from_value(self.env, value.clone()).ok()
+        } else {
+            None
+        };
         self.current = if let Some(value) = value.and_then(|v| v) {
             value
         } else {

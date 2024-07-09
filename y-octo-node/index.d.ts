@@ -46,7 +46,7 @@ export class Doc {
   getOrCreateMap(key: string): YMap
   createArray(): YArray
   createText(text?: string | undefined | null): YText
-  createMap(): YMap
+  createMap(entries?: JsArray | undefined | null): YMap
   applyUpdate(update: Buffer): void
   encodeStateAsUpdateV1(state?: Buffer | undefined | null): Buffer
   gc(): void
@@ -65,6 +65,7 @@ export class YMap {
   toJson(): object
   entries(): YMapEntriesIterator
   keys(): YMapKeyIterator
+  values(): YMapValuesIterator
   observe(callback: (...args: any[]) => any): void
   observeDeep(callback: (...args: any[]) => any): void
 }
@@ -73,6 +74,9 @@ export class YMapEntriesIterator {
 }
 export class YMapKeyIterator {
   [Symbol.iterator](): Iterator<string, void, number | undefined | null>
+}
+export class YMapValuesIterator {
+  [Symbol.iterator](): Iterator<unknown, void, number | undefined | null>
 }
 export class YText {
   constructor()
