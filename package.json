@@ -17,7 +17,7 @@
     "format": "run-p format:toml format:prettier format:rs",
     "format:toml": "taplo format",
     "format:prettier": "prettier --write .",
-    "format:rs": "cargo +nightly-2023-08-19 fmt --all"
+    "format:rs": "cargo +nightly-2024-07-06 fmt --all"
   },
   "devDependencies": {
     "@taplo/cli": "^0.5.2",
@@ -37,7 +37,7 @@
       "taplo format"
     ],
     "*.rs": [
-      "cargo +nightly-2023-08-19 fmt --"
+      "cargo +nightly-2024-07-06 fmt --"
     ]
   },
   "resolutions": {
