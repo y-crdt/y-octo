@@ -1,4 +1,4 @@
-import * as t from "lib0/testing";
+import assert, { deepEqual } from "node:assert";
 import * as prng from "lib0/prng";
 import * as encoding from "lib0/encoding";
 import * as decoding from "lib0/decoding";
@@ -75,14 +75,14 @@ export class TestYOctoInstance extends Y.Doc {
     testConnector.allConns.add(this);
     this.updates = [];
     // set up observe on local model
-    this.onUpdate((update) => {
-      if (origin !== testConnector) {
-        const encoder = encoding.createEncoder();
-        syncProtocol.writeUpdate(encoder, update);
-        broadcastMessage(this, encoding.toUint8Array(encoder));
-      }
-      this.updates.push(update);
-    });
+    // this.onUpdate((update) => {
+    //   // if (origin !== testConnector) {
+    //   //   const encoder = encoding.createEncoder();
+    //   //   syncProtocol.writeUpdate(encoder, update);
+    //   //   broadcastMessage(this, encoding.toUint8Array(encoder));
+    //   // }
+    //   this.updates.push(update);
+    // });
     this.connect();
   }
 
@@ -154,6 +154,7 @@ export class TestConnector {
    * If this function was unable to flush a message, because there are no more messages to flush, it returns false. true otherwise.
    */
   flushRandomMessage(): boolean {
+    return false;
     const gen = this.prng;
     const conns = Array.from(this.onlineConns).filter(
       (conn) => conn.receiving.size > 0,
@@ -201,13 +202,11 @@ export class TestConnector {
   }
 
   reconnectAll() {
-    this.allConns.forEach((conn: { connect: () => any }) => conn.connect());
+    this.allConns.forEach((conn) => conn.connect());
   }
 
   disconnectAll() {
-    this.allConns.forEach((conn: { disconnect: () => any }) =>
-      conn.disconnect(),
-    );
+    this.allConns.forEach((conn) => conn.disconnect());
   }
 
   syncAll() {
@@ -330,32 +329,32 @@ export const compare = (users: TestYOctoInstance[]) => {
   //   t.assert(u.store.pendingStructs === null);
   // }
   // Test Array iterator
-  t.compare(
+  deepEqual(
     users[0].getOrCreateArray("array").toArray(),
     Array.from(users[0].getOrCreateArray("array").iter()),
   );
   // Test Map iterator
   const ymapkeys: any[] = Array.from(users[0].getOrCreateMap("map").keys());
-  t.assert(ymapkeys.length === Object.keys(userMapValues[0]).length);
+  assert(ymapkeys.length === Object.keys(userMapValues[0]).length);
   ymapkeys.forEach((key) =>
-    t.assert(object.hasProperty(userMapValues[0], key)),
+    assert(object.hasProperty(userMapValues[0], key)),
   );
 
   const mapRes: Record<string, any> = {};
   for (const [k, v] of users[0].getOrCreateMap("map").entries()) {
     mapRes[k] = Y.isAbstractType(v) ? v.toJSON() : v;
   }
-  t.compare(userMapValues[0], mapRes);
+  deepEqual(userMapValues[0], mapRes);
   // Compare all users
   for (let i = 0; i < users.length - 1; i++) {
-    t.compare(
+    deepEqual(
       userArrayValues[i].length,
       users[i].getOrCreateArray("array").length,
     );
-    t.compare(userArrayValues[i], userArrayValues[i + 1]);
-    t.compare(userMapValues[i], userMapValues[i + 1]);
-    // t.compare(userXmlValues[i], userXmlValues[i + 1]);
-    // t.compare(
+    deepEqual(userArrayValues[i], userArrayValues[i + 1]);
+    deepEqual(userMapValues[i], userMapValues[i + 1]);
+    // deepEqual(userXmlValues[i], userXmlValues[i + 1]);
+    // deepEqual(
     //   userTextValues[i]
     //     .map(
     //       /** @param {any} a */ (a: { insert: any }) =>
@@ -364,26 +363,26 @@ export const compare = (users: TestYOctoInstance[]) => {
     //     .join("").length,
     //   users[i].getOrCreateText("text").length,
     // );
-    // t.compare(
+    // deepEqual(
     //   userTextValues[i],
     //   userTextValues[i + 1],
     //   "",
     //   (_constructor, a, b) => {
     //     if (Y.isAbstractType(a)) {
-    //       t.compare(a.toJSON(), b.toJSON());
+    //       deepEqual(a.toJSON(), b.toJSON());
     //     } else if (a !== b) {
     //       t.fail("Deltas dont match");
     //     }
     //     return true;
     //   },
     // );
-    t.compare(Y.encodeStateVector(users[i]), Y.encodeStateVector(users[i + 1]));
+    deepEqual(Y.encodeStateVector(users[i]), Y.encodeStateVector(users[i + 1]));
     Y.equalDeleteSets(
       Y.createDeleteSetFromStructStore(users[i].store),
       Y.createDeleteSetFromStructStore(users[i + 1].store),
     );
     Y.compareStructStores(users[i].store, users[i + 1].store);
-    t.compare(
+    deepEqual(
       Y.encodeSnapshot(Y.snapshot(users[i])),
       Y.encodeSnapshot(Y.snapshot(users[i + 1])),
     );

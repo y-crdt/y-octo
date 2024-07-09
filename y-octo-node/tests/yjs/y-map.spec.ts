@@ -14,14 +14,16 @@ test.beforeEach(() => {
   gen = prng.create(randomInt(0, 0xffffffff));
 });
 
-test.skip("testIterators", (t) => {
+test("testIterators", (t) => {
   const ydoc = new Y.Doc();
   const ymap = ydoc.createMap();
   // we are only checking if the type assumptions are correct
   const vals = Array.from(ymap.values());
   const entries = Array.from(ymap.entries());
   const keys = Array.from(ymap.keys());
-  console.log(vals, entries, keys);
+  t.is(vals.length, 0);
+  t.is(entries.length, 0);
+  t.is(keys.length, 0);
 });
 
 /**
@@ -30,22 +32,20 @@ test.skip("testIterators", (t) => {
 test.skip("testMapEventError", (t) => {
   const doc = new Y.Doc();
   const ymap = doc.createMap();
-  /**
-   * @type {any}
-   */
+
   let event: any = null;
   ymap.observe((e) => {
     event = e;
   });
-  t.fails(() => {
+  t.throws(() => {
     t.info(event.keys);
   });
-  t.fails(() => {
+  t.throws(() => {
     t.info(event.keys);
   });
 });
 
-test.skip("testMapHavingIterableAsConstructorParamTests", (t) => {
+test("testMapHavingIterableAsConstructorParamTests", (t) => {
   const { users, map0 } = init(gen, { users: 1 });
 
   const m1 = users[0].createMap(Object.entries({ number: 1, string: "hello" }));
@@ -58,14 +58,14 @@ test.skip("testMapHavingIterableAsConstructorParamTests", (t) => {
     ["boolean", true],
   ]);
   map0.set("m2", m2);
-  t.assert(m2.get("object").x === 1);
+  t.assert(m2.get<any>("object").x === 1);
   t.assert(m2.get("boolean") === true);
 
-  const m3 = users[0].createMap([...m1, ...m2]);
+  const m3 = users[0].createMap([...m1.entries(), ...m2.entries()]);
   map0.set("m3", m3);
   t.assert(m3.get("number") === 1);
   t.assert(m3.get("string") === "hello");
-  t.assert(m3.get("object").x === 1);
+  t.assert(m3.get<any>("object").x === 1);
   t.assert(m3.get("boolean") === true);
 });
 
@@ -195,8 +195,8 @@ test.skip("testGetAndSetOfMapProperty", (t) => {
 test.skip("testYmapSetsYmap", (t) => {
   const { users, map0 } = init(gen, { users: 2 });
 
-  const map = map0.set("Map", new Y.Map());
-  t.assert(map0.get("Map") === map);
+  const map = map0.set("Map", users[0].createMap());
+  t.assert(Y.compareIds(map0.get<Y.Map>("Map").itemId, map.itemId));
   map.set("one", 1);
   t.deepEqual(map.get("one"), 1);
   compare(users);
@@ -239,7 +239,7 @@ test.skip("testGetAndSetOfMapPropertyWithConflict", (t) => {
   compare(users);
 });
 
-test.skip("testSizeAndDeleteOfMapProperty", (t) => {
+test("testSizeAndDeleteOfMapProperty", (t) => {
   const { map0 } = init(gen, { users: 1 });
 
   map0.set("stuff", "c0");
