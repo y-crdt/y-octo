@@ -9,8 +9,8 @@ members = [
 resolver = "2"
 
   [workspace.dependencies]
-  y-octo       = { workspace = true, path = "./y-octo" }
-  y-octo-utils = { workspace = true, path = "./y-octo-utils" }
+  y-octo       = { path = "./y-octo" }
+  y-octo-utils = { path = "./y-octo-utils" }
 
 [profile.release]
 codegen-units = 1
