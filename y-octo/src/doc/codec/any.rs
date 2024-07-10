@@ -1,4 +1,7 @@
-use std::{fmt, ops::RangeInclusive};
+use std::{
+    fmt::{self, Display},
+    ops::RangeInclusive,
+};
 
 use ordered_float::OrderedFloat;
 
@@ -515,21 +518,39 @@ impl serde::Serialize for Any {
     }
 }
 
-impl ToString for Any {
-    fn to_string(&self) -> String {
+impl Display for Any {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::True => "true".to_string(),
-            Self::False => "false".to_string(),
-            Self::String(s) => s.clone(),
-            Self::Integer(i) => i.to_string(),
-            Self::Float32(f) => f.to_string(),
-            Self::Float64(f) => f.to_string(),
-            Self::BigInt64(i) => i.to_string(),
-            // TODO: stringify other types
-            _ => {
-                debug!("any to string {:?}", self);
-                String::default()
+            Self::True => write!(f, "true"),
+            Self::False => write!(f, "false"),
+            Self::String(s) => write!(f, "\"{}\"", s),
+            Self::Integer(i) => write!(f, "{}", i),
+            Self::Float32(v) => write!(f, "{}", v),
+            Self::Float64(v) => write!(f, "{}", v),
+            Self::BigInt64(v) => write!(f, "{}", v),
+            Self::Object(map) => {
+                write!(f, "{{")?;
+                for (i, (key, value)) in map.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}: {}", key, value)?;
+                }
+                write!(f, "}}")
             }
+            Self::Array(vec) => {
+                write!(f, "[")?;
+                for (i, value) in vec.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}", value)?;
+                }
+                write!(f, "]")
+            }
+            Self::Binary(buf) => write!(f, "{:?}", buf),
+            Self::Undefined => write!(f, "undefined"),
+            Self::Null => write!(f, "null"),
         }
     }
 }
