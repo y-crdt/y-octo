@@ -92,7 +92,6 @@ pub fn write_awareness<W: Write>(buffer: &mut W, clients: &AwarenessStates) -> R
     Ok(())
 }
 
-
 // TODO(@darkskygit): impl reader/writer
 // awareness state message
 #[allow(dead_code)]

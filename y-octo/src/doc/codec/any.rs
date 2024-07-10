@@ -366,9 +366,9 @@ impl From<serde_json::Value> for Any {
                 if n.is_f64() {
                     Self::Float64(n.as_f64().unwrap().into())
                 } else if n.is_i64() {
-                    Self::Integer(n.as_i64().unwrap() as u64)
+                    Self::Integer(n.as_i64().unwrap() as i32)
                 } else {
-                    Self::Integer(n.as_u64().unwrap())
+                    Self::Integer(n.as_u64().unwrap() as i32)
                 }
             }
             serde_json::Value::String(s) => Self::String(s),
