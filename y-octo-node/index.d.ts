@@ -33,6 +33,12 @@ export class YArray {
 export class YArrayIterator {
   [Symbol.iterator](): Iterator<MixedYType, void, number | undefined | null>
 }
+export type YAwareness = Awareness
+export class Awareness {
+  constructor(clientId?: number | undefined | null)
+  get clientId(): number
+  get states<T = Record<string, any>>(): Record<string, T>
+}
 export type YDoc = Doc
 export class Doc {
   constructor(clientId?: number | undefined | null)
