@@ -2,6 +2,7 @@ use anyhow::Result;
 use napi_derive::napi;
 
 mod array;
+mod awareness;
 mod doc;
 mod function;
 mod map;
@@ -10,6 +11,7 @@ mod types;
 mod utils;
 
 pub use array::*;
+pub use awareness::*;
 pub use doc::*;
 pub use function::*;
 pub use map::*;
