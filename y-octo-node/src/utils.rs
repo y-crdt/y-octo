@@ -23,6 +23,13 @@ pub fn get_js_unknown_from_any(env: Env, any: Any) -> Result<JsUnknown> {
             }
             Ok(js_array.into_unknown())
         }
+        Any::Object(object) => {
+            let mut js_object = env.create_object()?;
+            for (key, value) in object.into_iter() {
+                js_object.set_named_property(&key, get_js_unknown_from_any(env, value)?)?;
+            }
+            Ok(js_object.into_unknown())
+        }
         _ => env.get_null().map(|v| v.into_unknown()),
     }
 }
@@ -62,7 +69,6 @@ pub fn get_any_from_js_object(object: JsObject) -> Result<Any> {
                         .and_then(|obj| obj.into_utf8().and_then(|s| s.as_str().map(|s| (obj, s.to_string()))))
                 }) {
                     if let Ok(value) = object.get_property::<_, JsUnknown>(obj) {
-                        println!("key: {}", key);
                         map.insert(key, get_any_from_js_unknown(value)?);
                     }
                 }

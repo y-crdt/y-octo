@@ -1,25 +1,26 @@
 use napi::{
-    bindgen_prelude::{Buffer as JsBuffer, JsFunction},
+    bindgen_prelude::{Array as JsArray, Buffer as JsBuffer, JsFunction},
     threadsafe_function::{ErrorStrategy, ThreadsafeFunction, ThreadsafeFunctionCallMode},
+    Env, JsString, JsUnknown,
 };
-use y_octo::{CrdtRead, Doc as YDoc, History, RawDecoder, StateVector};
+use y_octo::{CrdtRead, Doc, History, RawDecoder, StateVector};
 
 use super::*;
 
-#[napi]
-pub struct Doc {
-    doc: YDoc,
+#[napi(js_name = "Doc")]
+pub struct YDoc {
+    pub(crate) doc: Doc,
 }
 
 #[napi]
-impl Doc {
+impl YDoc {
     #[napi(constructor)]
     pub fn new(client_id: Option<i64>) -> Self {
         Self {
             doc: if let Some(client_id) = client_id {
-                YDoc::with_client(client_id as u64)
+                Doc::with_client(client_id as u64)
             } else {
-                YDoc::default()
+                Doc::default()
             },
         }
     }
@@ -29,9 +30,19 @@ impl Doc {
         self.doc.client() as i64
     }
 
+    #[napi(setter)]
+    pub fn set_client_id(&mut self, client_id: i64) {
+        self.doc.set_client(client_id as u64);
+    }
+
     #[napi(getter)]
     pub fn guid(&self) -> &str {
         self.doc.guid()
+    }
+
+    #[napi(getter)]
+    pub fn store(&self) -> YStore {
+        YStore { doc: self.doc.clone() }
     }
 
     #[napi(getter)]
@@ -72,16 +83,33 @@ impl Doc {
     }
 
     #[napi]
-    pub fn create_text(&self) -> Result<YText> {
-        self.doc
-            .create_text()
-            .map(YText::inner_new)
-            .map_err(anyhow::Error::from)
+    pub fn create_text(&self, text: Option<String>) -> Result<YText> {
+        let mut ytext = self.doc.create_text().map(YText::inner_new)?;
+        if let Some(text) = text {
+            ytext.insert(0, text)?;
+        }
+        Ok(ytext)
     }
 
     #[napi]
-    pub fn create_map(&self) -> Result<YMap> {
-        self.doc.create_map().map(YMap::inner_new).map_err(anyhow::Error::from)
+    pub fn create_map(&self, env: Env, entries: Option<JsArray>) -> Result<YMap> {
+        let mut ymap = self.doc.create_map().map(YMap::inner_new)?;
+        if let Some(entries) = entries {
+            for i in 0..entries.len() {
+                if let Ok(Some(value)) = entries.get::<JsArray>(i) {
+                    let key = value.get::<JsString>(0)?;
+                    let value = value.get::<JsUnknown>(1)?;
+                    if let (Some(key), Some(value)) = (key, value) {
+                        ymap.set(env, key.into_utf8()?.into_owned()?, MixedRefYType::D(value))?;
+                        continue;
+                    }
+                }
+
+                return Err(anyhow::anyhow!("Invalid entry"));
+            }
+        }
+
+        Ok(ymap)
     }
 
     #[napi]
@@ -121,6 +149,13 @@ impl Doc {
         self.doc.subscribe(Box::new(callback));
         Ok(())
     }
+
+    #[napi]
+    pub fn transact(&mut self, callback: JsFunction) -> Result<()> {
+        callback.call_without_args(None)?;
+
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -130,33 +165,33 @@ mod tests {
     #[test]
     fn test_doc_client() {
         let client_id = 1;
-        let doc = Doc::new(Some(client_id));
+        let doc = YDoc::new(Some(client_id));
         assert_eq!(doc.client_id(), 1);
     }
 
     #[test]
     fn test_doc_guid() {
-        let doc = Doc::new(None);
+        let doc = YDoc::new(None);
         assert_eq!(doc.guid().len(), 21);
     }
 
     #[test]
     fn test_create_array() {
-        let doc = Doc::new(None);
+        let doc = YDoc::new(None);
         let array = doc.get_or_create_array("array".into()).unwrap();
         assert_eq!(array.length(), 0);
     }
 
     #[test]
     fn test_create_text() {
-        let doc = Doc::new(None);
+        let doc = YDoc::new(None);
         let text = doc.get_or_create_text("text".into()).unwrap();
         assert_eq!(text.len(), 0);
     }
 
     #[test]
     fn test_keys() {
-        let doc = Doc::new(None);
+        let doc = YDoc::new(None);
         doc.get_or_create_array("array".into()).unwrap();
         doc.get_or_create_text("text".into()).unwrap();
         doc.get_or_create_map("map".into()).unwrap();
