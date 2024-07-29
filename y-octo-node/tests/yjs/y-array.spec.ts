@@ -2,7 +2,7 @@ import test from "ava";
 
 import { init, compare, applyRandomTests } from "./testHelper";
 
-import * as Y from "../../yocto";
+import * as Y from "../../index";
 import * as prng from "lib0/prng";
 import * as math from "lib0/math";
 import { randomInt } from "node:crypto";

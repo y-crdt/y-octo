@@ -4,7 +4,7 @@ import test from "ava";
 
 import { init, compare, applyRandomTests } from "./testHelper.js";
 
-import * as Y from "../../yocto";
+import * as Y from "../../index";
 import * as prng from "lib0/prng";
 
 const production = false;

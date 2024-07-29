@@ -20,7 +20,7 @@
   },
   "license": "MIT",
   "devDependencies": {
-    "@napi-rs/cli": "^2.16.2",
+    "@napi-rs/cli": "^2.18.4",
     "@types/node": "^20.16.4",
     "@types/prompts": "^2.4.4",
     "ava": "^6.1.3",
@@ -36,8 +36,8 @@
   },
   "scripts": {
     "artifacts": "napi artifacts",
-    "build": "napi build --platform --release --no-const-enum",
-    "build:debug": "napi build --platform --no-const-enum",
+    "build": "napi build --platform --release --no-const-enum --dts yocto.d.ts --js yocto.js",
+    "build:debug": "napi build --platform --no-const-enum --dts yocto.d.ts --js yocto.js",
     "universal": "napi universal",
     "test": "ava --concurrency 1 --serial",
     "test:watch": "yarn exec tsx ./scripts/run-test.mts all --watch",

@@ -5,7 +5,7 @@ import * as decoding from "lib0/decoding";
 import * as syncProtocol from "y-protocols/sync";
 import * as object from "lib0/object";
 import * as map from "lib0/map";
-import * as Y from "../../yocto";
+import * as Y from "../../index";
 
 if (typeof window !== "undefined") {
   // @ts-ignore

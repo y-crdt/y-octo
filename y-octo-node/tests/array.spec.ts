@@ -1,6 +1,6 @@
 import test from "ava";
 
-import * as YOcto from "../yocto";
+import * as YOcto from "../index";
 
 let client_id: number;
 let doc: YOcto.Doc;
