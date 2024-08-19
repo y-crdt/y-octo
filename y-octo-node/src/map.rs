@@ -51,7 +51,8 @@ impl YMap {
     }
 
     #[napi(
-        ts_generic_types = "T = YArray | YMap | YText | boolean | number | string | Record<string, any> | null | undefined",
+        ts_generic_types = "T = YArray | YMap | YText | boolean | number | string | Record<string, any> | null | \
+                            undefined",
         ts_args_type = "key: string, value: T",
         ts_return_type = "T"
     )]

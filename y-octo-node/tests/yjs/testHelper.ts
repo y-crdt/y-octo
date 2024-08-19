@@ -336,9 +336,7 @@ export const compare = (users: TestYOctoInstance[]) => {
   // Test Map iterator
   const ymapkeys: any[] = Array.from(users[0].getOrCreateMap("map").keys());
   assert(ymapkeys.length === Object.keys(userMapValues[0]).length);
-  ymapkeys.forEach((key) =>
-    assert(object.hasProperty(userMapValues[0], key)),
-  );
+  ymapkeys.forEach((key) => assert(object.hasProperty(userMapValues[0], key)));
 
   const mapRes: Record<string, any> = {};
   for (const [k, v] of users[0].getOrCreateMap("map").entries()) {

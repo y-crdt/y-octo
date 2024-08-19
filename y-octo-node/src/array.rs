@@ -145,14 +145,16 @@ impl YArray {
     }
 
     #[napi(
-        ts_args_type = "value: YArray | YMap | YText | boolean | number | string | Record<string, any> | null | undefined"
+        ts_args_type = "value: YArray | YMap | YText | boolean | number | string | Record<string, any> | null | \
+                        undefined"
     )]
     pub fn push(&mut self, value: MixedRefYType) -> Result<()> {
         self.insert(self.length(), value)
     }
 
     #[napi(
-        ts_args_type = "value: YArray | YMap | YText | boolean | number | string | Record<string, any> | null | undefined"
+        ts_args_type = "value: YArray | YMap | YText | boolean | number | string | Record<string, any> | null | \
+                        undefined"
     )]
     pub fn unshift(&mut self, value: MixedRefYType) -> Result<()> {
         self.insert(0, value)
