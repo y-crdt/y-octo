@@ -1,17 +1,18 @@
 use napi::{bindgen_prelude::Array as JsArray, iterator::Generator, Env, JsFunction, JsObject, JsUnknown, ValueType};
-use y_octo::{Any, Map, Value};
+use y_octo::{Any, Doc, Map, Value};
 
 use super::*;
 
 #[napi]
 pub struct YMap {
     pub(crate) map: Map,
+    doc: Doc,
 }
 
 #[napi]
 impl YMap {
-    pub(crate) fn inner_new(map: Map) -> Self {
-        Self { map }
+    pub(crate) fn inner_new(map: Map, doc: &Doc) -> Self {
+        Self { map, doc: doc.clone() }
     }
 
     #[napi(getter)]
@@ -39,8 +40,8 @@ impl YMap {
         if let Some(value) = self.map.get(&key) {
             match value {
                 Value::Any(any) => get_js_unknown_from_any(env, any).map(MixedYType::D),
-                Value::Array(array) => Ok(MixedYType::A(YArray::inner_new(array))),
-                Value::Map(map) => Ok(MixedYType::B(YMap::inner_new(map))),
+                Value::Array(array) => Ok(MixedYType::A(YArray::inner_new(array, &self.doc))),
+                Value::Map(map) => Ok(MixedYType::B(YMap::inner_new(map, &self.doc))),
                 Value::Text(text) => Ok(MixedYType::C(YText::inner_new(text))),
                 _ => env.get_null().map(|v| v.into_unknown()).map(MixedYType::D),
             }
@@ -59,12 +60,13 @@ impl YMap {
     pub fn set(&mut self, env: Env, key: String, value: MixedRefYType) -> Result<MixedYType> {
         match value {
             MixedRefYType::A(array) => {
-                self.map.insert(key, array.array.clone())?;
-                Ok(MixedYType::A(YArray::inner_new(array.array.clone())))
+                let array = array.integrate_to_ytype(&self.doc).map_err(anyhow::Error::from)?;
+                self.map.insert(key, array.clone())?;
+                Ok(MixedYType::A(YArray::inner_new(array, &self.doc)))
             }
             MixedRefYType::B(map) => {
                 self.map.insert(key, map.map.clone())?;
-                Ok(MixedYType::B(YMap::inner_new(map.map.clone())))
+                Ok(MixedYType::B(YMap::inner_new(map.map.clone(), &self.doc)))
             }
             MixedRefYType::C(text) => {
                 self.map.insert(key, text.text.clone())?;
@@ -137,7 +139,7 @@ impl YMap {
     pub fn to_json(&self, env: Env) -> Result<JsObject> {
         let mut js_object = env.create_object()?;
         for (key, value) in self.map.iter() {
-            js_object.set(key, get_js_unknown_from_value(env, value))?;
+            js_object.set(key, get_js_unknown_from_value(env, Some(&self.doc), value))?;
         }
         Ok(js_object)
     }
@@ -147,6 +149,7 @@ impl YMap {
         YMapEntriesIterator {
             entries: self.map.iter().map(|(k, v)| (k.to_owned(), v)).collect(),
             env,
+            doc: self.doc.clone(),
             current: 0,
         }
     }
@@ -164,6 +167,7 @@ impl YMap {
         YMapValuesIterator {
             entries: self.map.iter().map(|(_, v)| v).collect(),
             env,
+            doc: self.doc.clone(),
             current: 0,
         }
     }
@@ -185,6 +189,7 @@ impl YMap {
 pub struct YMapEntriesIterator {
     entries: Vec<(String, Value)>,
     env: Env,
+    doc: Doc,
     current: i64,
 }
 
@@ -205,7 +210,10 @@ impl Generator for YMapEntriesIterator {
             let mut js_array = self.env.create_array(2).ok()?;
             js_array.set(0, string).ok()?;
             js_array
-                .set(1, get_js_unknown_from_value(self.env, value.clone()).ok()?)
+                .set(
+                    1,
+                    get_js_unknown_from_value(self.env, Some(&self.doc), value.clone()).ok()?,
+                )
                 .ok()?;
             Some(js_array)
         } else {
@@ -253,6 +261,7 @@ impl Generator for YMapKeyIterator {
 pub struct YMapValuesIterator {
     entries: Vec<Value>,
     env: Env,
+    doc: Doc,
     current: i64,
 }
 
@@ -270,7 +279,7 @@ impl Generator for YMapValuesIterator {
             return None;
         }
         let ret = if let Some(value) = self.entries.get(current) {
-            get_js_unknown_from_value(self.env, value.clone()).ok()
+            get_js_unknown_from_value(self.env, Some(&self.doc), value.clone()).ok()
         } else {
             None
         };
