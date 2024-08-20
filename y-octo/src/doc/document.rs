@@ -370,6 +370,10 @@ impl Doc {
         self.publisher.count()
     }
 
+    pub fn subscriber_count(&self) -> usize {
+        Arc::<DocPublisher>::strong_count(&self.publisher)
+    }
+
     pub fn gc(&self) -> JwstCodecResult<()> {
         self.store.write().unwrap().optimize()
     }

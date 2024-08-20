@@ -36,7 +36,7 @@ test("testSlice", (t) => {
   t.deepEqual(arr.slice(0, 2), [0, 1]);
 });
 
-test.skip("testArrayFrom", (t) => {
+test("testArrayFrom", (t) => {
   const doc1 = new Y.Doc();
   const db1 = doc1.getOrCreateMap("root");
   const nestedArray1 = Y.Array.from([0, 1, 2]);
@@ -74,7 +74,7 @@ test("testLengthIssue", (t) => {
 /**
  * Debugging yjs#314
  */
-test.skip("testLengthIssue2", (t) => {
+test("testLengthIssue2", (t) => {
   const doc = new Y.Doc();
   const next = doc.createArray();
   doc.transact(() => {

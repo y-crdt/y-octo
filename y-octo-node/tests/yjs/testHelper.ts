@@ -75,14 +75,14 @@ export class TestYOctoInstance extends Y.Doc {
     testConnector.allConns.add(this);
     this.updates = [];
     // set up observe on local model
-    // this.onUpdate((update) => {
-    //   // if (origin !== testConnector) {
-    //   //   const encoder = encoding.createEncoder();
-    //   //   syncProtocol.writeUpdate(encoder, update);
-    //   //   broadcastMessage(this, encoding.toUint8Array(encoder));
-    //   // }
-    //   this.updates.push(update);
-    // });
+    this.onUpdate((update) => {
+      // if (origin !== testConnector) {
+      //   const encoder = encoding.createEncoder();
+      //   syncProtocol.writeUpdate(encoder, update);
+      //   broadcastMessage(this, encoding.toUint8Array(encoder));
+      // }
+      this.updates.push(update);
+    });
     this.connect();
   }
 
@@ -90,6 +90,7 @@ export class TestYOctoInstance extends Y.Doc {
    * Disconnect from TestConnector.
    */
   disconnect() {
+    this.offUpdate();
     this.receiving = new Map();
     this.tc.onlineConns.delete(this);
   }
@@ -154,7 +155,6 @@ export class TestConnector {
    * If this function was unable to flush a message, because there are no more messages to flush, it returns false. true otherwise.
    */
   flushRandomMessage(): boolean {
-    return false;
     const gen = this.prng;
     const conns = Array.from(this.onlineConns).filter(
       (conn) => conn.receiving.size > 0,

@@ -46,7 +46,7 @@ test.skip("testMapEventError", (t) => {
 });
 
 test("testMapHavingIterableAsConstructorParamTests", (t) => {
-  const { users, map0 } = init(gen, { users: 1 });
+  const { users, map0, testConnector } = init(gen, { users: 1 });
 
   const m1 = users[0].createMap(Object.entries({ number: 1, string: "hello" }));
   map0.set("m1", m1);
@@ -67,6 +67,7 @@ test("testMapHavingIterableAsConstructorParamTests", (t) => {
   t.assert(m3.get("string") === "hello");
   t.assert(m3.get<any>("object").x === 1);
   t.assert(m3.get("boolean") === true);
+  testConnector.disconnectAll();
 });
 
 test.skip("testBasicMapTests", (t) => {
@@ -240,7 +241,7 @@ test.skip("testGetAndSetOfMapPropertyWithConflict", (t) => {
 });
 
 test("testSizeAndDeleteOfMapProperty", (t) => {
-  const { map0 } = init(gen, { users: 1 });
+  const { map0, testConnector } = init(gen, { users: 1 });
 
   map0.set("stuff", "c0");
   map0.set("otherstuff", "c1");
@@ -255,6 +256,7 @@ test("testSizeAndDeleteOfMapProperty", (t) => {
     map0.size === 0,
     `map size after delete is ${map0.size}, expected 0`,
   );
+  testConnector.disconnectAll();
 });
 
 test.skip("testGetAndSetAndDeleteOfMapProperty", (t) => {
@@ -269,6 +271,7 @@ test.skip("testGetAndSetAndDeleteOfMapProperty", (t) => {
     t.assert(u.get("stuff") === undefined);
   }
   compare(users);
+  testConnector.disconnectAll()
 });
 
 test.skip("testSetAndClearOfMapProperties", (t) => {

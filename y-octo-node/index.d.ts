@@ -15,6 +15,7 @@ export declare function applyUpdate(doc: Doc, update: Buffer): void
 export declare function mergeUpdates(updates: Array<Buffer>): Buffer
 export declare function isAbstractType(unknown: unknown): boolean
 export class YArray {
+  static from(array: JsArray): this
   get length(): number
   get isEmpty(): boolean
   get<T = unknown>(index: number): T
@@ -57,6 +58,7 @@ export class Doc {
   encodeStateAsUpdateV1(state?: Buffer | undefined | null): Buffer
   gc(): void
   onUpdate(callback: (result: Uint8Array) => void): void
+  offUpdate(): void
   transact(callback: (...args: any[]) => any): void
 }
 export class YMap {
