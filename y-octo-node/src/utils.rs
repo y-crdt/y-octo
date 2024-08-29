@@ -1,5 +1,5 @@
 use napi::{bindgen_prelude::Either4, Env, Error, JsObject, JsUnknown, Result, Status, ValueType};
-use y_octo::{AHashMap, Any, Doc, HashMapExt, Value};
+use y_octo::{AHashMap, Any, HashMapExt, Value};
 
 use super::*;
 
@@ -34,14 +34,14 @@ pub fn get_js_unknown_from_any(env: Env, any: Any) -> Result<JsUnknown> {
     }
 }
 
-pub fn get_js_unknown_from_value(env: Env, doc: Option<&Doc>, value: Value) -> Result<JsUnknown> {
+pub fn get_js_unknown_from_value(env: Env, value: Value) -> Result<JsUnknown> {
     match value {
         Value::Any(any) => get_js_unknown_from_any(env, any),
-        Value::Array(array) if doc.is_some() => env
-            .create_external(YArray::inner_new(array, doc.unwrap()), None)
+        Value::Array(array) => env
+            .create_external(YArray::inner_new(array), None)
             .map(|o| o.into_unknown()),
-        Value::Map(map) if doc.is_some() => env
-            .create_external(YMap::inner_new(map, doc.unwrap()), None)
+        Value::Map(map) => env
+            .create_external(YMap::inner_new(map), None)
             .map(|o| o.into_unknown()),
         Value::Text(text) => env
             .create_external(YText::inner_new(text), None)

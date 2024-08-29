@@ -15,7 +15,6 @@ export declare function applyUpdate(doc: Doc, update: Buffer): void
 export declare function mergeUpdates(updates: Array<Buffer>): Buffer
 export declare function isAbstractType(unknown: unknown): boolean
 export declare class YArray {
-  static from(array: JsArray): this
   get length(): number
   get isEmpty(): boolean
   get<T = unknown>(index: number): T

@@ -54,7 +54,7 @@ impl YDoc {
     pub fn get_or_create_array(&self, key: String) -> Result<YArray> {
         self.doc
             .get_or_create_array(key)
-            .map(|a| YArray::inner_new(a, &self.doc))
+            .map(YArray::inner_new)
             .map_err(anyhow::Error::from)
     }
 
@@ -70,7 +70,7 @@ impl YDoc {
     pub fn get_or_create_map(&self, key: String) -> Result<YMap> {
         self.doc
             .get_or_create_map(key)
-            .map(|m| YMap::inner_new(m, &self.doc))
+            .map(YMap::inner_new)
             .map_err(anyhow::Error::from)
     }
 
@@ -78,7 +78,7 @@ impl YDoc {
     pub fn create_array(&self) -> Result<YArray> {
         self.doc
             .create_array()
-            .map(|a| YArray::inner_new(a, &self.doc))
+            .map(YArray::inner_new)
             .map_err(anyhow::Error::from)
     }
 
@@ -93,7 +93,7 @@ impl YDoc {
 
     #[napi]
     pub fn create_map(&self, env: Env, entries: Option<JsArray>) -> Result<YMap> {
-        let mut ymap = self.doc.create_map().map(|m| YMap::inner_new(m, &self.doc))?;
+        let mut ymap = self.doc.create_map().map(YMap::inner_new)?;
         if let Some(entries) = entries {
             for i in 0..entries.len() {
                 if let Ok(Some(value)) = entries.get::<JsArray>(i) {
