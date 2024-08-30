@@ -120,17 +120,25 @@ impl YDoc {
     }
 
     #[napi]
-    pub fn encode_state_as_update_v1(&self, state: Option<JsBuffer>) -> Result<JsBuffer> {
-        let result = match state {
-            Some(state) => {
-                let mut decoder = RawDecoder::new(state.as_ref());
-                let state = StateVector::read(&mut decoder)?;
-                self.doc.encode_state_as_update_v1(&state)
-            }
-            None => self.doc.encode_update_v1(),
-        };
+    pub fn diff(&self, sv: Option<JsBuffer>) -> Result<Option<JsBuffer>> {
+        if let Some(sv) = sv {
+            let mut decoder = RawDecoder::new(sv.as_ref());
+            let state = StateVector::read(&mut decoder)?;
+            let update = self.doc.encode_state_as_update_v1(&state)?;
+            Ok(Some(update.into()))
+        } else {
+            Ok(None)
+        }
+    }
 
-        result.map(|v| v.into()).map_err(anyhow::Error::from)
+    #[napi]
+    pub fn encode_state_as_update_v1(&self, state: Option<JsBuffer>) -> Result<JsBuffer> {
+        if let Some(buffer) = self.diff(state)? {
+            Ok(buffer)
+        } else {
+            let buffer = self.doc.encode_update_v1()?;
+            Ok(buffer.into())
+        }
     }
 
     #[napi]
@@ -153,13 +161,6 @@ impl YDoc {
     #[napi]
     pub fn off_update(&mut self) -> Result<()> {
         self.doc.unsubscribe_all();
-        Ok(())
-    }
-
-    #[napi]
-    pub fn transact(&mut self, callback: JsFunction) -> Result<()> {
-        callback.call_without_args(None)?;
-
         Ok(())
     }
 }
