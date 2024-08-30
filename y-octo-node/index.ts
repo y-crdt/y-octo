@@ -17,24 +17,89 @@ type ListItem =
   | Record<string, any>
   | null;
 
-export const Doc = Y.Doc;
+export class Doc extends Y.Doc {
+  private cachedArray: globalThis.Map<string, Array> = new globalThis.Map();
+  private cachedMap: globalThis.Map<string, Map> = new globalThis.Map();
+  private subscribers: Set<(result: Uint8Array, origin?: unknown) => void> =
+    new Set();
+  private lastState: Buffer | null = null;
+
+  getArray(key: string): Array {
+    if (this.cachedArray.has(key)) {
+      return this.cachedArray.get(key)!;
+    }
+    const yarray = new Array([], this, this.getOrCreateArray(key));
+    this.cachedArray.set(key, yarray);
+    return yarray;
+  }
+
+  getMap(key: string): Map {
+    if (this.cachedMap.has(key)) {
+      return this.cachedMap.get(key)!;
+    }
+    const ymap = new Map({}, this, this.getOrCreateMap(key));
+    this.cachedMap.set(key, ymap);
+    return ymap;
+  }
+
+  getText(key: string): Text {
+    return this.getOrCreateText(key);
+  }
+
+  triggerDiff(origin?: unknown): void {
+    if (this.lastState) {
+      const diff = this.diff(this.lastState);
+      if (diff && !this.lastState.equals(diff)) {
+        this.lastState = diff;
+      } else {
+        return;
+      }
+    } else {
+      this.lastState = this.encodeStateAsUpdateV1();
+    }
+
+    if (this.lastState?.length) {
+      this.subscribers.forEach((callback) =>
+        callback(new Uint8Array(this.lastState!), origin || this),
+      );
+    }
+  }
+
+  transact(callback: (...args: any[]) => any, origin?: unknown): void {
+    try {
+      callback();
+    } finally {
+      this.triggerDiff(origin);
+    }
+  }
+
+  override onUpdate(
+    callback: (result: Uint8Array, origin?: unknown) => void,
+  ): void {
+    this.subscribers.add(callback);
+  }
+
+  override offUpdate(): void {
+    this.subscribers.clear();
+  }
+}
 
 export class Array {
-  private ytype?: { doc: Y.Doc; array: Y.YArray };
+  private ytype?: { doc: Doc; array: Y.YArray };
   private preliminary: any[] = [];
 
   static from<T extends ArrayType>(items: T[]): Array {
     return new Array(items);
   }
 
-  constructor(items: ArrayType[], ydoc?: Y.YDoc) {
+  constructor(items: ArrayType[], ydoc?: Doc, yarray?: Y.YArray) {
     this.preliminary = items;
-    if (ydoc) this.integrate(ydoc);
+    if (ydoc) this.integrate(ydoc, yarray);
   }
 
-  integrate(ydoc: Y.YDoc): Y.YArray {
+  integrate(ydoc: Doc, yarray?: Y.YArray): Y.YArray {
     if (!this.ytype) {
-      this.ytype = { doc: ydoc, array: ydoc.createArray() };
+      this.ytype = { doc: ydoc, array: yarray || ydoc.createArray() };
       for (const item of this.preliminary) {
         if (item instanceof Array) {
           this.ytype.array.push(item.integrate(ydoc));
@@ -43,6 +108,7 @@ export class Array {
         }
       }
       this.preliminary = [];
+      this.ytype.doc.triggerDiff();
     }
     return this.ytype.array;
   }
@@ -80,6 +146,7 @@ export class Array {
       } else {
         this.ytype.array.insert(index, value);
       }
+      this.ytype.doc.triggerDiff();
     } else {
       this.preliminary.splice(index, 0, value);
     }
@@ -88,6 +155,7 @@ export class Array {
   push(value?: ListItem): void {
     if (this.ytype) {
       this.ytype.array.push(value);
+      this.ytype.doc.triggerDiff();
     } else {
       this.preliminary.push(value);
     }
@@ -96,6 +164,7 @@ export class Array {
   unshift(value?: ListItem): void {
     if (this.ytype) {
       this.ytype.array.unshift(value);
+      this.ytype.doc.triggerDiff();
     } else {
       this.preliminary.unshift(value);
     }
@@ -104,6 +173,7 @@ export class Array {
   delete(index: number, len?: number): void {
     if (this.ytype) {
       this.ytype.array.delete(index, len);
+      this.ytype.doc.triggerDiff();
     } else {
       this.preliminary.splice(index, len);
     }
@@ -141,17 +211,17 @@ export class Array {
 }
 
 export class Map {
-  private ytype?: { doc: Y.Doc; map: Y.YMap };
+  private ytype?: { doc: Doc; map: Y.YMap };
   private preliminary: Record<string, any> = {};
 
-  constructor(items: Record<string, any>, ydoc?: Y.YDoc) {
+  constructor(items: Record<string, any>, ydoc?: Doc, ymap?: Y.YMap) {
     this.preliminary = items;
-    if (ydoc) this.integrate(ydoc);
+    if (ydoc) this.integrate(ydoc, ymap);
   }
 
-  integrate(ydoc: Y.YDoc): Y.YMap {
+  integrate(ydoc: Doc, ymap?: Y.YMap): Y.YMap {
     if (!this.ytype) {
-      this.ytype = { doc: ydoc, map: ydoc.createMap() };
+      this.ytype = { doc: ydoc, map: ymap || ydoc.createMap() };
       for (const [key, val] of Object.entries(this.preliminary)) {
         if (val instanceof Array) {
           this.ytype.map.set(key, val.integrate(ydoc));
@@ -160,6 +230,7 @@ export class Map {
         }
       }
       this.preliminary = {};
+      this.ytype.doc.triggerDiff();
     }
     return this.ytype.map;
   }
@@ -193,6 +264,7 @@ export class Map {
       } else {
         this.ytype.map.set(key, value);
       }
+      this.ytype.doc.triggerDiff();
     } else {
       this.preliminary[key] = value;
     }
@@ -201,6 +273,7 @@ export class Map {
   delete(key: string): void {
     if (this.ytype) {
       this.ytype.map.delete(key);
+      this.ytype.doc.triggerDiff();
     } else {
       delete this.preliminary[key];
     }
@@ -209,6 +282,7 @@ export class Map {
   clear(): void {
     if (this.ytype) {
       this.ytype.map.clear();
+      this.ytype.doc.triggerDiff();
     } else {
       this.preliminary = {};
     }
