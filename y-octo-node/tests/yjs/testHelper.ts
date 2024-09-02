@@ -1,8 +1,5 @@
 import assert, { deepEqual } from "node:assert";
 import * as prng from "lib0/prng";
-import * as encoding from "lib0/encoding";
-import * as decoding from "lib0/decoding";
-import * as syncProtocol from "y-protocols/sync";
 import * as object from "lib0/object";
 import * as map from "lib0/map";
 import * as Y from "../../index";
@@ -28,59 +25,28 @@ const broadcastMessage = (y: TestYOctoInstance, m: Uint8Array) => {
   }
 };
 
-export let useV2 = false;
-
-export const encV1 = {
-  encodeStateAsUpdate: Y.encodeStateAsUpdate,
-  mergeUpdates: Y.mergeUpdates,
-  applyUpdate: Y.applyUpdate,
-  // logUpdate: Y.logUpdate,
-  // updateEventName: /** @type {'update'} */ "update",
-  // diffUpdate: Y.diffUpdate,
-};
-
-// export const encV2 = {
-//   encodeStateAsUpdate: Y.encodeStateAsUpdateV2,
-//   mergeUpdates: Y.mergeUpdatesV2,
-//   applyUpdate: Y.applyUpdateV2,
-//   logUpdate: Y.logUpdateV2,
-//   updateEventName: /** @type {'updateV2'} */ "updateV2",
-//   diffUpdate: Y.diffUpdateV2,
-// };
-
-export let enc = encV1;
-
-const useV1Encoding = () => {
-  useV2 = false;
-  enc = encV1;
-};
-
-const useV2Encoding = () => {
-  console.error(
-    "sync protocol doesnt support v2 protocol yet, fallback to v1 encoding",
-  ); // @Todo
-  useV2 = false;
-  enc = encV1;
-};
-
 export class TestYOctoInstance extends Y.Doc {
+  protocol: Y.Protocol;
   updates: Uint8Array[];
   receiving: Map<TestYOctoInstance, Uint8Array[]>;
   tc: TestConnector;
   constructor(testConnector: TestConnector, clientID: number) {
     super(clientID); // overwriting clientID
 
+    this.protocol = new Y.Protocol(this);
     this.tc = testConnector;
     this.receiving = new Map();
     testConnector.allConns.add(this);
     this.updates = [];
     // set up observe on local model
-    this.onUpdate((update) => {
-      // if (origin !== testConnector) {
-      //   const encoder = encoding.createEncoder();
-      //   syncProtocol.writeUpdate(encoder, update);
-      //   broadcastMessage(this, encoding.toUint8Array(encoder));
-      // }
+    this.onUpdate((update, origin) => {
+      if (origin !== testConnector) {
+        console.error("broadcasting update");
+        broadcastMessage(
+          this,
+          this.protocol.encodeSyncStep(3, Buffer.from(update)),
+        );
+      }
       this.updates.push(update);
     });
     this.connect();
@@ -100,19 +66,17 @@ export class TestYOctoInstance extends Y.Doc {
    * Also initiate sync with all clients.
    */
   connect() {
-    return;
     if (!this.tc.onlineConns.has(this)) {
       this.tc.onlineConns.add(this);
-      const encoder = encoding.createEncoder();
-      syncProtocol.writeSyncStep1(encoder, this);
       // publish SyncStep1
-      broadcastMessage(this, encoding.toUint8Array(encoder));
+      broadcastMessage(this, this.protocol.encodeSyncStep(1));
       this.tc.onlineConns.forEach((remoteYInstance) => {
         if (remoteYInstance !== this) {
           // remote instance sends instance to this instance
-          const encoder = encoding.createEncoder();
-          syncProtocol.writeSyncStep1(encoder, remoteYInstance);
-          this._receive(encoding.toUint8Array(encoder), remoteYInstance);
+          this._receive(
+            remoteYInstance.protocol.encodeSyncStep(1),
+            remoteYInstance,
+          );
         }
       });
     }
@@ -165,6 +129,7 @@ export class TestConnector {
         gen,
         Array.from(receiver.receiving),
       );
+
       const m = messages.shift();
       if (messages.length === 0) {
         receiver.receiving.delete(sender);
@@ -172,18 +137,12 @@ export class TestConnector {
       if (m === undefined) {
         return this.flushRandomMessage();
       }
-      const encoder = encoding.createEncoder();
-      // console.log('receive (' + sender.userID + '->' + receiver.userID + '):\n', syncProtocol.stringifySyncMessage(decoding.createDecoder(m), receiver))
+
       // do not publish data created when this function is executed (could be ss2 or update message)
-      syncProtocol.readSyncMessage(
-        decoding.createDecoder(m),
-        encoder,
-        receiver,
-        receiver.tc,
-      );
-      if (encoding.length(encoder) > 0) {
+      const update = receiver.protocol.applySyncStep(Buffer.from(m));
+      if (update) {
         // send reply message
-        sender._receive(encoding.toUint8Array(encoder), receiver);
+        sender._receive(update, receiver);
       }
       return true;
     }
@@ -266,13 +225,6 @@ export const init = (
   { users = 5 }: { users?: number } = {},
   initTestObject?: any,
 ): InitResult => {
-  // choose an encoding approach at random
-  if (prng.bool(gen)) {
-    useV2Encoding();
-  } else {
-    useV1Encoding();
-  }
-
   // @ts-expect-error expect
   const result: InitResult = {
     users: [],
@@ -282,14 +234,13 @@ export const init = (
     const y = result.testConnector.createY(i);
     y.clientId = i;
     result.users.push(y);
-    result["array" + i] = y.getOrCreateArray("array");
-    result["map" + i] = y.getOrCreateMap("map");
+    result["array" + i] = y.getArray("array");
+    result["map" + i] = y.getMap("map");
     // result["xml" + i] = y.get("xml", Y.XmlElement);
-    result["text" + i] = y.getOrCreateText("text");
+    result["text" + i] = y.getText("text");
   }
   result.testConnector.syncAll();
   result.testObjects = result.users.map(initTestObject || (() => null));
-  useV1Encoding();
   return result;
 };
 
@@ -305,16 +256,19 @@ export const compare = (users: TestYOctoInstance[]) => {
   while (users[0].tc.flushAllMessages()) {} // eslint-disable-line
   // For each document, merge all received document updates with Y.mergeUpdates and create a new document which will be added to the list of "users"
   // This ensures that mergeUpdates works correctly
-  const mergedDocs = users.map((user: { updates: any }) => {
+  const mergedDocs = users.map((user: { updates: any }, i) => {
     const ydoc = new Y.Doc();
-    enc.applyUpdate(ydoc, enc.mergeUpdates(user.updates));
+    console.error(
+      `Merging user ${i}'s updates: ${user.updates
+        .map((u: any) => u.length)
+        .join(", ")}`,
+    );
+    Y.applyUpdate(ydoc, Y.mergeUpdates(user.updates));
     return ydoc;
   });
   users.push(...mergedDocs);
-  const userArrayValues = users.map((u) =>
-    u.getOrCreateArray("array").toJSON(),
-  );
-  const userMapValues = users.map((u) => u.getOrCreateMap("map").toJson());
+  const userArrayValues = users.map((u) => u.getArray("array").toJSON());
+  const userMapValues = users.map((u) => u.getMap("map").toJson());
   // const userXmlValues = users.map(
   //   (u: {
   //     get: (
@@ -323,34 +277,39 @@ export const compare = (users: TestYOctoInstance[]) => {
   //     ) => { (): any; new (): any; toString: { (): any; new (): any } };
   //   }) => u.get("xml", Y.XmlElement).toString(),
   // );
-  // const userTextValues = users.map((u) => u.getOrCreateText("text").toDelta());
+  // const userTextValues = users.map((u) => u.getText("text").toDelta());
   // for (const u of users) {
   //   t.assert(u.store.pendingDs === null);
   //   t.assert(u.store.pendingStructs === null);
   // }
   // Test Array iterator
   deepEqual(
-    users[0].getOrCreateArray("array").toArray(),
-    Array.from(users[0].getOrCreateArray("array").iter()),
+    users[0].getArray("array").toArray(),
+    Array.from(users[0].getArray("array").iter()),
   );
   // Test Map iterator
-  const ymapkeys: any[] = Array.from(users[0].getOrCreateMap("map").keys());
+  const ymapkeys: any[] = Array.from(users[0].getMap("map").keys());
   assert(ymapkeys.length === Object.keys(userMapValues[0]).length);
   ymapkeys.forEach((key) => assert(object.hasProperty(userMapValues[0], key)));
 
   const mapRes: Record<string, any> = {};
-  for (const [k, v] of users[0].getOrCreateMap("map").entries()) {
+  for (const [k, v] of users[0].getMap("map").entries()) {
     mapRes[k] = Y.isAbstractType(v) ? v.toJSON() : v;
   }
   deepEqual(userMapValues[0], mapRes);
   // Compare all users
   for (let i = 0; i < users.length - 1; i++) {
+    deepEqual(userArrayValues[i].length, users[i].getArray("array").length);
     deepEqual(
-      userArrayValues[i].length,
-      users[i].getOrCreateArray("array").length,
+      userArrayValues[i],
+      userArrayValues[i + 1],
+      `array${i} !== array${i + 1}`,
     );
-    deepEqual(userArrayValues[i], userArrayValues[i + 1]);
-    deepEqual(userMapValues[i], userMapValues[i + 1]);
+    deepEqual(
+      userMapValues[i],
+      userMapValues[i + 1],
+      `map${i} !== map${i + 1}`,
+    );
     // deepEqual(userXmlValues[i], userXmlValues[i + 1]);
     // deepEqual(
     //   userTextValues[i]
@@ -359,7 +318,7 @@ export const compare = (users: TestYOctoInstance[]) => {
     //         typeof a.insert === "string" ? a.insert : " ",
     //     )
     //     .join("").length,
-    //   users[i].getOrCreateText("text").length,
+    //   users[i].getText("text").length,
     // );
     // deepEqual(
     //   userTextValues[i],

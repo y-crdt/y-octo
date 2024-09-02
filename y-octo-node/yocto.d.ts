@@ -54,11 +54,11 @@ export declare class Doc {
   createText(text?: string | undefined | null): YText
   createMap(entries?: JsArray | undefined | null): YMap
   applyUpdate(update: Buffer): void
+  diff(sv?: Buffer | undefined | null): Buffer | null
   encodeStateAsUpdateV1(state?: Buffer | undefined | null): Buffer
   gc(): void
   onUpdate(callback: (result: Uint8Array) => void): void
   offUpdate(): void
-  transact(callback: (...args: any[]) => any): void
 }
 export declare class YMap {
   get length(): number
@@ -84,6 +84,12 @@ export declare class YMapKeyIterator {
 }
 export declare class YMapValuesIterator {
   [Symbol.iterator](): Iterator<unknown, void, number | undefined | null>
+}
+export type YProtocol = Protocol
+export declare class Protocol {
+  constructor(doc: Doc)
+  encodeSyncStep(step: number, buffer?: Buffer | undefined | null): Buffer
+  applySyncStep(buffer: Buffer): Buffer | null
 }
 export declare class YText {
   constructor()

@@ -414,7 +414,6 @@ __metadata:
     prompts: ^2.4.2
     tsx: ^4.16.2
     typescript: ^5.1.6
-    y-protocols: ^1.0.6
     yjs: ^13.6.18
   languageName: unknown
   linkType: soft
@@ -1906,7 +1905,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"lib0@npm:^0.2.85, lib0@npm:^0.2.86":
+"lib0@npm:^0.2.86":
   version: 0.2.94
   resolution: "lib0@npm:0.2.94"
   dependencies:
@@ -3442,17 +3441,6 @@ __metadata:
     imurmurhash: ^0.1.4
     signal-exit: ^4.0.1
   checksum: 8dbb0e2512c2f72ccc20ccedab9986c7d02d04039ed6e8780c987dc4940b793339c50172a1008eed7747001bfacc0ca47562668a069a7506c46c77d7ba3926a9
-  languageName: node
-  linkType: hard
-
-"y-protocols@npm:^1.0.6":
-  version: 1.0.6
-  resolution: "y-protocols@npm:1.0.6"
-  dependencies:
-    lib0: ^0.2.85
-  peerDependencies:
-    yjs: ^13.0.0
-  checksum: 4b57c8811befcf2e45c3d47830005f8a33e626c734f78a42fe8a4fa3caad2233ba85a7c8bceefbd52ffc40130d3f3faee664fd0d1c324ff1fa8817a056ccdc1c
   languageName: node
   linkType: hard
 

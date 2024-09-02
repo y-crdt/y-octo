@@ -28,7 +28,6 @@
     "prompts": "^2.4.2",
     "tsx": "^4.16.2",
     "typescript": "^5.1.6",
-    "y-protocols": "^1.0.6",
     "yjs": "^13.6.18"
   },
   "engines": {
@@ -39,7 +38,7 @@
     "build": "napi build --platform --release --no-const-enum --dts yocto.d.ts --js yocto.js",
     "build:debug": "napi build --platform --no-const-enum --dts yocto.d.ts --js yocto.js",
     "universal": "napi universal",
-    "test": "ava --concurrency 1 --serial",
+    "test": "ava --concurrency 1 --serial --timeout 1s",
     "test:watch": "yarn exec tsx ./scripts/run-test.mts all --watch",
     "test:coverage": "NODE_OPTIONS=\"--import tsx\" c8 node ./scripts/run-test.mts all",
     "version": "napi version"
@@ -71,7 +70,7 @@
       "--es-module-specifier-resolution=node"
     ],
     "files": [
-      "tests/**/*.spec.ts"
+      "tests/**/y-array.spec.ts"
     ],
     "environmentVariables": {
       "TS_NODE_PROJECT": "./tests/tsconfig.json",

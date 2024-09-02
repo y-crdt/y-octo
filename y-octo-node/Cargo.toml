@@ -11,11 +11,13 @@ version    = "0.0.1"
 crate-type = ["cdylib"]
 
 [dependencies]
-anyhow      = "1"
-napi        = { version = "2", features = ["anyhow", "napi4", "serde-json"] }
+anyhow = "1"
+napi = { version = "2", features = ["anyhow", "napi4", "serde-json"] }
 napi-derive = "2"
-serde_json  = "1.0"
-y-octo      = { workspace = true, features = ["large_refs"] }
+serde_json = "1.0"
+y-octo = { workspace = true, features = [
+    "large_refs",
+], default-features = false }
 
 [build-dependencies]
 napi-build = "2"
