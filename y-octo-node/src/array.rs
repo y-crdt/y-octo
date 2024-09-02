@@ -176,7 +176,7 @@ impl YArray {
         }
     }
 
-    #[napi]
+    #[napi(ts_generic_types = "T = unknown", ts_return_type = "Array<T>")]
     pub fn to_array(&self, env: Env) -> Result<JsArray> {
         let mut js_array = env.create_array(0)?;
         for value in self.array.iter() {
@@ -185,7 +185,7 @@ impl YArray {
         Ok(js_array)
     }
 
-    #[napi(js_name = "toJSON")]
+    #[napi(js_name = "toJSON", ts_generic_types = "T = unknown", ts_return_type = "Array<T>")]
     pub fn to_json(&self, env: Env) -> Result<JsArray> {
         let mut js_array = env.create_array(0)?;
         for value in self.array.iter() {

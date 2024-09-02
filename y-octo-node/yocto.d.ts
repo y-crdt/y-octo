@@ -25,8 +25,8 @@ export declare class YArray {
   unshift(value: YArray | YMap | YText | boolean | number | string | Record<string, any> | null | undefined): void
   delete(index: number, len?: number | undefined | null): void
   iter(): YArrayIterator
-  toArray(): JsArray
-  toJSON(): JsArray
+  toArray<T = unknown>(): Array<T>
+  toJSON<T = unknown>(): Array<T>
   observe(callback: (...args: any[]) => any): void
   observeDeep(callback: (...args: any[]) => any): void
 }
@@ -37,7 +37,7 @@ export type YAwareness = Awareness
 export declare class Awareness {
   constructor(clientId?: number | undefined | null)
   get clientId(): number
-  get states<T = Record<string, any>>(): Record<string, T>
+  get states(): Record<string, any>
 }
 export type YDoc = Doc
 export declare class Doc {
@@ -52,7 +52,7 @@ export declare class Doc {
   getOrCreateMap(key: string): YMap
   createArray(): YArray
   createText(text?: string | undefined | null): YText
-  createMap(entries?: JsArray | undefined | null): YMap
+  createMap(entries?: Iterator<[string,any]>): YMap
   applyUpdate(update: Buffer): void
   diff(sv?: Buffer | undefined | null): Buffer | null
   encodeStateAsUpdateV1(state?: Buffer | undefined | null): Buffer
@@ -98,8 +98,8 @@ export declare class YText {
   insert(index: number, str: string): void
   delete(index: number, len: number): void
   get length(): number
-  applyDelta(delta: JsArray): void
-  toDelta(): JsArray
+  applyDelta(delta: any[]): void
+  toDelta(): any[]
   toString(): string
   observe(callback: (...args: any[]) => any): void
   observeDeep(callback: (...args: any[]) => any): void

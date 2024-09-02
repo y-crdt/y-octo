@@ -25,11 +25,7 @@ impl YAwareness {
         self.awareness.local_id() as i64
     }
 
-    #[napi(
-        getter,
-        ts_generic_types = "T = Record<string, any>",
-        ts_return_type = "Record<string, T>"
-    )]
+    #[napi(getter, ts_return_type = "Record<string, any>")]
     pub fn states(&self, env: Env) -> Result<JsObject> {
         let mut object = env.create_object()?;
         for (k, v) in self.awareness.get_states() {

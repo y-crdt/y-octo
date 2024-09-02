@@ -45,12 +45,12 @@ impl YText {
         self.text.len() as i64
     }
 
-    #[napi]
+    #[napi(ts_args_type = "delta: any[]")]
     pub fn apply_delta(&mut self, env: Env, _delta: JsArray) -> Result<()> {
         unimplemented!()
     }
 
-    #[napi]
+    #[napi(ts_return_type = "any[]")]
     pub fn to_delta(&self, env: Env) -> Result<JsArray> {
         unimplemented!()
     }
