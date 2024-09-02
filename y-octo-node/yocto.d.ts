@@ -85,8 +85,7 @@ export declare class YMapKeyIterator {
 export declare class YMapValuesIterator {
   [Symbol.iterator](): Iterator<unknown, void, number | undefined | null>
 }
-export type YProtocol = Protocol
-export declare class Protocol {
+export declare class YProtocol {
   constructor(doc: Doc)
   encodeSyncStep(step: number, buffer?: Buffer | undefined | null): Buffer
   applySyncStep(buffer: Buffer): Buffer | null

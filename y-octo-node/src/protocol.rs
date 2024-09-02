@@ -4,7 +4,7 @@ use y_octo::{
     read_doc_message, write_doc_message, CrdtRead, CrdtWrite, Doc, DocMessage, RawDecoder, RawEncoder, StateVector,
 };
 
-#[napi(js_name = "Protocol")]
+#[napi]
 pub struct YProtocol {
     pub(crate) doc: Doc,
 }
