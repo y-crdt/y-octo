@@ -84,6 +84,20 @@ export class Doc extends Y.Doc {
   }
 }
 
+export class Protocol extends Y.YProtocol {
+  constructor(private readonly doc: Doc) {
+    super(doc);
+  }
+
+  override applySyncStep(buffer: Buffer): Buffer | null {
+    try {
+      return super.applySyncStep(buffer);
+    } finally {
+      this.doc.triggerDiff(this.doc);
+    }
+  }
+}
+
 export class Array {
   private ytype?: { doc: Doc; array: Y.YArray };
   private preliminary: any[] = [];
