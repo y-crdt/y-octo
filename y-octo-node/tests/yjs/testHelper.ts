@@ -258,12 +258,9 @@ export const compare = (users: TestYOctoInstance[]) => {
   // This ensures that mergeUpdates works correctly
   const mergedDocs = users.map((user: { updates: any }, i) => {
     const ydoc = new Y.Doc();
-    console.error(
-      `Merging user ${i}'s updates: ${user.updates
-        .map((u: any) => u.length)
-        .join(", ")}`,
-    );
-    Y.applyUpdate(ydoc, Y.mergeUpdates(user.updates));
+    console.error(`Merging user ${i}'s updates: ${user.updates.join(", ")}`);
+    ydoc.applyUpdate(Y.mergeUpdates(user.updates));
+    console.error("Merged user", ydoc.getArray("array").toJSON());
     return ydoc;
   });
   users.push(...mergedDocs);

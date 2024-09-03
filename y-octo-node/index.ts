@@ -81,6 +81,12 @@ export class Doc extends Y.Doc {
     }
   }
 
+  override applyUpdate(update: Buffer): void {
+    this.transact(() => {
+      super.applyUpdate(update);
+    });
+  }
+
   override onUpdate(
     callback: (result: Uint8Array, origin?: unknown) => void,
   ): void {
