@@ -120,7 +120,13 @@ export class Array {
     return new Array(items);
   }
 
-  constructor(items: ArrayType[], ydoc?: Doc, yarray?: Y.YArray) {
+  static from_ytype(ytype?: { doc: Doc; array: Y.YArray }) {
+    const array = new Array();
+    array.ytype = ytype;
+    return array;
+  }
+
+  constructor(items: ArrayType[] = [], ydoc?: Doc, yarray?: Y.YArray) {
     this.preliminary = items;
     if (ydoc) this.integrate(ydoc, yarray);
   }
@@ -242,7 +248,13 @@ export class Map {
   private ytype?: { doc: Doc; map: Y.YMap };
   private preliminary: Record<string, any> = {};
 
-  constructor(items: Record<string, any>, ydoc?: Doc, ymap?: Y.YMap) {
+  static from_ytype(ytype?: { doc: Doc; map: Y.YMap }) {
+    const map = new Map();
+    map.ytype = ytype;
+    return map;
+  }
+
+  constructor(items: Record<string, any> = {}, ydoc?: Doc, ymap?: Y.YMap) {
     this.preliminary = items;
     if (ydoc) this.integrate(ydoc, ymap);
   }
@@ -282,12 +294,26 @@ export class Map {
   }
 
   get<T = unknown>(key: string): T {
-    return this.ytype ? this.ytype.map.get(key) : this.preliminary[key];
+    if (this.ytype) {
+      const ret = this.ytype.map.get(key);
+      if (ret) {
+        if (ret instanceof Y.YArray) {
+          return Array.from_ytype({ doc: this.ytype.doc, array: ret }) as T;
+        } else if (ret instanceof Y.YMap) {
+          return Map.from_ytype({ doc: this.ytype.doc, map: ret }) as T;
+        }
+      }
+      return ret as T;
+    } else {
+      return this.preliminary[key];
+    }
   }
 
   set<T = ListItem>(key: string, value: T) {
+    console.trace(value, this.ytype);
     if (this.ytype) {
       if (value instanceof Array || value instanceof Map) {
+        console.log("integrate", value);
         this.ytype.map.set(key, value.integrate(this.ytype.doc));
       } else {
         this.ytype.map.set(key, value);
