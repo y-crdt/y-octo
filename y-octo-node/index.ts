@@ -47,20 +47,28 @@ export class Doc extends Y.Doc {
   }
 
   triggerDiff(origin?: unknown): void {
+    let diff: Buffer | null = null;
     if (this.lastState) {
-      const diff = this.diff(this.lastState);
-      if (diff && !this.lastState.equals(diff)) {
-        this.lastState = diff;
+      diff = this.diff(this.lastState);
+      const state = this.encodeStateAsUpdateV1();
+      if (!this.lastState.equals(state)) {
+        this.lastState = state;
       } else {
         return;
       }
     } else {
       this.lastState = this.encodeStateAsUpdateV1();
+      diff = this.diff(this.lastState);
     }
 
-    if (this.lastState?.length) {
+    // skip empty diffs
+    if (!diff || diff.equals(new Uint8Array([0, 0]))) {
+      return;
+    }
+
+    if (this.lastState?.length && diff?.length) {
       this.subscribers.forEach((callback) =>
-        callback(new Uint8Array(this.lastState!), origin || this),
+        callback(new Uint8Array(diff), origin || this),
       );
     }
   }
