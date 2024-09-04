@@ -1,10 +1,10 @@
+mod ytype;
+
+use super::*;
 use napi::{bindgen_prelude::Either4, Env, Error, JsObject, JsUnknown, Result, Status, ValueType};
 use y_octo::{AHashMap, Any, HashMapExt, Value};
 
-use super::*;
-
-pub type MixedYType = Either4<YArray, YMap, YText, JsUnknown>;
-pub type MixedRefYType<'a> = Either4<&'a YArray, &'a YMap, &'a YText, JsUnknown>;
+pub use ytype::*;
 
 pub fn get_js_unknown_from_any(env: Env, any: Any) -> Result<JsUnknown> {
     match any {

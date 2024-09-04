@@ -4,6 +4,7 @@ use y_octo::{Any, Map, Value};
 use super::*;
 
 #[napi]
+#[derive(Clone)]
 pub struct YMap {
     pub(crate) map: Map,
 }
@@ -39,9 +40,9 @@ impl YMap {
         if let Some(value) = self.map.get(&key) {
             match value {
                 Value::Any(any) => get_js_unknown_from_any(env, any).map(MixedYType::D),
-                Value::Array(array) => Ok(MixedYType::A(YArray::inner_new(array))),
-                Value::Map(map) => Ok(MixedYType::B(YMap::inner_new(map))),
-                Value::Text(text) => Ok(MixedYType::C(YText::inner_new(text))),
+                Value::Array(array) => Ok(YArray::inner_new(array).into()),
+                Value::Map(map) => Ok(YMap::inner_new(map).into()),
+                Value::Text(text) => Ok(YText::inner_new(text).into()),
                 _ => env.get_null().map(|v| v.into_unknown()).map(MixedYType::D),
             }
             .map_err(anyhow::Error::from)
@@ -60,15 +61,15 @@ impl YMap {
         match value {
             MixedRefYType::A(array) => {
                 self.map.insert(key, array.array.clone())?;
-                Ok(MixedYType::A(YArray::inner_new(array.array.clone())))
+                Ok(array.into())
             }
             MixedRefYType::B(map) => {
                 self.map.insert(key, map.map.clone())?;
-                Ok(MixedYType::B(YMap::inner_new(map.map.clone())))
+                Ok(map.into())
             }
             MixedRefYType::C(text) => {
                 self.map.insert(key, text.text.clone())?;
-                Ok(MixedYType::C(YText::inner_new(text.text.clone())))
+                Ok(text.into())
             }
             MixedRefYType::D(unknown) => match unknown.get_type() {
                 Ok(value_type) => match value_type {

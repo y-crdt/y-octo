@@ -4,6 +4,7 @@ use y_octo::Text;
 use super::*;
 
 #[napi]
+#[derive(Clone)]
 pub struct YText {
     pub(crate) text: Text,
 }
