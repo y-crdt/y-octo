@@ -163,6 +163,13 @@ impl YDoc {
         self.doc.unsubscribe_all();
         Ok(())
     }
+
+    #[napi]
+    pub fn destroy(&mut self) {
+        if let Err(e) = self.off_update() {
+            eprintln!("Failed to unsubscribe at doc destroy: {:?}", e);
+        }
+    }
 }
 
 #[cfg(test)]

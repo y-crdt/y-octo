@@ -37,18 +37,13 @@ impl YMap {
 
     #[napi(ts_generic_types = "T = unknown", ts_return_type = "T")]
     pub fn get(&self, env: Env, key: String) -> Result<MixedYType> {
-        if let Some(value) = self.map.get(&key) {
-            match value {
-                Value::Any(any) => get_js_unknown_from_any(env, any).map(MixedYType::D),
-                Value::Array(array) => Ok(YArray::inner_new(array).into()),
-                Value::Map(map) => Ok(YMap::inner_new(map).into()),
-                Value::Text(text) => Ok(YText::inner_new(text).into()),
-                _ => env.get_null().map(|v| v.into_unknown()).map(MixedYType::D),
-            }
-            .map_err(anyhow::Error::from)
+        let value = if let Some(value) = self.map.get(&key) {
+            get_mixed_y_type_from_value(env, value)?
         } else {
-            Ok(MixedYType::D(env.get_null()?.into_unknown()))
-        }
+            MixedYType::D(env.get_null()?.into_unknown())
+        };
+
+        Ok(value)
     }
 
     #[napi(

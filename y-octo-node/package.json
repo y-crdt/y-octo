@@ -70,7 +70,7 @@
       "--es-module-specifier-resolution=node"
     ],
     "files": [
-      "tests/**/y-array.spec.ts"
+      "tests/**/*.spec.ts"
     ],
     "environmentVariables": {
       "TS_NODE_PROJECT": "./tests/tsconfig.json",

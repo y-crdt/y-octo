@@ -3,7 +3,7 @@ use napi::{
     iterator::Generator,
     Env, JsFunction, JsUnknown, ValueType,
 };
-use y_octo::{Any, Array, Value};
+use y_octo::{Any, Array};
 
 use super::*;
 
@@ -31,18 +31,12 @@ impl YArray {
 
     #[napi(ts_generic_types = "T = unknown", ts_return_type = "T")]
     pub fn get(&self, env: Env, index: i64) -> Result<MixedYType> {
-        if let Some(value) = self.array.get(index as u64) {
-            match value {
-                Value::Any(any) => get_js_unknown_from_any(env, any).map(MixedYType::D),
-                Value::Array(array) => Ok(MixedYType::A(YArray::inner_new(array))),
-                Value::Map(map) => Ok(MixedYType::B(YMap::inner_new(map))),
-                Value::Text(text) => Ok(MixedYType::C(YText::inner_new(text))),
-                _ => env.get_null().map(|v| v.into_unknown()).map(MixedYType::D),
-            }
-            .map_err(anyhow::Error::from)
+        let value = if let Some(value) = self.array.get(index as u64) {
+            get_mixed_y_type_from_value(env, value)?
         } else {
-            Ok(MixedYType::D(env.get_null()?.into_unknown()))
-        }
+            MixedYType::D(env.get_null()?.into_unknown())
+        };
+        Ok(value)
     }
 
     #[napi(ts_generic_types = "T = unknown", ts_return_type = "Array<T>")]

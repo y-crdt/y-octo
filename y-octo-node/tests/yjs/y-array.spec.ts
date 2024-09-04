@@ -434,7 +434,7 @@ test("testIteratingArrayContainingTypes", (t) => {
   for (const item of arr.iter()) {
     t.is(item.get("value"), cnt++, "value is correct");
   }
-  // y.destroy();
+  y.destroy();
 });
 
 let _uniqueNumber = 0;

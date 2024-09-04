@@ -50,6 +50,16 @@ pub fn get_js_unknown_from_value(env: Env, value: Value) -> Result<JsUnknown> {
     }
 }
 
+pub fn get_mixed_y_type_from_value(env: Env, value: Value) -> Result<MixedYType> {
+    match value {
+        Value::Any(any) => get_js_unknown_from_any(env, any).map(MixedYType::D),
+        Value::Array(array) => Ok(YArray::inner_new(array).into()),
+        Value::Map(map) => Ok(YMap::inner_new(map).into()),
+        Value::Text(text) => Ok(YText::inner_new(text).into()),
+        _ => env.get_null().map(|v| v.into_unknown()).map(MixedYType::D),
+    }
+}
+
 pub fn get_any_from_js_object(object: JsObject) -> Result<Any> {
     if let Ok(length) = object.get_array_length() {
         let mut array = Vec::with_capacity(length as usize);

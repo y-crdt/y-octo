@@ -59,6 +59,7 @@ export declare class Doc {
   gc(): void
   onUpdate(callback: (result: Uint8Array) => void): void
   offUpdate(): void
+  destroy(): void
 }
 export declare class YMap {
   get length(): number
