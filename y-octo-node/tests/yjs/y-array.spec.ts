@@ -126,8 +126,7 @@ test.skip("testDeleteInsert", (t) => {
   compare(users);
 });
 
-// TODO: impl sync protocol encode in rust
-test.skip("testInsertThreeElementsTryRegetProperty", (t) => {
+test("testInsertThreeElementsTryRegetProperty", (t) => {
   const { testConnector, users, array0, array1 } = init(gen, { users: 2 });
 
   array0.insert(0, [1, true, false]);

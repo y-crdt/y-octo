@@ -259,7 +259,7 @@ test("testSizeAndDeleteOfMapProperty", (t) => {
   testConnector.disconnectAll();
 });
 
-test.skip("testGetAndSetAndDeleteOfMapProperty", (t) => {
+test("testGetAndSetAndDeleteOfMapProperty", (t) => {
   const { testConnector, users, map0, map1 } = init(gen, { users: 3 });
 
   map0.set("stuff", "c0");
@@ -268,10 +268,9 @@ test.skip("testGetAndSetAndDeleteOfMapProperty", (t) => {
   testConnector.flushAllMessages();
   for (const user of users) {
     const u = user.getOrCreateMap("map");
-    t.assert(u.get("stuff") === undefined);
+    t.is(u.get("stuff"), null);
   }
   compare(users);
-  testConnector.disconnectAll()
 });
 
 test.skip("testSetAndClearOfMapProperties", (t) => {
@@ -283,9 +282,9 @@ test.skip("testSetAndClearOfMapProperties", (t) => {
   testConnector.flushAllMessages();
   for (const user of users) {
     const u = user.getOrCreateMap("map");
-    t.assert(u.get("stuff") === undefined);
-    t.assert(u.get("otherstuff") === undefined);
-    t.assert(u.size === 0, `map size after clear is ${u.size}, expected 0`);
+    t.is(u.get("stuff"), null);
+    t.is(u.get("otherstuff"), null);
+    t.is(u.size, 0, `map size after clear is ${u.size}, expected 0`);
   }
   compare(users);
 });
