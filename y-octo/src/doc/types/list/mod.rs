@@ -6,6 +6,7 @@ pub(crate) use search_marker::MarkerList;
 
 use super::*;
 
+#[derive(Debug)]
 pub(crate) struct ItemPosition {
     pub parent: YTypeRef,
     pub left: ItemRef,
@@ -96,6 +97,16 @@ pub(crate) trait ListType: AsInner<Inner = YTypeRef> {
                 pos.right = marker.ptr;
             }
         };
+
+        // avoid the first item of the list being deleted
+        while let Some(item) = pos.right.get() {
+            if item.deleted() {
+                pos.right = item.right.clone();
+                continue;
+            } else {
+                break;
+            }
+        }
 
         while remaining > 0 {
             if let Some(item) = pos.right.get() {

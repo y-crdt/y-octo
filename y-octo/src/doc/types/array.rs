@@ -103,6 +103,23 @@ mod tests {
     }
 
     #[test]
+    fn test_yarray_delete() {
+        let options = DocOptions::default();
+
+        loom_model!({
+            let doc = Doc::with_options(options.clone());
+            let mut array = doc.get_or_create_array("abc").unwrap();
+
+            array.insert(0, " ").unwrap();
+            array.insert(0, "Hello").unwrap();
+            array.insert(2, "World").unwrap();
+            array.remove(0, 2).unwrap();
+
+            assert_eq!(array.get(0).unwrap(), Value::Any(Any::String("World".into())));
+        });
+    }
+
+    #[test]
     #[cfg_attr(miri, ignore)]
     fn test_ytext_equal() {
         use yrs::{Options, Text, Transact};
