@@ -312,7 +312,6 @@ export class Map {
   set<T = ListItem>(key: string, value: T) {
     if (this.ytype) {
       if (value instanceof Array || value instanceof Map) {
-        console.log("integrate", value);
         this.ytype.map.set(key, value.integrate(this.ytype.doc));
       } else {
         this.ytype.map.set(key, value);
@@ -321,6 +320,7 @@ export class Map {
     } else {
       this.preliminary[key] = value;
     }
+    return value;
   }
 
   delete(key: string): void {

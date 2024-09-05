@@ -8,7 +8,8 @@ pub use ytype::*;
 
 pub fn get_js_unknown_from_any(env: Env, any: Any) -> Result<JsUnknown> {
     match any {
-        Any::Null | Any::Undefined => env.get_null().map(|v| v.into_unknown()),
+        Any::Undefined => env.get_undefined().map(|v| v.into_unknown()),
+        Any::Null => env.get_null().map(|v| v.into_unknown()),
         Any::True => env.get_boolean(true).map(|v| v.into_unknown()),
         Any::False => env.get_boolean(false).map(|v| v.into_unknown()),
         Any::Integer(number) => env.create_int32(number).map(|v| v.into_unknown()),
@@ -30,7 +31,7 @@ pub fn get_js_unknown_from_any(env: Env, any: Any) -> Result<JsUnknown> {
             }
             Ok(js_object.into_unknown())
         }
-        _ => env.get_null().map(|v| v.into_unknown()),
+        _ => env.get_undefined().map(|v| v.into_unknown()),
     }
 }
 
@@ -46,7 +47,7 @@ pub fn get_js_unknown_from_value(env: Env, value: Value) -> Result<JsUnknown> {
         Value::Text(text) => env
             .create_external(YText::inner_new(text), None)
             .map(|o| o.into_unknown()),
-        _ => env.get_null().map(|v| v.into_unknown()),
+        _ => env.get_undefined().map(|v| v.into_unknown()),
     }
 }
 
@@ -56,7 +57,7 @@ pub fn get_mixed_y_type_from_value(env: Env, value: Value) -> Result<MixedYType>
         Value::Array(array) => Ok(YArray::inner_new(array).into()),
         Value::Map(map) => Ok(YMap::inner_new(map).into()),
         Value::Text(text) => Ok(YText::inner_new(text).into()),
-        _ => env.get_null().map(|v| v.into_unknown()).map(MixedYType::D),
+        _ => env.get_undefined().map(|v| v.into_unknown()).map(MixedYType::D),
     }
 }
 

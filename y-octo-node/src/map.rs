@@ -40,7 +40,7 @@ impl YMap {
         let value = if let Some(value) = self.map.get(&key) {
             get_mixed_y_type_from_value(env, value)?
         } else {
-            MixedYType::D(env.get_null()?.into_unknown())
+            MixedYType::D(env.get_undefined()?.into_unknown())
         };
 
         Ok(value)

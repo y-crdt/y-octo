@@ -34,7 +34,7 @@ impl YArray {
         let value = if let Some(value) = self.array.get(index as u64) {
             get_mixed_y_type_from_value(env, value)?
         } else {
-            MixedYType::D(env.get_null()?.into_unknown())
+            MixedYType::D(env.get_undefined()?.into_unknown())
         };
         Ok(value)
     }

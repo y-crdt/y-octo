@@ -186,13 +186,13 @@ test("testGetAndSetOfMapProperty", (t) => {
   for (const user of users) {
     const u = user.getOrCreateMap("map");
     t.deepEqual(u.get("stuff"), "stuffy");
-    t.assert(u.get("undefined") === undefined, "undefined");
+    t.is(u.get("undefined"), undefined, "undefined");
     t.deepEqual(u.get("null"), null, "null");
   }
   compare(t, users);
 });
 
-test.skip("testYmapSetsYmap", (t) => {
+test("testYmapSetsYmap", (t) => {
   const { users, map0 } = init(gen, { users: 2 });
 
   const map = map0.set("Map", users[0].createMap());
@@ -267,7 +267,7 @@ test("testGetAndSetAndDeleteOfMapProperty", (t) => {
   testConnector.flushAllMessages();
   for (const user of users) {
     const u = user.getOrCreateMap("map");
-    t.is(u.get("stuff"), null);
+    t.is(u.get("stuff"), undefined);
   }
   compare(t, users);
 });
