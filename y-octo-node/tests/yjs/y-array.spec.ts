@@ -112,7 +112,7 @@ test("testLengthIssue2", (t) => {
   console.log(next.toArray());
 });
 
-test.skip("testDeleteInsert", (t) => {
+test("testDeleteInsert", (t) => {
   const { users, array0 } = init(gen, { users: 2 });
 
   array0.delete(0, 0);
@@ -123,7 +123,7 @@ test.skip("testDeleteInsert", (t) => {
   t.notThrows(() => {
     array0.delete(1, 0);
   }, "Does not throw when deleting zero elements with valid position 1");
-  compare(users);
+  compare(t, users);
 });
 
 test("testInsertThreeElementsTryRegetProperty", (t) => {
@@ -133,19 +133,19 @@ test("testInsertThreeElementsTryRegetProperty", (t) => {
   t.deepEqual(array0.toJSON(), [1, true, false], ".toJSON() works");
   testConnector.flushAllMessages();
   t.deepEqual(array1.toJSON(), [1, true, false], ".toJSON() works after sync");
-  compare(users);
+  compare(t, users);
 });
 
-test.skip("testConcurrentInsertWithThreeConflicts", (t) => {
+test("testConcurrentInsertWithThreeConflicts", (t) => {
   const { users, array0, array1, array2 } = init(gen, { users: 3 });
 
   array0.insert(0, [0]);
   array1.insert(0, [1]);
   array2.insert(0, [2]);
-  compare(users);
+  compare(t, users);
 });
 
-test.skip("testConcurrentInsertDeleteWithThreeConflicts", (t) => {
+test("testConcurrentInsertDeleteWithThreeConflicts", (t) => {
   const { testConnector, users, array0, array1, array2 } = init(gen, {
     users: 3,
   });
@@ -156,10 +156,10 @@ test.skip("testConcurrentInsertDeleteWithThreeConflicts", (t) => {
   array1.delete(0);
   array1.delete(1, 1);
   array2.insert(1, [2]);
-  compare(users);
+  compare(t, users);
 });
 
-test.skip("testInsertionsInLateSync", (t) => {
+test("testInsertionsInLateSync", (t) => {
   const { testConnector, users, array0, array1, array2 } = init(gen, {
     users: 3,
   });
@@ -174,10 +174,10 @@ test.skip("testInsertionsInLateSync", (t) => {
   users[1].connect();
   users[2].connect();
   testConnector.flushAllMessages();
-  compare(users);
+  compare(t, users);
 });
 
-test.skip("testDisconnectReallyPreventsSendingMessages", (t) => {
+test("testDisconnectReallyPreventsSendingMessages", (t) => {
   const { testConnector, users, array0, array1 } = init(gen, { users: 3 });
 
   array0.insert(0, ["x", "y"]);
@@ -190,10 +190,10 @@ test.skip("testDisconnectReallyPreventsSendingMessages", (t) => {
   t.deepEqual(array1.toJSON(), ["x", "user1", "y"]);
   users[1].connect();
   users[2].connect();
-  compare(users);
+  compare(t, users);
 });
 
-test.skip("testDeletionsInLateSync", (t) => {
+test("testDeletionsInLateSync", (t) => {
   const { testConnector, users, array0, array1 } = init(gen, { users: 2 });
 
   array0.insert(0, ["x", "y"]);
@@ -202,7 +202,7 @@ test.skip("testDeletionsInLateSync", (t) => {
   array1.delete(1, 1);
   array0.delete(0, 2);
   users[1].connect();
-  compare(users);
+  compare(t, users);
 });
 
 test.skip("testInsertThenMergeDeleteOnSync", (t) => {
@@ -213,7 +213,7 @@ test.skip("testInsertThenMergeDeleteOnSync", (t) => {
   users[0].disconnect();
   array1.delete(0, 3);
   users[0].connect();
-  compare(users);
+  compare(t, users);
 });
 
 test.skip("testInsertAndDeleteEvents", (t) => {
@@ -232,7 +232,7 @@ test.skip("testInsertAndDeleteEvents", (t) => {
   array0.delete(0, 2);
   assert(event !== null);
   event = null;
-  compare(users);
+  compare(t, users);
 });
 
 test.skip("testNestedObserverEvents", (t) => {
@@ -253,7 +253,7 @@ test.skip("testNestedObserverEvents", (t) => {
   array0.insert(0, [0]);
   t.deepEqual(vals, [0, 1]);
   t.deepEqual(array0.toArray(), [0, 1]);
-  compare(users);
+  compare(t, users);
 });
 
 test.skip("testInsertAndDeleteEventsForTypes", (t) => {
@@ -269,7 +269,7 @@ test.skip("testInsertAndDeleteEventsForTypes", (t) => {
   array0.delete(0);
   assert(event !== null);
   event = null;
-  compare(users);
+  compare(t, users);
 });
 
 /**
@@ -344,7 +344,7 @@ test.skip("testChangeEvent", (t) => {
     changes !== null && changes.added.size === 1 && changes.deleted.size === 0,
   );
   t.deepEqual(changes.delta, [{ retain: 1 }, { insert: [0.1] }]);
-  compare(users);
+  compare(t, users);
 });
 
 test.skip("testInsertAndDeleteEventsForTypes2", (t) => {
@@ -362,7 +362,7 @@ test.skip("testInsertAndDeleteEventsForTypes2", (t) => {
   );
   array0.delete(1);
   t.is(events.length, 2, "Event is triggered exactly once for deletion");
-  compare(users);
+  compare(t, users);
 });
 
 /**
@@ -392,7 +392,7 @@ test.skip("testGarbageCollector", (t) => {
   array0.delete(0, 3);
   users[0].connect();
   testConnector.flushAllMessages();
-  compare(users);
+  compare(t, users);
 });
 
 test.skip("testEventTargetIsSetCorrectlyOnLocal", (t) => {
@@ -404,7 +404,7 @@ test.skip("testEventTargetIsSetCorrectlyOnLocal", (t) => {
   });
   array0.insert(0, ["stuff"]);
   assert(event.target === array0, '"target" property is set correctly');
-  compare(users);
+  compare(t, users);
 });
 
 test.skip("testEventTargetIsSetCorrectlyOnRemote", (t) => {
@@ -417,7 +417,7 @@ test.skip("testEventTargetIsSetCorrectlyOnRemote", (t) => {
   array1.insert(0, ["stuff"]);
   testConnector.flushAllMessages();
   assert(event.target === array0, '"target" property is set correctly');
-  compare(users);
+  compare(t, users);
 });
 
 test("testIteratingArrayContainingTypes", (t) => {
@@ -502,68 +502,68 @@ const arrayTransactions: Array<
 ];
 
 test.skip("testRepeatGeneratingYarrayTests6", (t) => {
-  applyRandomTests(gen, arrayTransactions, 6);
+  applyRandomTests(t, gen, arrayTransactions, 6);
 });
 
 test.skip("testRepeatGeneratingYarrayTests40", (t) => {
-  applyRandomTests(gen, arrayTransactions, 40);
+  applyRandomTests(t, gen, arrayTransactions, 40);
 });
 
 test.skip("testRepeatGeneratingYarrayTests42", (t) => {
-  applyRandomTests(gen, arrayTransactions, 42);
+  applyRandomTests(t, gen, arrayTransactions, 42);
 });
 
 test.skip("testRepeatGeneratingYarrayTests43", (t) => {
-  applyRandomTests(gen, arrayTransactions, 43);
+  applyRandomTests(t, gen, arrayTransactions, 43);
 });
 
 test.skip("testRepeatGeneratingYarrayTests44", (t) => {
-  applyRandomTests(gen, arrayTransactions, 44);
+  applyRandomTests(t, gen, arrayTransactions, 44);
 });
 
 test.skip("testRepeatGeneratingYarrayTests45", (t) => {
-  applyRandomTests(gen, arrayTransactions, 45);
+  applyRandomTests(t, gen, arrayTransactions, 45);
 });
 
 test.skip("testRepeatGeneratingYarrayTests46", (t) => {
-  applyRandomTests(gen, arrayTransactions, 46);
+  applyRandomTests(t, gen, arrayTransactions, 46);
 });
 
 test.skip("testRepeatGeneratingYarrayTests300", (t) => {
-  applyRandomTests(gen, arrayTransactions, 300);
+  applyRandomTests(t, gen, arrayTransactions, 300);
 });
 
 test.skip("testRepeatGeneratingYarrayTests400", (t) => {
-  applyRandomTests(gen, arrayTransactions, 400);
+  applyRandomTests(t, gen, arrayTransactions, 400);
 });
 
 test.skip("testRepeatGeneratingYarrayTests500", (t) => {
-  applyRandomTests(gen, arrayTransactions, 500);
+  applyRandomTests(t, gen, arrayTransactions, 500);
 });
 
 test.skip("testRepeatGeneratingYarrayTests600", (t) => {
-  applyRandomTests(gen, arrayTransactions, 600);
+  applyRandomTests(t, gen, arrayTransactions, 600);
 });
 
 test.skip("testRepeatGeneratingYarrayTests1000", (t) => {
-  applyRandomTests(gen, arrayTransactions, 1000);
+  applyRandomTests(t, gen, arrayTransactions, 1000);
 });
 
 test.skip("testRepeatGeneratingYarrayTests1800", (t) => {
-  applyRandomTests(gen, arrayTransactions, 1800);
+  applyRandomTests(t, gen, arrayTransactions, 1800);
 });
 
 test.skip("testRepeatGeneratingYarrayTests3000", (t) => {
   if (!production) return;
-  applyRandomTests(gen, arrayTransactions, 3000);
+  applyRandomTests(t, gen, arrayTransactions, 3000);
 });
 
 test.skip("testRepeatGeneratingYarrayTests5000", (t) => {
   if (!production) return;
-  applyRandomTests(gen, arrayTransactions, 5000);
+  applyRandomTests(t, gen, arrayTransactions, 5000);
 });
 
 test.skip("testRepeatGeneratingYarrayTests30000", (t) => {
   if (!production) return;
-  applyRandomTests(gen, arrayTransactions, 30000);
+  applyRandomTests(t, gen, arrayTransactions, 30000);
 });
