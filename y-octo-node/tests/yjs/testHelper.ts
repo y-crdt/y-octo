@@ -1,8 +1,8 @@
-import assert, { deepEqual } from "node:assert";
 import * as prng from "lib0/prng";
 import * as object from "lib0/object";
 import * as map from "lib0/map";
 import * as Y from "../../index";
+import { ExecutionContext } from "ava";
 
 if (typeof window !== "undefined") {
   // @ts-ignore
@@ -15,13 +15,11 @@ if (typeof window !== "undefined") {
  */
 const broadcastMessage = (y: TestYOctoInstance, m: Uint8Array) => {
   if (y.tc.onlineConns.has(y)) {
-    y.tc.onlineConns.forEach(
-      (remoteYInstance: { _receive: (arg0: any, arg1: any) => void }) => {
-        if (remoteYInstance !== y) {
-          remoteYInstance._receive(m, y);
-        }
-      },
-    );
+    y.tc.onlineConns.forEach((remoteYInstance: TestYOctoInstance) => {
+      if (remoteYInstance !== y) {
+        remoteYInstance._receive(m, y);
+      }
+    });
   }
 };
 
@@ -41,7 +39,6 @@ export class TestYOctoInstance extends Y.Doc {
     // set up observe on local model
     this.onUpdate((update, origin) => {
       if (origin !== testConnector) {
-        console.error("broadcasting update");
         broadcastMessage(
           this,
           this.protocol.encodeSyncStep(3, Buffer.from(update)),
@@ -100,14 +97,10 @@ export class TestYOctoInstance extends Y.Doc {
  * I think it makes sense. Deal with it.
  */
 export class TestConnector {
-  allConns: Set<TestYOctoInstance>;
-  onlineConns: Set<TestYOctoInstance>;
-  prng: prng.PRNG;
-  constructor(gen: prng.PRNG) {
-    this.allConns = new Set();
-    this.onlineConns = new Set();
-    this.prng = gen;
-  }
+  readonly allConns: Set<TestYOctoInstance> = new Set();
+  readonly onlineConns: Set<TestYOctoInstance> = new Set();
+
+  constructor(readonly prng: prng.PRNG) {}
 
   createY(clientID: number) {
     return new TestYOctoInstance(this, clientID);
@@ -251,19 +244,21 @@ export const init = (
  * 4. disconnect & reconnect all (so gc is propagated)
  * 5. compare os, ds, ss
  */
-export const compare = (users: TestYOctoInstance[]) => {
+export const compare = (t: ExecutionContext, users: TestYOctoInstance[]) => {
   users.forEach((u) => u.connect());
   while (users[0].tc.flushAllMessages()) {} // eslint-disable-line
   // For each document, merge all received document updates with Y.mergeUpdates and create a new document which will be added to the list of "users"
   // This ensures that mergeUpdates works correctly
-  const mergedDocs = users.map((user: { updates: any }, i) => {
-    const ydoc = new Y.Doc();
-    console.error(`Merging user ${i}'s updates: ${user.updates.join(", ")}`);
-    ydoc.applyUpdate(Y.mergeUpdates(user.updates));
-    console.error("Merged user", ydoc.getArray("array").toJSON());
-    return ydoc;
-  });
-  users.push(...mergedDocs);
+
+  // TODO(@darkskygit): enable this for test
+  // const mergedDocs = users.map((user: { updates: any }, i) => {
+  //   const ydoc = new Y.Doc();
+  //   console.error(`Merging user ${i}'s updates: ${user.updates.join(", ")}`);
+  //   ydoc.applyUpdate(Y.mergeUpdates(user.updates));
+  //   console.error("Merged user", ydoc.getArray("array").toJSON());
+  //   return ydoc;
+  // });
+  // users.push(...mergedDocs);
   const userArrayValues = users.map((u) => u.getArray("array").toJSON());
   const userMapValues = users.map((u) => u.getMap("map").toJson());
   // const userXmlValues = users.map(
@@ -280,29 +275,40 @@ export const compare = (users: TestYOctoInstance[]) => {
   //   t.assert(u.store.pendingStructs === null);
   // }
   // Test Array iterator
-  deepEqual(
+  t.deepEqual(
     users[0].getArray("array").toArray(),
     Array.from(users[0].getArray("array").iter()),
+    "Array iterator does not match",
   );
   // Test Map iterator
   const ymapkeys: any[] = Array.from(users[0].getMap("map").keys());
-  assert(ymapkeys.length === Object.keys(userMapValues[0]).length);
-  ymapkeys.forEach((key) => assert(object.hasProperty(userMapValues[0], key)));
+  t.is(
+    ymapkeys.length,
+    Object.keys(userMapValues[0]).length,
+    "Map keys do not match",
+  );
+  ymapkeys.forEach((key) =>
+    t.assert(object.hasProperty(userMapValues[0], key)),
+  );
 
   const mapRes: Record<string, any> = {};
   for (const [k, v] of users[0].getMap("map").entries()) {
     mapRes[k] = Y.isAbstractType(v) ? v.toJSON() : v;
   }
-  deepEqual(userMapValues[0], mapRes);
+  t.deepEqual(userMapValues[0], mapRes, "Map values do not match");
   // Compare all users
   for (let i = 0; i < users.length - 1; i++) {
-    deepEqual(userArrayValues[i].length, users[i].getArray("array").length);
-    deepEqual(
+    t.deepEqual(
+      userArrayValues[i].length,
+      users[i].getArray("array").length,
+      `array${i}.length !== array${i + 1}.length`,
+    );
+    t.deepEqual(
       userArrayValues[i],
       userArrayValues[i + 1],
       `array${i} !== array${i + 1}`,
     );
-    deepEqual(
+    t.deepEqual(
       userMapValues[i],
       userMapValues[i + 1],
       `map${i} !== map${i + 1}`,
@@ -330,13 +336,16 @@ export const compare = (users: TestYOctoInstance[]) => {
     //     return true;
     //   },
     // );
-    deepEqual(Y.encodeStateVector(users[i]), Y.encodeStateVector(users[i + 1]));
+    t.deepEqual(
+      Y.encodeStateVector(users[i]),
+      Y.encodeStateVector(users[i + 1]),
+    );
     Y.equalDeleteSets(
       Y.createDeleteSetFromStructStore(users[i].store),
       Y.createDeleteSetFromStructStore(users[i + 1].store),
     );
     Y.compareStructStores(users[i].store, users[i + 1].store);
-    deepEqual(
+    t.deepEqual(
       Y.encodeSnapshot(Y.snapshot(users[i])),
       Y.encodeSnapshot(Y.snapshot(users[i + 1])),
     );
@@ -345,6 +354,7 @@ export const compare = (users: TestYOctoInstance[]) => {
 };
 
 export const applyRandomTests = (
+  t: ExecutionContext,
   gen: prng.PRNG,
   mods: unknown[],
   iterations: number,
@@ -371,6 +381,6 @@ export const applyRandomTests = (
     const test: any = prng.oneOf(gen, mods);
     test(users[user], gen, result.testObjects?.[user]);
   }
-  compare(users);
+  compare(t, users);
   return result;
 };
