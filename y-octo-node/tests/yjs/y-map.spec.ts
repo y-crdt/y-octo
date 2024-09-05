@@ -1,6 +1,5 @@
-import assert, { deepEqual } from "node:assert";
 import { randomInt } from "node:crypto";
-import test from "ava";
+import test, { ExecutionContext } from "ava";
 
 import { init, compare, applyRandomTests } from "./testHelper.js";
 
@@ -70,7 +69,7 @@ test("testMapHavingIterableAsConstructorParamTests", (t) => {
   testConnector.disconnectAll();
 });
 
-test.skip("testBasicMapTests", (t) => {
+test("testBasicMapTests", (t) => {
   const { testConnector, users, map0, map1, map2 } = init(gen, { users: 3 });
 
   users[2].disconnect();
@@ -171,10 +170,10 @@ test.skip("testBasicMapTests", (t) => {
     map2.get<Y.Map>("y-map").get<Y.Array>("y-array").get(0) === -1,
     "client 2 received the update (type) - was disconnected",
   );
-  compare(users);
+  compare(t, users);
 });
 
-test.skip("testGetAndSetOfMapProperty", (t) => {
+test("testGetAndSetOfMapProperty", (t) => {
   const { testConnector, users, map0 } = init(gen, { users: 2 });
 
   map0.set("stuff", "stuffy");
@@ -190,7 +189,7 @@ test.skip("testGetAndSetOfMapProperty", (t) => {
     t.assert(u.get("undefined") === undefined, "undefined");
     t.deepEqual(u.get("null"), null, "null");
   }
-  compare(users);
+  compare(t, users);
 });
 
 test.skip("testYmapSetsYmap", (t) => {
@@ -200,7 +199,7 @@ test.skip("testYmapSetsYmap", (t) => {
   t.assert(Y.compareIds(map0.get<Y.Map>("Map").itemId, map.itemId));
   map.set("one", 1);
   t.deepEqual(map.get("one"), 1);
-  compare(users);
+  compare(t, users);
 });
 
 test.skip("testYmapSetsYarray", (t) => {
@@ -211,7 +210,7 @@ test.skip("testYmapSetsYarray", (t) => {
   array.insert(0, [1, 2, 3]);
   // @ts-ignore
   t.deepEqual(map0.toJSON(), { Array: [1, 2, 3] });
-  compare(users);
+  compare(t, users);
 });
 
 test.skip("testGetAndSetOfMapPropertySyncs", (t) => {
@@ -224,7 +223,7 @@ test.skip("testGetAndSetOfMapPropertySyncs", (t) => {
     const u = user.getOrCreateMap("map");
     t.deepEqual(u.get("stuff"), "stuffy");
   }
-  compare(users);
+  compare(t, users);
 });
 
 test.skip("testGetAndSetOfMapPropertyWithConflict", (t) => {
@@ -237,7 +236,7 @@ test.skip("testGetAndSetOfMapPropertyWithConflict", (t) => {
     const u = user.getOrCreateMap("map");
     t.deepEqual(u.get("stuff"), "c1");
   }
-  compare(users);
+  compare(t, users);
 });
 
 test("testSizeAndDeleteOfMapProperty", (t) => {
@@ -270,7 +269,7 @@ test("testGetAndSetAndDeleteOfMapProperty", (t) => {
     const u = user.getOrCreateMap("map");
     t.is(u.get("stuff"), null);
   }
-  compare(users);
+  compare(t, users);
 });
 
 test.skip("testSetAndClearOfMapProperties", (t) => {
@@ -286,7 +285,7 @@ test.skip("testSetAndClearOfMapProperties", (t) => {
     t.is(u.get("otherstuff"), null);
     t.is(u.size, 0, `map size after clear is ${u.size}, expected 0`);
   }
-  compare(users);
+  compare(t, users);
 });
 
 test.skip("testSetAndClearOfMapPropertiesWithConflicts", (t) => {
@@ -311,7 +310,7 @@ test.skip("testSetAndClearOfMapPropertiesWithConflicts", (t) => {
     t.assert(u.get("otherstuff") === undefined);
     t.assert(u.size === 0, `map size after clear is ${u.size}, expected 0`);
   }
-  compare(users);
+  compare(t, users);
 });
 
 test.skip("testGetAndSetOfMapPropertyWithThreeConflicts", (t) => {
@@ -326,7 +325,7 @@ test.skip("testGetAndSetOfMapPropertyWithThreeConflicts", (t) => {
     const u = user.getOrCreateMap("map");
     t.deepEqual(u.get("stuff"), "c3");
   }
-  compare(users);
+  compare(t, users);
 });
 
 test.skip("testGetAndSetAndDeleteOfMapPropertyWithThreeConflicts", (t) => {
@@ -349,7 +348,7 @@ test.skip("testGetAndSetAndDeleteOfMapPropertyWithThreeConflicts", (t) => {
     const u = user.getOrCreateMap("map");
     t.assert(u.get("stuff") === undefined);
   }
-  compare(users);
+  compare(t, users);
 });
 
 test.skip("testObserveDeepProperties", (t) => {
@@ -384,7 +383,7 @@ test.skip("testObserveDeepProperties", (t) => {
   t.assert(Y.compareIds(dmap1.itemId, dmap3.itemId));
   // @ts-ignore we want the possibility of dmapid being undefined
   t.assert(compareIDs(dmap1._item.id, dmapid));
-  compare(users);
+  compare(t, users);
 });
 
 test.skip("testObserversUsingObservedeep", (t) => {
@@ -403,7 +402,7 @@ test.skip("testObserversUsingObservedeep", (t) => {
   map0.get<Y.Map>("map").get<Y.Array>("array").insert(0, ["content"]);
   t.assert(calls === 3);
   t.deepEqual(pathes, [[], ["map"], ["map", "array"]]);
-  compare(users);
+  compare(t, users);
 });
 
 test.skip("testPathsOfSiblingEvents", (t) => {
@@ -426,7 +425,7 @@ test.skip("testPathsOfSiblingEvents", (t) => {
   });
   t.assert(calls === 1);
   t.deepEqual(pathes, [["map"], ["map", "text1"]]);
-  compare(users);
+  compare(t, users);
 });
 
 // TODO: Test events in Y.Map
@@ -435,11 +434,12 @@ test.skip("testPathsOfSiblingEvents", (t) => {
  * @param {Object<string,any>} should
  */
 const compareEvent = (
+  t: ExecutionContext,
   is: { [s: string]: any },
   should: { [s: string]: any },
 ) => {
   for (const key in should) {
-    deepEqual(should[key], is[key]);
+    t.deepEqual(should[key], is[key]);
   }
 };
 
@@ -453,13 +453,13 @@ test.skip("testThrowsAddAndUpdateAndDeleteEvents", (t) => {
     event = e; // just put it on event, should be thrown synchronously anyway
   });
   map0.set("stuff", 4);
-  compareEvent(event, {
+  compareEvent(t, event, {
     target: map0,
     keysChanged: new Set(["stuff"]),
   });
   // update, oldValue is in contents
   map0.set("stuff", new Y.Array());
-  compareEvent(event, {
+  compareEvent(t, event, {
     target: map0,
     keysChanged: new Set(["stuff"]),
   });
@@ -467,11 +467,11 @@ test.skip("testThrowsAddAndUpdateAndDeleteEvents", (t) => {
   map0.set("stuff", 5);
   // delete
   map0.delete("stuff");
-  compareEvent(event, {
+  compareEvent(t, event, {
     keysChanged: new Set(["stuff"]),
     target: map0,
   });
-  compare(users);
+  compare(t, users);
 });
 
 test.skip("testThrowsDeleteEventsOnClear", (t) => {
@@ -488,11 +488,11 @@ test.skip("testThrowsDeleteEventsOnClear", (t) => {
   map0.set("otherstuff", new Y.Array());
   // clear
   map0.clear();
-  compareEvent(event, {
+  compareEvent(t, event, {
     keysChanged: new Set(["stuff", "otherstuff"]),
     target: map0,
   });
-  compare(users);
+  compare(t, users);
 });
 
 test.skip("testChangeEvent", (t) => {
@@ -557,7 +557,7 @@ test.skip("testChangeEvent", (t) => {
       keyChange.action === "add" &&
       keyChange.oldValue === undefined,
   );
-  compare(users);
+  compare(t, users);
 });
 
 test.skip("testYmapEventExceptionsShouldCompleteTransaction", (t) => {
@@ -619,7 +619,7 @@ test.skip("testYmapEventHasCorrectValueWhenSettingAPrimitive", (t) => {
   });
   map0.set("stuff", 2);
   t.deepEqual(event.value, event.target.get(event.name));
-  compare(users);
+  compare(t, users);
 });
 
 test.skip("testYmapEventHasCorrectValueWhenSettingAPrimitiveFromOtherUser", (t) => {
@@ -632,7 +632,7 @@ test.skip("testYmapEventHasCorrectValueWhenSettingAPrimitiveFromOtherUser", (t) 
   map1.set("stuff", 2);
   testConnector.flushAllMessages();
   t.deepEqual(event.value, event.target.get(event.name));
-  compare(users);
+  compare(t, users);
 });
 
 const mapTransactions: Array<(arg0: Y.Doc, arg1: prng.PRNG) => void> = [
@@ -658,68 +658,68 @@ const mapTransactions: Array<(arg0: Y.Doc, arg1: prng.PRNG) => void> = [
 ];
 
 test.skip("testRepeatGeneratingYmapTests10", (t) => {
-  applyRandomTests(gen, mapTransactions, 3);
+  applyRandomTests(t, gen, mapTransactions, 3);
 });
 
 test.skip("testRepeatGeneratingYmapTests40", (t) => {
-  applyRandomTests(gen, mapTransactions, 40);
+  applyRandomTests(t, gen, mapTransactions, 40);
 });
 
 test.skip("testRepeatGeneratingYmapTests42", (t) => {
-  applyRandomTests(gen, mapTransactions, 42);
+  applyRandomTests(t, gen, mapTransactions, 42);
 });
 
 test.skip("testRepeatGeneratingYmapTests43", (t) => {
-  applyRandomTests(gen, mapTransactions, 43);
+  applyRandomTests(t, gen, mapTransactions, 43);
 });
 
 test.skip("testRepeatGeneratingYmapTests44", (t) => {
-  applyRandomTests(gen, mapTransactions, 44);
+  applyRandomTests(t, gen, mapTransactions, 44);
 });
 
 test.skip("testRepeatGeneratingYmapTests45", (t) => {
-  applyRandomTests(gen, mapTransactions, 45);
+  applyRandomTests(t, gen, mapTransactions, 45);
 });
 
 test.skip("testRepeatGeneratingYmapTests46", (t) => {
-  applyRandomTests(gen, mapTransactions, 46);
+  applyRandomTests(t, gen, mapTransactions, 46);
 });
 
 test.skip("testRepeatGeneratingYmapTests300", (t) => {
-  applyRandomTests(gen, mapTransactions, 300);
+  applyRandomTests(t, gen, mapTransactions, 300);
 });
 
 test.skip("testRepeatGeneratingYmapTests400", (t) => {
-  applyRandomTests(gen, mapTransactions, 400);
+  applyRandomTests(t, gen, mapTransactions, 400);
 });
 
 test.skip("testRepeatGeneratingYmapTests500", (t) => {
-  applyRandomTests(gen, mapTransactions, 500);
+  applyRandomTests(t, gen, mapTransactions, 500);
 });
 
 test.skip("testRepeatGeneratingYmapTests600", (t) => {
-  applyRandomTests(gen, mapTransactions, 600);
+  applyRandomTests(t, gen, mapTransactions, 600);
 });
 
 test.skip("testRepeatGeneratingYmapTests1000", (t) => {
-  applyRandomTests(gen, mapTransactions, 1000);
+  applyRandomTests(t, gen, mapTransactions, 1000);
 });
 
 test.skip("testRepeatGeneratingYmapTests1800", (t) => {
-  applyRandomTests(gen, mapTransactions, 1800);
+  applyRandomTests(t, gen, mapTransactions, 1800);
 });
 
 test.skip("testRepeatGeneratingYmapTests5000", (t) => {
   if (!production) return;
-  applyRandomTests(gen, mapTransactions, 5000);
+  applyRandomTests(t, gen, mapTransactions, 5000);
 });
 
 test.skip("testRepeatGeneratingYmapTests10000", (t) => {
   if (!production) return;
-  applyRandomTests(gen, mapTransactions, 10000);
+  applyRandomTests(t, gen, mapTransactions, 10000);
 });
 
 test.skip("testRepeatGeneratingYmapTests100000", (t) => {
   if (!production) return;
-  applyRandomTests(gen, mapTransactions, 100000);
+  applyRandomTests(t, gen, mapTransactions, 100000);
 });

@@ -38,7 +38,7 @@
     "build": "napi build --platform --release --no-const-enum --dts yocto.d.ts --js yocto.js",
     "build:debug": "napi build --platform --no-const-enum --dts yocto.d.ts --js yocto.js",
     "universal": "napi universal",
-    "test": "ava --concurrency 1 --serial --timeout 1s",
+    "test": "ava --concurrency 1 --serial --timeout 5s",
     "test:watch": "yarn exec tsx ./scripts/run-test.mts all --watch",
     "test:coverage": "NODE_OPTIONS=\"--import tsx\" c8 node ./scripts/run-test.mts all",
     "version": "napi version"

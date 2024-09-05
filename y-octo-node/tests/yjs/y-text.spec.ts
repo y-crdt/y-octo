@@ -1,6 +1,5 @@
-import assert, { deepEqual } from "node:assert";
 import { randomInt } from "node:crypto";
-import test from "ava";
+import test, { ExecutionContext } from "ava";
 
 import * as prng from "lib0/prng";
 import * as math from "lib0/math";
@@ -1711,7 +1710,7 @@ test.skip("testBasicInsertAndDelete", (t) => {
   });
   t.deepEqual(delta, []);
 
-  compare(users);
+  compare(t, users);
 });
 
 test.skip("testBasicFormat", (t) => {
@@ -1761,7 +1760,7 @@ test.skip("testBasicFormat", (t) => {
     { retain: 1 },
     { retain: 1, attributes: { bold: null } },
   ]);
-  compare(users);
+  compare(t, users);
 });
 
 test.skip("testFalsyFormats", (t) => {
@@ -1797,7 +1796,7 @@ test.skip("testFalsyFormats", (t) => {
     { retain: 2 },
     { retain: 1, attributes: { falsy: false } },
   ]);
-  compare(users);
+  compare(t, users);
 });
 
 test.skip("testMultilineFormat", (t) => {
@@ -2075,7 +2074,7 @@ test.skip("testInsertAndDeleteAtRandomPositions", (t) => {
       // expectedResult = expectedResult.slice(0, pos) + expectedResult.slice(pos + len)
     }
   }
-  // deepEqual(text0.toString(), expectedResult)
+  // t.deepEqual(text0.toString(), expectedResult)
   t.describe("final length", "" + text0.length);
 });
 
@@ -2219,7 +2218,7 @@ test.skip("testSplitSurrogateCharacter", (t) => {
     text0.insert(0, "👾"); // insert surrogate character
     // split surrogate, which should not lead to an encoding error
     text0.insert(1, "hi!");
-    compare(users);
+    compare(t, users);
   }
   {
     const { users, text0 } = init(gen, { users: 2 });
@@ -2227,7 +2226,7 @@ test.skip("testSplitSurrogateCharacter", (t) => {
     text0.insert(0, "👾👾"); // insert surrogate character
     // partially delete surrogate
     text0.delete(1, 2);
-    compare(users);
+    compare(t, users);
   }
   {
     const { users, text0 } = init(gen, { users: 2 });
@@ -2235,7 +2234,7 @@ test.skip("testSplitSurrogateCharacter", (t) => {
     text0.insert(0, "👾👾"); // insert surrogate character
     // formatting will also split surrogates
     text0.format(1, 2, { bold: true });
-    compare(users);
+    compare(t, users);
   }
 });
 
@@ -2269,9 +2268,9 @@ test.skip("testSearchMarkerBug1", (t) => {
   testConnector.flushAllMessages();
   text1.insert(3, "d");
   testConnector.flushAllMessages();
-  deepEqual(text0.toString(), text1.toString());
-  deepEqual(text0.toString(), "a_sda");
-  compare(users);
+  t.deepEqual(text0.toString(), text1.toString());
+  t.deepEqual(text0.toString(), "a_sda");
+  compare(t, users);
 });
 
 /**
@@ -2335,24 +2334,22 @@ let charCounter = 0;
  *
  * @type Array<function(any,prng.PRNG):void>
  */
-const textChanges: Array<(arg0: any, arg1: prng.PRNG) => void> = [
-  (y: Y.Doc, gen: prng.PRNG) => {
+const textChanges: Array<
+  (t: ExecutionContext, arg0: any, arg1: prng.PRNG) => void
+> = [
+  (t, y, gen) => {
     // insert text
     const ytext = y.getOrCreateText("text");
     const insertPos = prng.int32(gen, 0, ytext.length);
     const text = charCounter++ + prng.word(gen);
     const prevText = ytext.toString();
     ytext.insert(insertPos, text);
-    deepEqual(
+    t.deepEqual(
       ytext.toString(),
       prevText.slice(0, insertPos) + text + prevText.slice(insertPos),
     );
   },
-  /**
-   * @param {Y.Doc} y
-   * @param {prng.PRNG} gen
-   */
-  (y: Y.Doc, gen: prng.PRNG) => {
+  (t, y, gen) => {
     // delete text
     const ytext = y.getOrCreateText("text");
     const contentLen = ytext.toString().length;
@@ -2360,7 +2357,7 @@ const textChanges: Array<(arg0: any, arg1: prng.PRNG) => void> = [
     const overwrite = math.min(prng.int32(gen, 0, contentLen - insertPos), 2);
     const prevText = ytext.toString();
     ytext.delete(insertPos, overwrite);
-    deepEqual(
+    t.deepEqual(
       ytext.toString(),
       prevText.slice(0, insertPos) + prevText.slice(insertPos + overwrite),
     );
@@ -2368,43 +2365,43 @@ const textChanges: Array<(arg0: any, arg1: prng.PRNG) => void> = [
 ];
 
 test.skip("testRepeatGenerateTextChanges5", (t) => {
-  const { users } = checkResult(applyRandomTests(gen, textChanges, 5));
+  const { users } = checkResult(applyRandomTests(t, gen, textChanges, 5));
   const cleanups = Y.cleanupYTextFormatting(users[0].getText("text"));
   t.assert(cleanups === 0);
 });
 
 test.skip("testRepeatGenerateTextChanges30", (t) => {
-  const { users } = checkResult(applyRandomTests(gen, textChanges, 30));
+  const { users } = checkResult(applyRandomTests(t, gen, textChanges, 30));
   const cleanups = Y.cleanupYTextFormatting(users[0].getText("text"));
   t.assert(cleanups === 0);
 });
 
 test.skip("testRepeatGenerateTextChanges40", (t) => {
-  const { users } = checkResult(applyRandomTests(gen, textChanges, 40));
+  const { users } = checkResult(applyRandomTests(t, gen, textChanges, 40));
   const cleanups = Y.cleanupYTextFormatting(users[0].getText("text"));
   t.assert(cleanups === 0);
 });
 
 test.skip("testRepeatGenerateTextChanges50", (t) => {
-  const { users } = checkResult(applyRandomTests(gen, textChanges, 50));
+  const { users } = checkResult(applyRandomTests(t, gen, textChanges, 50));
   const cleanups = Y.cleanupYTextFormatting(users[0].getText("text"));
   t.assert(cleanups === 0);
 });
 
 test.skip("testRepeatGenerateTextChanges70", (t) => {
-  const { users } = checkResult(applyRandomTests(gen, textChanges, 70));
+  const { users } = checkResult(applyRandomTests(t, gen, textChanges, 70));
   const cleanups = Y.cleanupYTextFormatting(users[0].getText("text"));
   t.assert(cleanups === 0);
 });
 
 test.skip("testRepeatGenerateTextChanges90", (t) => {
-  const { users } = checkResult(applyRandomTests(gen, textChanges, 90));
+  const { users } = checkResult(applyRandomTests(t, gen, textChanges, 90));
   const cleanups = Y.cleanupYTextFormatting(users[0].getText("text"));
   t.assert(cleanups === 0);
 });
 
 test.skip("testRepeatGenerateTextChanges300", (t) => {
-  const { users } = checkResult(applyRandomTests(gen, textChanges, 300));
+  const { users } = checkResult(applyRandomTests(t, gen, textChanges, 300));
   const cleanups = Y.cleanupYTextFormatting(users[0].getText("text"));
   t.assert(cleanups === 0);
 });
@@ -2564,45 +2561,45 @@ const checkResult = (result: any) => {
 };
 
 test.skip("testRepeatGenerateQuillChanges1", (t) => {
-  const { users } = checkResult(applyRandomTests(gen, qChanges, 1));
+  const { users } = checkResult(applyRandomTests(t, gen, qChanges, 1));
   const cleanups = Y.cleanupYTextFormatting(users[0].getText("text"));
   t.assert(cleanups === 0);
 });
 
 test.skip("testRepeatGenerateQuillChanges2", (t) => {
-  const { users } = checkResult(applyRandomTests(gen, qChanges, 2));
+  const { users } = checkResult(applyRandomTests(t, gen, qChanges, 2));
   const cleanups = Y.cleanupYTextFormatting(users[0].getText("text"));
   t.assert(cleanups === 0);
 });
 
 test.skip("testRepeatGenerateQuillChanges2Repeat", (t) => {
   for (let i = 0; i < 1000; i++) {
-    const { users } = checkResult(applyRandomTests(gen, qChanges, 2));
+    const { users } = checkResult(applyRandomTests(t, gen, qChanges, 2));
     const cleanups = Y.cleanupYTextFormatting(users[0].getText("text"));
     t.assert(cleanups === 0);
   }
 });
 
 test.skip("testRepeatGenerateQuillChanges3", (t) => {
-  checkResult(applyRandomTests(gen, qChanges, 3));
+  checkResult(applyRandomTests(t, gen, qChanges, 3));
 });
 
 test.skip("testRepeatGenerateQuillChanges30", (t) => {
-  checkResult(applyRandomTests(gen, qChanges, 30));
+  checkResult(applyRandomTests(t, gen, qChanges, 30));
 });
 
 test.skip("testRepeatGenerateQuillChanges40", (t) => {
-  checkResult(applyRandomTests(gen, qChanges, 40));
+  checkResult(applyRandomTests(t, gen, qChanges, 40));
 });
 
 test.skip("testRepeatGenerateQuillChanges70", (t) => {
-  checkResult(applyRandomTests(gen, qChanges, 70));
+  checkResult(applyRandomTests(t, gen, qChanges, 70));
 });
 
 test.skip("testRepeatGenerateQuillChanges100", (t) => {
-  checkResult(applyRandomTests(gen, qChanges, 100));
+  checkResult(applyRandomTests(t, gen, qChanges, 100));
 });
 
 test.skip("testRepeatGenerateQuillChanges300", (t) => {
-  checkResult(applyRandomTests(gen, qChanges, 300));
+  checkResult(applyRandomTests(t, gen, qChanges, 300));
 });

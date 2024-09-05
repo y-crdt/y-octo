@@ -310,7 +310,6 @@ export class Map {
   }
 
   set<T = ListItem>(key: string, value: T) {
-    console.trace(value, this.ytype);
     if (this.ytype) {
       if (value instanceof Array || value instanceof Map) {
         console.log("integrate", value);
