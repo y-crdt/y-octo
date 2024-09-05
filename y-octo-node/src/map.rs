@@ -68,7 +68,11 @@ impl YMap {
             }
             MixedRefYType::D(unknown) => match unknown.get_type() {
                 Ok(value_type) => match value_type {
-                    ValueType::Undefined | ValueType::Null => {
+                    ValueType::Undefined => {
+                        self.map.insert(key, Any::Undefined)?;
+                        Ok(MixedYType::D(env.get_undefined().map(|v| v.into_unknown())?))
+                    }
+                    ValueType::Null => {
                         self.map.insert(key, Any::Null)?;
                         Ok(MixedYType::D(env.get_null().map(|v| v.into_unknown())?))
                     }

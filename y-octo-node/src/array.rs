@@ -93,9 +93,11 @@ impl YArray {
                 .map_err(anyhow::Error::from),
             MixedRefYType::D(unknown) => match unknown.get_type() {
                 Ok(value_type) => match value_type {
-                    ValueType::Undefined | ValueType::Null => {
-                        self.array.insert(index as u64, Any::Null).map_err(anyhow::Error::from)
-                    }
+                    ValueType::Undefined => self
+                        .array
+                        .insert(index as u64, Any::Undefined)
+                        .map_err(anyhow::Error::from),
+                    ValueType::Null => self.array.insert(index as u64, Any::Null).map_err(anyhow::Error::from),
                     ValueType::Boolean => match unknown.coerce_to_bool().and_then(|v| v.get_value()) {
                         Ok(boolean) => self.array.insert(index as u64, boolean).map_err(anyhow::Error::from),
                         Err(e) => Err(anyhow::Error::new(e).context("Failed to coerce value to boolean")),

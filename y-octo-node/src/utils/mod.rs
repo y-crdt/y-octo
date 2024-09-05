@@ -90,7 +90,8 @@ pub fn get_any_from_js_object(object: JsObject) -> Result<Any> {
 
 pub fn get_any_from_js_unknown(js_unknown: JsUnknown) -> Result<Any> {
     match js_unknown.get_type()? {
-        ValueType::Undefined | ValueType::Null => Ok(Any::Null),
+        ValueType::Undefined => Ok(Any::Undefined),
+        ValueType::Null => Ok(Any::Null),
         ValueType::Boolean => Ok(js_unknown.coerce_to_bool().and_then(|v| v.get_value())?.into()),
         ValueType::Number => Ok(js_unknown
             .coerce_to_number()
