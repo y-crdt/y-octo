@@ -17,6 +17,7 @@ export declare function isAbstractType(unknown: unknown): boolean
 export declare class YArray {
   get length(): number
   get isEmpty(): boolean
+  get itemId(): YId | null
   get<T = unknown>(index: number): T
   slice<T = unknown>(start: number, end?: number | undefined | null): Array<T>
   map<T = unknown>(callback: (...args: any[]) => any): Array<T>
@@ -70,7 +71,7 @@ export declare class YMap {
   set<T = YArray | YMap | YText | boolean | number | string | Record<string, any> | null | undefined>(key: string, value: T): T
   delete(key: string): void
   clear(): void
-  toJson(): object
+  toJSON<T = unknown>(): Record<string, T>
   entries(): YMapEntriesIterator
   keys(): YMapKeyIterator
   values(): YMapValuesIterator

@@ -260,7 +260,7 @@ export const compare = (t: ExecutionContext, users: TestYOctoInstance[]) => {
   // });
   // users.push(...mergedDocs);
   const userArrayValues = users.map((u) => u.getArray("array").toJSON());
-  const userMapValues = users.map((u) => u.getMap("map").toJson());
+  const userMapValues = users.map((u) => u.getMap("map").toJSON());
   // const userXmlValues = users.map(
   //   (u: {
   //     get: (

@@ -116,6 +116,10 @@ export class Array {
   private ytype?: { doc: Doc; array: Y.YArray };
   private preliminary: any[] = [];
 
+  get itemId() {
+    return this.ytype?.array.itemId;
+  }
+
   static from<T extends ArrayType>(items: T[]): Array {
     return new Array(items);
   }
@@ -341,9 +345,9 @@ export class Map {
     }
   }
 
-  toJson(): Record<string, any> {
+  toJSON(): Record<string, any> {
     return this.ytype
-      ? this.ytype.map.toJson()
+      ? this.ytype.map.toJSON()
       : JSON.parse(JSON.stringify(this.preliminary));
   }
 
