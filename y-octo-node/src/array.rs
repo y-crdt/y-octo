@@ -62,7 +62,7 @@ impl YArray {
             })
             .unwrap_or(self.length() - start) as usize;
         for value in self.array.iter().skip(start as usize).take(end) {
-            js_array.insert(get_js_unknown_from_value(env, value)?)?;
+            js_array.insert(get_js_unknown_from_value(env, value, false)?)?;
         }
         Ok(js_array)
     }
@@ -71,7 +71,7 @@ impl YArray {
     pub fn map(&self, env: Env, callback: JsFunction) -> Result<JsArray> {
         let mut js_array = env.create_array(0)?;
         for value in self.array.iter() {
-            let js_value = get_js_unknown_from_value(env, value)?;
+            let js_value = get_js_unknown_from_value(env, value, false)?;
             let result = callback.call(None, &[js_value.into_unknown()])?;
             js_array.insert(result)?;
         }
@@ -181,7 +181,7 @@ impl YArray {
     pub fn to_array(&self, env: Env) -> Result<JsArray> {
         let mut js_array = env.create_array(0)?;
         for value in self.array.iter() {
-            js_array.insert(get_js_unknown_from_value(env, value)?)?;
+            js_array.insert(get_js_unknown_from_value(env, value, false)?)?;
         }
         Ok(js_array)
     }
@@ -190,7 +190,7 @@ impl YArray {
     pub fn to_json(&self, env: Env) -> Result<JsArray> {
         let mut js_array = env.create_array(0)?;
         for value in self.array.iter() {
-            js_array.insert(get_js_unknown_from_value(env, value)?)?;
+            js_array.insert(get_js_unknown_from_value(env, value, true)?)?;
         }
         Ok(js_array)
     }

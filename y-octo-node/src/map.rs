@@ -133,11 +133,15 @@ impl YMap {
         }
     }
 
-    #[napi]
+    #[napi(
+        js_name = "toJSON",
+        ts_generic_types = "T = unknown",
+        ts_return_type = "Record<string, T>"
+    )]
     pub fn to_json(&self, env: Env) -> Result<JsObject> {
         let mut js_object = env.create_object()?;
         for (key, value) in self.map.iter() {
-            js_object.set(key, get_js_unknown_from_value(env, value))?;
+            js_object.set(key, get_js_unknown_from_value(env, value, true))?;
         }
         Ok(js_object)
     }
@@ -205,7 +209,7 @@ impl Generator for YMapEntriesIterator {
             let mut js_array = self.env.create_array(2).ok()?;
             js_array.set(0, string).ok()?;
             js_array
-                .set(1, get_js_unknown_from_value(self.env, value.clone()).ok()?)
+                .set(1, get_js_unknown_from_value(self.env, value.clone(), false).ok()?)
                 .ok()?;
             Some(js_array)
         } else {
@@ -270,7 +274,7 @@ impl Generator for YMapValuesIterator {
             return None;
         }
         let ret = if let Some(value) = self.entries.get(current) {
-            get_js_unknown_from_value(self.env, value.clone()).ok()
+            get_js_unknown_from_value(self.env, value.clone(), false).ok()
         } else {
             None
         };
