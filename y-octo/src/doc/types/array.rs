@@ -23,6 +23,11 @@ impl Iterator for ArrayIter<'_> {
 }
 
 impl Array {
+    #[inline(always)]
+    pub fn id(&self) -> Option<Id> {
+        self._id()
+    }
+
     #[inline]
     pub fn len(&self) -> u64 {
         self.content_len()

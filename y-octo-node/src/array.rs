@@ -29,6 +29,11 @@ impl YArray {
         self.array.is_empty()
     }
 
+    #[napi(getter)]
+    pub fn item_id(&self) -> Option<YId> {
+        self.array.id().map(|id| YId { id })
+    }
+
     #[napi(ts_generic_types = "T = unknown", ts_return_type = "T")]
     pub fn get(&self, env: Env, index: i64) -> Result<MixedYType> {
         let value = if let Some(value) = self.array.get(index as u64) {

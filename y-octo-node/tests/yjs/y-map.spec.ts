@@ -206,7 +206,7 @@ test.skip("testYmapSetsYarray", (t) => {
   const { users, map0 } = init(gen, { users: 2 });
 
   const array = map0.set("Array", new Y.Array());
-  t.assert(array === map0.get("Array"));
+  t.assert(Y.compareIds(array.itemId, map0.get<Y.Array>("Array").itemId));
   array.insert(0, [1, 2, 3]);
   // @ts-ignore
   t.deepEqual(map0.toJSON(), { Array: [1, 2, 3] });

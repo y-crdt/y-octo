@@ -57,6 +57,11 @@ impl ItemPosition {
 
 pub(crate) trait ListType: AsInner<Inner = YTypeRef> {
     #[inline(always)]
+    fn _id(&self) -> Option<Id> {
+        self.as_inner().ty().and_then(|ty| ty.item.get().map(|item| item.id))
+    }
+
+    #[inline(always)]
     fn content_len(&self) -> u64 {
         self.as_inner().ty().unwrap().len
     }
