@@ -91,7 +91,7 @@ impl YDoc {
         Ok(ytext)
     }
 
-    #[napi(ts_args_type = "entries?: Iterator<[string,any]>")]
+    #[napi(ts_args_type = "entries?: Array<[string,any]> | Iterator<[string,any]>")]
     pub fn create_map(&self, env: Env, entries: Option<JsArray>) -> Result<YMap> {
         let mut ymap = self.doc.create_map().map(YMap::inner_new)?;
         if let Some(entries) = entries {

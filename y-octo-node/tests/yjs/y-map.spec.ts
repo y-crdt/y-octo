@@ -37,10 +37,10 @@ test.skip("testMapEventError", (t) => {
     event = e;
   });
   t.throws(() => {
-    t.info(event.keys);
+    console.info(event.keys);
   });
   t.throws(() => {
-    t.info(event.keys);
+    console.info(event.keys);
   });
 });
 

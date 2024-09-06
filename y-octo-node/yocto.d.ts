@@ -52,7 +52,7 @@ export declare class Doc {
   getOrCreateMap(key: string): YMap
   createArray(): YArray
   createText(text?: string | undefined | null): YText
-  createMap(entries?: Iterator<[string,any]>): YMap
+  createMap(entries?: Array<[string,any]> | Iterator<[string,any]>): YMap
   applyUpdate(update: Buffer): void
   diff(sv?: Buffer | undefined | null): Buffer | null
   encodeStateAsUpdateV1(state?: Buffer | undefined | null): Buffer
