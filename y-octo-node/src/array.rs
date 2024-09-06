@@ -37,7 +37,7 @@ impl YArray {
     #[napi(ts_generic_types = "T = unknown", ts_return_type = "T")]
     pub fn get(&self, env: Env, index: i64) -> Result<MixedYType> {
         let value = if let Some(value) = self.array.get(index as u64) {
-            get_mixed_y_type_from_value(env, value)?
+            get_mixed_y_type_from_value(env, value, false)?
         } else {
             MixedYType::D(env.get_undefined()?.into_unknown())
         };
@@ -62,7 +62,7 @@ impl YArray {
             })
             .unwrap_or(self.length() - start) as usize;
         for value in self.array.iter().skip(start as usize).take(end) {
-            js_array.insert(get_js_unknown_from_value(env, value, false)?)?;
+            js_array.insert(get_mixed_y_type_from_value(env, value, false)?)?;
         }
         Ok(js_array)
     }
@@ -181,7 +181,7 @@ impl YArray {
     pub fn to_array(&self, env: Env) -> Result<JsArray> {
         let mut js_array = env.create_array(0)?;
         for value in self.array.iter() {
-            js_array.insert(get_js_unknown_from_value(env, value, false)?)?;
+            js_array.insert(get_mixed_y_type_from_value(env, value, false)?)?;
         }
         Ok(js_array)
     }
@@ -190,7 +190,7 @@ impl YArray {
     pub fn to_json(&self, env: Env) -> Result<JsArray> {
         let mut js_array = env.create_array(0)?;
         for value in self.array.iter() {
-            js_array.insert(get_js_unknown_from_value(env, value, true)?)?;
+            js_array.insert(get_mixed_y_type_from_value(env, value, true)?)?;
         }
         Ok(js_array)
     }

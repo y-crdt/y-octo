@@ -35,45 +35,33 @@ pub fn get_js_unknown_from_any(env: Env, any: Any) -> Result<JsUnknown> {
     }
 }
 
-pub fn get_js_unknown_from_value(env: Env, value: Value, cascading: bool) -> Result<JsUnknown> {
+pub fn get_mixed_y_type_from_value(env: Env, value: Value, cascading: bool) -> Result<MixedYType> {
     match value {
-        Value::Any(any) => get_js_unknown_from_any(env, any),
+        Value::Any(any) => get_js_unknown_from_any(env, any).map(MixedYType::D),
         Value::Array(array) => {
             if cascading {
                 let mut js_array = env.create_array_with_length(array.len() as usize)?;
                 for (i, value) in array.iter().enumerate() {
-                    js_array.set_element(i as u32, get_js_unknown_from_value(env, value, cascading)?)?;
+                    let value = get_mixed_y_type_from_value(env, value, cascading)?;
+                    let instance = MixedYTypeClass::try_from((env.clone(), value))?;
+                    js_array.set_element(i as u32, instance.as_unknown(env.clone()))?;
                 }
-                Ok(js_array.into_unknown())
+                Ok(MixedYType::D(js_array.into_unknown()))
             } else {
-                env.create_external(YArray::inner_new(array), None)
-                    .map(|o| o.into_unknown())
+                Ok(YArray::inner_new(array).into())
             }
         }
         Value::Map(map) => {
             if cascading {
                 let mut js_object = env.create_object()?;
                 for (key, value) in map.iter() {
-                    js_object.set_named_property(key, get_js_unknown_from_value(env, value, cascading)?)?;
+                    js_object.set_named_property(key, get_mixed_y_type_from_value(env, value, cascading)?)?;
                 }
-                Ok(js_object.into_unknown())
+                Ok(MixedYType::D(js_object.into_unknown()))
             } else {
-                env.create_external(YMap::inner_new(map), None)
-                    .map(|o| o.into_unknown())
+                Ok(YMap::inner_new(map).into())
             }
         }
-        Value::Text(text) => env
-            .create_external(YText::inner_new(text), None)
-            .map(|o| o.into_unknown()),
-        _ => env.get_undefined().map(|v| v.into_unknown()),
-    }
-}
-
-pub fn get_mixed_y_type_from_value(env: Env, value: Value) -> Result<MixedYType> {
-    match value {
-        Value::Any(any) => get_js_unknown_from_any(env, any).map(MixedYType::D),
-        Value::Array(array) => Ok(YArray::inner_new(array).into()),
-        Value::Map(map) => Ok(YMap::inner_new(map).into()),
         Value::Text(text) => Ok(YText::inner_new(text).into()),
         _ => env.get_undefined().map(|v| v.into_unknown()).map(MixedYType::D),
     }

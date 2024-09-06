@@ -20,6 +20,6 @@ pub use protocol::*;
 pub use text::*;
 pub use types::*;
 use utils::{
-    get_any_from_js_object, get_any_from_js_unknown, get_js_unknown_from_any, get_js_unknown_from_value,
-    get_mixed_y_type_from_value, MixedRefYType, MixedYType,
+    get_any_from_js_object, get_any_from_js_unknown, get_js_unknown_from_any, get_mixed_y_type_from_value,
+    MixedRefYType, MixedYType,
 };

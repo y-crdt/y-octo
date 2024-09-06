@@ -11,12 +11,6 @@ pub struct YText {
 
 #[napi]
 impl YText {
-    #[allow(clippy::new_without_default)]
-    #[napi(constructor)]
-    pub fn new() -> Self {
-        unimplemented!()
-    }
-
     pub(crate) fn inner_new(text: Text) -> Self {
         Self { text }
     }

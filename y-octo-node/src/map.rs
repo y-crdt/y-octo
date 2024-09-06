@@ -38,7 +38,7 @@ impl YMap {
     #[napi(ts_generic_types = "T = unknown", ts_return_type = "T")]
     pub fn get(&self, env: Env, key: String) -> Result<MixedYType> {
         let value = if let Some(value) = self.map.get(&key) {
-            get_mixed_y_type_from_value(env, value)?
+            get_mixed_y_type_from_value(env, value, false)?
         } else {
             MixedYType::D(env.get_undefined()?.into_unknown())
         };
@@ -141,7 +141,7 @@ impl YMap {
     pub fn to_json(&self, env: Env) -> Result<JsObject> {
         let mut js_object = env.create_object()?;
         for (key, value) in self.map.iter() {
-            js_object.set(key, get_js_unknown_from_value(env, value, true))?;
+            js_object.set(key, get_mixed_y_type_from_value(env, value, true))?;
         }
         Ok(js_object)
     }
@@ -209,7 +209,7 @@ impl Generator for YMapEntriesIterator {
             let mut js_array = self.env.create_array(2).ok()?;
             js_array.set(0, string).ok()?;
             js_array
-                .set(1, get_js_unknown_from_value(self.env, value.clone(), false).ok()?)
+                .set(1, get_mixed_y_type_from_value(self.env, value.clone(), false).ok()?)
                 .ok()?;
             Some(js_array)
         } else {
@@ -262,7 +262,7 @@ pub struct YMapValuesIterator {
 
 #[napi]
 impl Generator for YMapValuesIterator {
-    type Yield = JsUnknown;
+    type Yield = MixedYType;
 
     type Next = Option<i64>;
 
@@ -274,7 +274,7 @@ impl Generator for YMapValuesIterator {
             return None;
         }
         let ret = if let Some(value) = self.entries.get(current) {
-            get_js_unknown_from_value(self.env, value.clone(), false).ok()
+            get_mixed_y_type_from_value(self.env, value.clone(), false).ok()
         } else {
             None
         };
