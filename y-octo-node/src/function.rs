@@ -71,7 +71,7 @@ pub fn merge_updates(updates: Vec<JsBuffer>) -> Result<JsBuffer> {
     Ok(merge_updates_v1(updates)?.encode_v1()?.into())
 }
 
-#[napi]
-pub fn is_abstract_type(env: Env, unknown: JsUnknown) -> Result<bool> {
-    Ok(YArray::instance_of(env, &unknown)? || YMap::instance_of(env, &unknown)? || YText::instance_of(env, &unknown)?)
+#[napi(ts_args_type = "obj?: any")]
+pub fn is_abstract_type(unknown: MixedRefYType) -> bool {
+    matches!(unknown, MixedRefYType::A(_) | MixedRefYType::B(_) | MixedRefYType::C(_))
 }

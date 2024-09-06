@@ -13,7 +13,7 @@ export declare function snapshot(doc: Doc): YSnapshot
 export declare function encodeSnapshot(snapshot: YSnapshot): Buffer
 export declare function applyUpdate(doc: Doc, update: Buffer): void
 export declare function mergeUpdates(updates: Array<Buffer>): Buffer
-export declare function isAbstractType(unknown: unknown): boolean
+export declare function isAbstractType(obj?: any): boolean
 export declare class YArray {
   get length(): number
   get isEmpty(): boolean
