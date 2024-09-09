@@ -43,8 +43,8 @@ pub fn get_mixed_y_type_from_value(env: Env, value: Value, cascading: bool) -> R
                 let mut js_array = env.create_array_with_length(array.len() as usize)?;
                 for (i, value) in array.iter().enumerate() {
                     let value = get_mixed_y_type_from_value(env, value, cascading)?;
-                    let instance = MixedYTypeClass::try_from((env.clone(), value))?;
-                    js_array.set_element(i as u32, instance.as_unknown(env.clone()))?;
+                    let instance = MixedClassYType::try_from((env, value))?;
+                    js_array.set_element(i as u32, instance.into_inner())?;
                 }
                 Ok(MixedYType::D(js_array.into_unknown()))
             } else {
