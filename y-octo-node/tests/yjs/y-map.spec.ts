@@ -202,7 +202,7 @@ test("testYmapSetsYmap", (t) => {
   compare(t, users);
 });
 
-test.skip("testYmapSetsYarray", (t) => {
+test("testYmapSetsYarray", (t) => {
   const { users, map0 } = init(gen, { users: 2 });
 
   const array = map0.set("Array", new Y.Array());
@@ -213,7 +213,7 @@ test.skip("testYmapSetsYarray", (t) => {
   compare(t, users);
 });
 
-test.skip("testGetAndSetOfMapPropertySyncs", (t) => {
+test("testGetAndSetOfMapPropertySyncs", (t) => {
   const { testConnector, users, map0 } = init(gen, { users: 2 });
 
   map0.set("stuff", "stuffy");
@@ -272,7 +272,7 @@ test("testGetAndSetAndDeleteOfMapProperty", (t) => {
   compare(t, users);
 });
 
-test.skip("testSetAndClearOfMapProperties", (t) => {
+test("testSetAndClearOfMapProperties", (t) => {
   const { testConnector, users, map0 } = init(gen, { users: 1 });
 
   map0.set("stuff", "c0");
@@ -281,8 +281,8 @@ test.skip("testSetAndClearOfMapProperties", (t) => {
   testConnector.flushAllMessages();
   for (const user of users) {
     const u = user.getOrCreateMap("map");
-    t.is(u.get("stuff"), null);
-    t.is(u.get("otherstuff"), null);
+    t.is(u.get("stuff"), undefined);
+    t.is(u.get("otherstuff"), undefined);
     t.is(u.size, 0, `map size after clear is ${u.size}, expected 0`);
   }
   compare(t, users);
