@@ -1,5 +1,5 @@
 use napi::{
-    bindgen_prelude::{Array as JsArray, FromNapiValue},
+    bindgen_prelude::{Array as JsArray, FromNapiValue, Function},
     iterator::Generator,
     Env, JsFunction, JsUnknown, ValueType,
 };
@@ -67,13 +67,16 @@ impl YArray {
         Ok(js_array)
     }
 
-    #[napi(ts_generic_types = "T = unknown", ts_return_type = "Array<T>")]
-    pub fn map(&self, env: Env, callback: JsFunction) -> Result<JsArray> {
+    #[napi(
+        ts_args_type = "value: YArray | YMap | YText | boolean | number | string | Record<string, any> | null | undefined",
+        ts_generic_types = "T = unknown",
+        ts_return_type = "Array<T>"
+    )]
+    pub fn map(&self, env: Env, callback: Function<MixedYType, JsUnknown>) -> Result<JsArray> {
         let mut js_array = env.create_array(0)?;
         for value in self.array.iter() {
-            let js_value = get_js_unknown_from_value(env, value, false)?;
-            let result = callback.call(None, &[js_value.into_unknown()])?;
-            js_array.insert(result)?;
+            let value = get_mixed_y_type_from_value(env, value, false)?;
+            js_array.insert(callback.call(value)?)?;
         }
         Ok(js_array)
     }

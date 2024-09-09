@@ -20,7 +20,7 @@ export declare class YArray {
   get itemId(): YId | null
   get<T = unknown>(index: number): T
   slice<T = unknown>(start: number, end?: number | undefined | null): Array<T>
-  map<T = unknown>(callback: (...args: any[]) => any): Array<T>
+  map<T = unknown>(value: YArray | YMap | YText | boolean | number | string | Record<string, any> | null | undefined): Array<T>
   insert(index: number, value: YArray | YMap | YText | boolean | number | string | Record<string, any> | null | undefined): void
   push(value: YArray | YMap | YText | boolean | number | string | Record<string, any> | null | undefined): void
   unshift(value: YArray | YMap | YText | boolean | number | string | Record<string, any> | null | undefined): void
@@ -85,7 +85,7 @@ export declare class YMapKeyIterator {
   [Symbol.iterator](): Iterator<string, void, number | undefined | null>
 }
 export declare class YMapValuesIterator {
-  [Symbol.iterator](): Iterator<unknown, void, number | undefined | null>
+  [Symbol.iterator](): Iterator<MixedYType, void, number | undefined | null>
 }
 export declare class YProtocol {
   constructor(doc: Doc)
@@ -93,7 +93,6 @@ export declare class YProtocol {
   applySyncStep(buffer: Buffer): Buffer | null
 }
 export declare class YText {
-  constructor()
   get len(): number
   get isEmpty(): boolean
   insert(index: number, str: string): void
