@@ -1,6 +1,4 @@
 use super::*;
-use napi::bindgen_prelude::ClassInstance;
-use std::ops::Deref;
 
 pub type MixedRefYType<'a> = Either4<&'a YArray, &'a YMap, &'a YText, JsUnknown>;
 
