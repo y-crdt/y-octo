@@ -1,3 +1,5 @@
+use napi::bindgen_prelude::Either4;
+
 use super::*;
 
 pub type MixedRefYType<'a> = Either4<&'a YArray, &'a YMap, &'a YText, JsUnknown>;
