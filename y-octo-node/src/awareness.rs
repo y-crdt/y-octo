@@ -14,9 +14,9 @@ impl YAwareness {
     pub fn new(client_id: Option<i64>) -> Self {
         let client_id = client_id
             .and_then(|c| c.try_into().ok())
-            .unwrap_or_else(|| prefer_small_random());
+            .unwrap_or_else(prefer_small_random);
         Self {
-            awareness: Awareness::new(client_id as u64),
+            awareness: Awareness::new(client_id),
         }
     }
 
@@ -29,7 +29,7 @@ impl YAwareness {
     pub fn states(&self, env: Env) -> Result<JsObject> {
         let mut object = env.create_object()?;
         for (k, v) in self.awareness.get_states() {
-            let value = env.to_js_value(&serde_json::from_str(&v.content())?)?;
+            let value = env.to_js_value(&serde_json::from_str(v.content())?)?;
             object.set_named_property(&k.to_string(), value)?;
         }
         Ok(object)

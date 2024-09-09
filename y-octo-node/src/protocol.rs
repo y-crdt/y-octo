@@ -1,8 +1,9 @@
-use super::*;
 use napi::bindgen_prelude::Buffer;
 use y_octo::{
     read_doc_message, write_doc_message, CrdtRead, CrdtWrite, Doc, DocMessage, RawDecoder, RawEncoder, StateVector,
 };
+
+use super::*;
 
 #[napi]
 pub struct YProtocol {
@@ -36,7 +37,7 @@ impl YProtocol {
                     write_doc_message(&mut buffer, &DocMessage::Step2(update)).unwrap();
                     Ok(buffer.into())
                 } else {
-                    Err(anyhow::Error::msg("State vector is required for sync step 2.").into())
+                    Err(anyhow::Error::msg("State vector is required for sync step 2."))
                 }
             }
             3 => {
@@ -49,7 +50,7 @@ impl YProtocol {
                 write_doc_message(&mut buffer, &DocMessage::Update(update)).unwrap();
                 Ok(buffer.into())
             }
-            _ => Err(anyhow::Error::msg("Invalid sync step. Must be 1, 2, or 3.").into()),
+            _ => Err(anyhow::Error::msg("Invalid sync step. Must be 1, 2, or 3.")),
         }
     }
 
@@ -58,7 +59,7 @@ impl YProtocol {
         match read_doc_message(buffer.as_ref()) {
             Ok((tail, message)) => {
                 if !tail.is_empty() {
-                    return Err(anyhow::Error::msg("Invalid sync message buffer.").into());
+                    return Err(anyhow::Error::msg("Invalid sync message buffer."));
                 }
                 Ok(match message {
                     DocMessage::Step1(sv) => Some(self.encode_sync_step(2, Some(sv.into()))?),
@@ -68,7 +69,7 @@ impl YProtocol {
                     }
                 })
             }
-            Err(e) => Err(anyhow::Error::msg(format!("Invalid sync message buffer: {}", e.to_string())).into()),
+            Err(e) => Err(anyhow::Error::msg(format!("Invalid sync message buffer: {}", e))),
         }
     }
 }

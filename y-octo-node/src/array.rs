@@ -68,7 +68,8 @@ impl YArray {
     }
 
     #[napi(
-        ts_args_type = "value: YArray | YMap | YText | boolean | number | string | Record<string, any> | null | undefined",
+        ts_args_type = "value: YArray | YMap | YText | boolean | number | string | Record<string, any> | null | \
+                        undefined",
         ts_generic_types = "T = unknown",
         ts_return_type = "Array<T>"
     )]

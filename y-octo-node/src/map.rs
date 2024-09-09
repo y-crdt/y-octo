@@ -1,4 +1,4 @@
-use napi::{bindgen_prelude::Array as JsArray, iterator::Generator, Env, JsFunction, JsObject, JsUnknown, ValueType};
+use napi::{bindgen_prelude::Array as JsArray, iterator::Generator, Env, JsFunction, JsObject, ValueType};
 use y_octo::{Any, Map, Value};
 
 use super::*;
@@ -106,7 +106,7 @@ impl YMap {
                     ValueType::Object => match unknown.coerce_to_object().and_then(get_any_from_js_object) {
                         Ok(any) => {
                             self.map.insert(key, Value::Any(any.clone()))?;
-                            Ok(MixedYType::D(get_js_unknown_from_any(env, any)?.into()))
+                            Ok(MixedYType::D(get_js_unknown_from_any(env, any)?))
                         }
                         Err(e) => Err(anyhow::Error::from(e).context("Failed to coerce value to object")),
                     },

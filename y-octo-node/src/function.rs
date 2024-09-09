@@ -1,4 +1,4 @@
-use napi::{bindgen_prelude::Buffer as JsBuffer, Env, JsUnknown};
+use napi::bindgen_prelude::Buffer as JsBuffer;
 use y_octo::{merge_updates_v1, CrdtWrite, RawEncoder};
 
 use super::*;

@@ -255,7 +255,7 @@ mod tests {
         loom_model!({
             // in loom loop
             #[allow(clippy::needless_borrow)]
-            let doc = Doc::try_from_binary_v1(&binary).unwrap();
+            let doc = Doc::try_from_binary_v1(binary).unwrap();
             let mut text = doc.get_or_create_text("greating").unwrap();
 
             assert_eq!(text.to_string(), "hello world");
