@@ -1,12 +1,10 @@
-import test from "ava";
-
-import { init, compare, applyRandomTests } from "./testHelper";
-
-import * as Y from "../../index";
+import { randomInt } from "node:crypto";
+import test, { ExecutionContext } from "ava";
 import * as prng from "lib0/prng";
 import * as math from "lib0/math";
-import { randomInt } from "node:crypto";
-import assert, { deepEqual } from "node:assert";
+
+import { init, compare, applyRandomTests } from "./testHelper";
+import * as Y from "../../index";
 
 const production = false;
 
@@ -224,13 +222,13 @@ test.skip("testInsertAndDeleteEvents", (t) => {
     event = e;
   });
   array0.insert(0, [0, 1, 2]);
-  assert(event !== null);
+  t.assert(event !== null);
   event = null;
   array0.delete(0);
-  assert(event !== null);
+  t.assert(event !== null);
   event = null;
   array0.delete(0, 2);
-  assert(event !== null);
+  t.assert(event !== null);
   event = null;
   compare(t, users);
 });
@@ -264,10 +262,10 @@ test.skip("testInsertAndDeleteEventsForTypes", (t) => {
     event = e;
   });
   array0.insert(0, [new Y.Array()]);
-  assert(event !== null);
+  t.assert(event !== null);
   event = null;
   array0.delete(0);
-  assert(event !== null);
+  t.assert(event !== null);
   event = null;
   compare(t, users);
 });
@@ -292,7 +290,7 @@ test.skip("testObserveDeepEventOrder", (t) => {
     array0.insert(0, [0]);
   });
   for (let i = 1; i < events.length; i++) {
-    assert(
+    t.assert(
       events[i - 1].path.length <= events[i].path.length,
       "path size increases, fire top-level events first",
     );
@@ -328,19 +326,19 @@ test.skip("testChangeEvent", (t) => {
   });
   const newArr = new Y.Array();
   array0.insert(0, [newArr, 4, "dtrn"]);
-  assert(
+  t.assert(
     changes !== null && changes.added.size === 2 && changes.deleted.size === 0,
   );
   t.deepEqual(changes.delta, [{ insert: [newArr, 4, "dtrn"] }]);
   changes = null;
   array0.delete(0, 2);
-  assert(
+  t.assert(
     changes !== null && changes.added.size === 0 && changes.deleted.size === 2,
   );
   t.deepEqual(changes.delta, [{ delete: 2 }]);
   changes = null;
   array0.insert(1, [0.1]);
-  assert(
+  t.assert(
     changes !== null && changes.added.size === 1 && changes.deleted.size === 0,
   );
   t.deepEqual(changes.delta, [{ retain: 1 }, { insert: [0.1] }]);
@@ -380,7 +378,7 @@ test.skip("testNewChildDoesNotEmitEventInTransaction", (t) => {
     array0.insert(0, [newMap]);
     newMap.set("tst", 42);
   });
-  assert(!fired, "Event does not trigger");
+  t.assert(!fired, "Event does not trigger");
 });
 
 test.skip("testGarbageCollector", (t) => {
@@ -403,7 +401,7 @@ test.skip("testEventTargetIsSetCorrectlyOnLocal", (t) => {
     event = e;
   });
   array0.insert(0, ["stuff"]);
-  assert(event.target === array0, '"target" property is set correctly');
+  t.assert(event.target === array0, '"target" property is set correctly');
   compare(t, users);
 });
 
@@ -416,7 +414,7 @@ test.skip("testEventTargetIsSetCorrectlyOnRemote", (t) => {
   });
   array1.insert(0, ["stuff"]);
   testConnector.flushAllMessages();
-  assert(event.target === array0, '"target" property is set correctly');
+  t.assert(event.target === array0, '"target" property is set correctly');
   compare(t, users);
 });
 
@@ -441,9 +439,9 @@ let _uniqueNumber = 0;
 const getUniqueNumber = () => _uniqueNumber++;
 
 const arrayTransactions: Array<
-  (arg0: Y.Doc, arg1: prng.PRNG, arg2: any) => void
+  (t: ExecutionContext, arg0: Y.Doc, arg1: prng.PRNG, arg2: any) => void
 > = [
-  function insert(user: Y.Doc, gen: prng.PRNG) {
+  function insert(t, user, gen) {
     const yarray = user.getOrCreateArray("array");
     const uniqueNumber = getUniqueNumber();
     const content: number[] = [];
@@ -455,16 +453,16 @@ const arrayTransactions: Array<
     const oldContent = yarray.toArray();
     yarray.insert(pos, content);
     oldContent.splice(pos, 0, ...content);
-    deepEqual(yarray.toArray(), oldContent); // we want to make sure that fastSearch markers insert at the correct position
+    t.deepEqual(yarray.toArray(), oldContent); // we want to make sure that fastSearch markers insert at the correct position
   },
-  function insertTypeArray(user: Y.Doc, gen: prng.PRNG) {
+  function insertTypeArray(t, user, gen) {
     const yarray = user.getOrCreateArray("array");
     const pos = prng.int32(gen, 0, yarray.length);
     yarray.insert(pos, [user.createArray()]);
     const array2 = yarray.get<Y.Array>(pos);
     array2.insert(0, [1, 2, 3, 4]);
   },
-  function insertTypeMap(user: Y.Doc, gen: prng.PRNG) {
+  function insertTypeMap(t, user, gen) {
     const yarray = user.getOrCreateArray("array");
     const pos = prng.int32(gen, 0, yarray.length);
     yarray.insert(pos, [user.createMap()]);
@@ -473,12 +471,12 @@ const arrayTransactions: Array<
     map.set("someprop", 43);
     map.set("someprop", 44);
   },
-  function insertTypeNull(user: Y.Doc, gen: prng.PRNG) {
+  function insertTypeNull(t, user, gen) {
     const yarray = user.getOrCreateArray("array");
     const pos = prng.int32(gen, 0, yarray.length);
     yarray.insert(pos, [null]);
   },
-  function _delete(user: Y.Doc, gen: prng.PRNG) {
+  function _delete(t, user, gen) {
     const yarray = user.getOrCreateArray("array");
     const length = yarray.length;
     if (length > 0) {
@@ -495,7 +493,7 @@ const arrayTransactions: Array<
         const oldContent = yarray.toArray();
         yarray.delete(somePos, delLength);
         oldContent.splice(somePos, delLength);
-        deepEqual(yarray.toArray(), oldContent);
+        t.deepEqual(yarray.toArray(), oldContent);
       }
     }
   },
