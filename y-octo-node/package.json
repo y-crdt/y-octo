@@ -38,9 +38,11 @@
   },
   "scripts": {
     "artifacts": "napi artifacts",
-    "build": "napi build --platform --release --no-const-enum --dts ../src/yocto.d.ts --js ../src/yocto.js -o ./dist",
+    "build": "yarn build:binding && yarn build:js",
+    "build:debug": "yarn build:binding:debug && yarn build:js",
     "build:js": "pkgroll",
-    "build:debug": "napi build --platform --no-const-enum --dts ../src/yocto.d.ts --js ../src/yocto.js -o ./dist",
+    "build:binding": "napi build --platform --release --no-const-enum --dts ../src/yocto.d.ts --js ../src/yocto.js -o ./dist",
+    "build:binding:debug": "napi build --platform --no-const-enum --dts ../src/yocto.d.ts --js ../src/yocto.js -o ./dist",
     "universal": "napi universal",
     "test": "ava --concurrency 1 --serial --timeout 5s",
     "test:watch": "yarn exec tsx ./scripts/run-test.mts all --watch",
