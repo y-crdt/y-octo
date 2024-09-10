@@ -10,6 +10,7 @@ pub type MixedYType = Either4<YArray, YMap, YText, JsUnknown>;
 
 macro_rules! impl_into_mixed_y_type {
     ($type:ty, $enum:ident) => {
+        #[allow(clippy::from_over_into)]
         impl Into<MixedYType> for $type {
             fn into(self) -> MixedYType {
                 MixedYType::$enum(self.clone())

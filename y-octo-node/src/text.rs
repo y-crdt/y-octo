@@ -41,12 +41,12 @@ impl YText {
     }
 
     #[napi(ts_args_type = "delta: any[]")]
-    pub fn apply_delta(&mut self, env: Env, _delta: JsArray) -> Result<()> {
+    pub fn apply_delta(&mut self, _env: Env, _delta: JsArray) -> Result<()> {
         unimplemented!()
     }
 
     #[napi(ts_return_type = "any[]")]
-    pub fn to_delta(&self, env: Env) -> Result<JsArray> {
+    pub fn to_delta(&self, _env: Env) -> Result<JsArray> {
         unimplemented!()
     }
 

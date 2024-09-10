@@ -6,8 +6,8 @@
   "types": "./dist/index.d.ts",
   "exports": "./dist/index.js",
   "napi": {
-    "name": "y-octo",
-    "triples": {
+    "binaryName": "y-octo",
+    "target": {
       "additional": [
         "aarch64-apple-darwin",
         "aarch64-pc-windows-msvc",
