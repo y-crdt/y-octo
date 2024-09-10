@@ -1,5 +1,5 @@
 import test from "ava";
-import * as Y from "../../index";
+import * as Y from "@y-octo/node";
 
 test.skip("testAfterTransactionRecursion", (t) => {
   const ydoc = new Y.Doc();

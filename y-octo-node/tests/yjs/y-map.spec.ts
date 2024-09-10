@@ -3,7 +3,7 @@ import test, { ExecutionContext } from "ava";
 
 import { init, compare, applyRandomTests } from "./testHelper.js";
 
-import * as Y from "../../index";
+import * as Y from "@y-octo/node";
 import * as prng from "lib0/prng";
 
 const production = false;

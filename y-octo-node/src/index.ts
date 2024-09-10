@@ -68,7 +68,7 @@ export class Doc extends Y.Doc {
 
     if (this.lastState?.length && diff?.length) {
       this.subscribers.forEach((callback) =>
-        callback(new Uint8Array(diff), origin || this),
+        callback(new Uint8Array(diff!), origin || this),
       );
     }
   }

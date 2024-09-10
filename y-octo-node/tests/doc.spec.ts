@@ -1,6 +1,6 @@
 import test from "ava";
 
-import * as YOcto from "../index";
+import * as YOcto from "@y-octo/node";
 import * as Y from "yjs";
 
 let client_id: number;

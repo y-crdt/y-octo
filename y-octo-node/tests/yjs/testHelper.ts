@@ -1,7 +1,7 @@
 import * as prng from "lib0/prng";
 import * as object from "lib0/object";
 import * as map from "lib0/map";
-import * as Y from "../../index";
+import * as Y from "@y-octo/node";
 import { ExecutionContext } from "ava";
 
 if (typeof window !== "undefined") {

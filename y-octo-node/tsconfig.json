@@ -2,10 +2,10 @@
   "extends": "../tsconfig.json",
   "compilerOptions": {
     "noEmit": false,
-    "outDir": "lib",
+    "outDir": "dist",
     "composite": true
   },
-  "include": ["index.d.ts", "tests/**/*.(mts|ts)"],
+  "include": ["src/**/*.(tsx?)", "tests/**/*.(mts|ts)"],
   "ts-node": {
     "esm": true,
     "experimentalSpecifierResolution": "node"

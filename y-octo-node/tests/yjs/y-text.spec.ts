@@ -4,7 +4,7 @@ import test, { ExecutionContext } from "ava";
 import * as prng from "lib0/prng";
 import * as math from "lib0/math";
 
-import * as Y from "../../index";
+import * as Y from "@y-octo/node";
 import { applyRandomTests, compare, init } from "./testHelper";
 
 let gen: prng.PRNG;

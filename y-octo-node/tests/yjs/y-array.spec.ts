@@ -4,7 +4,7 @@ import * as prng from "lib0/prng";
 import * as math from "lib0/math";
 
 import { init, compare, applyRandomTests } from "./testHelper";
-import * as Y from "../../index";
+import * as Y from "@y-octo/node";
 
 const production = false;
 

@@ -1,7 +1,7 @@
 import test from "ava";
 
 import * as Y from "yjs";
-import * as YOcto from "../index";
+import * as YOcto from "@y-octo/node";
 
 let client_id: number;
 let doc: YOcto.Doc;
