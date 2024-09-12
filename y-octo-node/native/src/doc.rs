@@ -114,7 +114,16 @@ impl YDoc {
 
     #[napi]
     pub fn apply_update(&mut self, update: JsBuffer) -> Result<()> {
+        let client = self.doc.client();
+        let before_current_state = self.doc.get_state_vector().get(&client);
+
         self.doc.apply_update_from_binary_v1(update)?;
+
+        // if update received from remote and  current client state has been changed
+        // that means another client using same client id, we need to change the client id to avoid conflict
+        if self.doc.get_state_vector().get(&client) != before_current_state {
+            self.doc.renew_client();
+        }
 
         Ok(())
     }

@@ -162,6 +162,10 @@ impl Doc {
         self.client_id = client_id;
     }
 
+    pub fn renew_client(&mut self) {
+        self.client_id = prefer_small_random();
+    }
+
     pub fn clients(&self) -> Vec<u64> {
         self.store.read().unwrap().clients()
     }

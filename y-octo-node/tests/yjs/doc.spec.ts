@@ -41,13 +41,13 @@ test.skip("testOriginInTransaction", (t) => {
 /**
  * Client id should be changed when an instance receives updates from another client using the same client id.
  */
-test.skip("testClientIdDuplicateChange", (t) => {
+test("testClientIdDuplicateChange", (t) => {
   const doc1 = new Y.Doc(0);
   const doc2 = new Y.Doc(0);
-  t.assert(doc2.clientID === doc1.clientID);
+  t.assert(doc2.clientId === doc1.clientId);
   doc1.getArray("a").insert(0, [1, 2]);
-  Y.applyUpdate(doc2, Y.encodeStateAsUpdate(doc1));
-  t.assert(doc2.clientID !== doc1.clientID);
+  Y.applyUpdate(doc2, Y.encodeStateAsUpdate(doc1), false);
+  t.assert(doc2.clientId !== doc1.clientId);
 });
 
 test.skip("testGetTypeEmptyId", (t) => {

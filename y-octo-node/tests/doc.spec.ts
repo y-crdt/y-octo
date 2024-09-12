@@ -44,7 +44,9 @@ test("y-octo doc update should be apply", (t) => {
   let map2 = doc2.getOrCreateMap("map");
   let text2 = doc2.getOrCreateText("text");
 
-  t.is(doc2.clientId, client_id);
+  // after apply update that include same client id's change
+  // the client id should be changed
+  t.not(doc2.clientId, client_id);
   t.is(array2.length, 4);
   t.is(array2.get(0), true);
   t.is(array2.get(1), false);
