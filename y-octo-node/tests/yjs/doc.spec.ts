@@ -50,7 +50,7 @@ test("testClientIdDuplicateChange", (t) => {
   t.assert(doc2.clientId !== doc1.clientId);
 });
 
-test.skip("testGetTypeEmptyId", (t) => {
+test("testGetTypeEmptyId", (t) => {
   const doc1 = new Y.Doc();
   doc1.getText("").insert(0, "h");
   doc1.getText().insert(1, "i");

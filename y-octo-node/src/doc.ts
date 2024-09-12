@@ -10,7 +10,7 @@ export class Doc extends Y.Doc {
     new Set();
   private lastState: Buffer | null = null;
 
-  getArray(key: string): Array {
+  getArray(key = ""): Array {
     if (this.cachedArray.has(key)) {
       return this.cachedArray.get(key)!;
     }
@@ -19,7 +19,7 @@ export class Doc extends Y.Doc {
     return yarray;
   }
 
-  getMap(key: string): Map {
+  getMap(key = ""): Map {
     if (this.cachedMap.has(key)) {
       return this.cachedMap.get(key)!;
     }
@@ -28,7 +28,7 @@ export class Doc extends Y.Doc {
     return ymap;
   }
 
-  getText(key: string): Text {
+  getText(key = ""): Text {
     return this.getOrCreateText(key);
   }
 
