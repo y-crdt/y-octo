@@ -52,7 +52,7 @@ jobs:
         uses: actions/upload-artifact@v3
         with:
           name: y-octo.${{ matrix.settings.target }}.node
-          path: ./y-octo-node/*.node
+          path: ./y-octo-node/dist
           if-no-files-found: error
 
   test-node:
@@ -104,7 +104,7 @@ jobs:
         uses: actions/download-artifact@v3
         with:
           name: y-octo.${{ matrix.settings.target }}.node
-          path: ./y-octo-node
+          path: ./y-octo-node/dist
       - name: Run node binding tests
         run: ls -lah & ls -lah tests
         working-directory: y-octo-node
