@@ -789,6 +789,10 @@ impl DocStore {
         }
     }
 
+    pub fn reset_changed(&mut self) {
+        self.changed.clear();
+    }
+
     pub fn get_changed(&mut self) -> ChangedTypeRefs {
         mem::replace(&mut self.changed, HashMap::new())
     }
