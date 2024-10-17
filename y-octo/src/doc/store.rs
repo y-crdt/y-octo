@@ -10,7 +10,7 @@ use crate::{
     sync::{Arc, RwLock, RwLockWriteGuard, Weak},
 };
 
-type ChangedTypeRefs = HashMap<YTypeRef, Vec<SmolStr>>;
+pub type ChangedTypeRefs = HashMap<YTypeRef, Vec<SmolStr>>;
 
 unsafe impl Send for DocStore {}
 unsafe impl Sync for DocStore {}

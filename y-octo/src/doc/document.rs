@@ -1,4 +1,11 @@
-use super::{history::StoreHistory, publisher::DocPublisher, store::StoreRef, *};
+use std::collections::HashMap;
+
+use super::{
+    history::StoreHistory,
+    publisher::DocPublisher,
+    store::{ChangedTypeRefs, StoreRef},
+    *,
+};
 use crate::sync::{Arc, RwLock};
 
 #[cfg(feature = "debug")]
@@ -116,6 +123,7 @@ pub struct Doc {
 
     pub(crate) store: StoreRef,
     pub publisher: Arc<DocPublisher>,
+    pub(crate) batch: Somr<Batch>,
 }
 
 unsafe impl Send for Doc {}
@@ -147,6 +155,7 @@ impl Doc {
             opts: options,
             store,
             publisher,
+            batch: Somr::none(),
         }
     }
 
@@ -187,6 +196,10 @@ impl Doc {
             dangling_types: store.total_dangling_types(),
             pending_nodes: store.total_pending_nodes(),
         }
+    }
+
+    pub fn get_changed(&self) -> ChangedTypeRefs {
+        self.store.write().unwrap().get_changed()
     }
 
     pub fn store_compare(&self, other: &Doc) -> bool {
