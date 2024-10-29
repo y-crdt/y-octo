@@ -48,7 +48,7 @@
 
     // Projects
     "composite": true,
-    "incremental": true,
+    // "incremental": true,
 
     // Completeness
     "skipLibCheck": true, // skip all type checks for .d.ts files

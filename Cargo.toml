@@ -2,7 +2,7 @@
 
 members = [
   "y-octo",
-  "y-octo-node",
+  "y-octo-node/native",
   "y-octo-utils",
   "y-octo-utils/yrs-is-unsafe",
 ]
