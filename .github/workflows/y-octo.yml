@@ -8,7 +8,7 @@ on:
     branches: [main]
 
 env:
-  nightly: nightly-2024-07-06
+  nightly: nightly-2024-12-25
 
 # Cancels all previous workflow runs for pull requests that have not completed.
 # See https://docs.github.com/en/actions/using-jobs/using-concurrency
@@ -27,7 +27,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
@@ -38,9 +38,9 @@ jobs:
           components: clippy, rustfmt
 
       - name: Install Node.js
-        uses: actions/setup-node@v3
+        uses: actions/setup-node@v4
         with:
-          node-version: 18
+          node-version: 22
           cache: "yarn"
 
       - name: Install Node.js dependencies
@@ -78,7 +78,7 @@ jobs:
       RUSTFLAGS: -D warnings
       CARGO_TERM_COLOR: always
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
       - name: Setup Rust
         uses: ./.github/actions/setup-rust
@@ -92,7 +92,7 @@ jobs:
       - name: Collect coverage data
         run: cargo llvm-cov nextest --all-targets --lcov --output-path lcov.info
       - name: Upload coverage data to codecov
-        uses: codecov/codecov-action@v3
+        uses: codecov/codecov-action@v5
         with:
           name: tests
           files: lcov.info
@@ -106,7 +106,7 @@ jobs:
       RUST_BACKTRACE: full
       CARGO_TERM_COLOR: always
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
       - name: Setup Rust
         uses: ./.github/actions/setup-rust
@@ -125,7 +125,7 @@ jobs:
       RUSTFLAGS: -D warnings
       CARGO_TERM_COLOR: always
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
       - name: Setup Rust
         uses: ./.github/actions/setup-rust
@@ -150,7 +150,7 @@ jobs:
 
       - name: upload fuzz artifacts
         if: ${{ failure() }}
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: fuzz-artifact
           path: ./y-octo-utils/fuzz/artifacts/**/*
@@ -164,7 +164,7 @@ jobs:
       CARGO_TERM_COLOR: always
       MIRIFLAGS: -Zmiri-backtrace=full -Zmiri-tree-borrows
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
       - name: Setup Rust
         uses: ./.github/actions/setup-rust
@@ -187,7 +187,7 @@ jobs:
       ASAN_OPTIONS: detect_leaks=1
       CARGO_TERM_COLOR: always
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
       - name: Setup Rust
         uses: ./.github/actions/setup-rust
