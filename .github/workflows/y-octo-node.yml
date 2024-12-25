@@ -19,8 +19,8 @@ jobs:
       fail-fast: false
       matrix:
         settings:
-          # - target: x86_64-apple-darwin
-          #   host: macos-latest
+          - target: x86_64-apple-darwin
+            host: macos-latest
           - target: aarch64-apple-darwin
             host: macos-latest
           - target: x86_64-pc-windows-msvc
@@ -39,7 +39,7 @@ jobs:
     env:
       RUSTFLAGS: "-C debuginfo=1"
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - name: Setup Node.js
         uses: ./.github/actions/setup-node
       - name: Setup Rust
@@ -49,7 +49,7 @@ jobs:
       - name: Build node binding
         run: yarn build:node --target ${{ matrix.settings.target }}
       - name: Upload y-octo.node
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: y-octo.${{ matrix.settings.target }}.node
           path: ./y-octo-node/*.node
@@ -63,7 +63,7 @@ jobs:
       RUSTFLAGS: -D warnings
       CARGO_TERM_COLOR: always
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
       - name: Setup Rust
         uses: ./.github/actions/setup-rust
@@ -77,7 +77,7 @@ jobs:
       - name: Collect coverage data
         run: cargo llvm-cov nextest --lcov --output-path lcov.info
       - name: Upload coverage data to codecov
-        uses: codecov/codecov-action@v3
+        uses: codecov/codecov-action@v5
         with:
           name: tests
           files: lcov.info
@@ -97,11 +97,11 @@ jobs:
     runs-on: ${{ matrix.settings.host }}
     needs: build-node
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - name: Setup Node.js
         uses: ./.github/actions/setup-node
       - name: Download y-octo.${{ matrix.settings.target }}.node
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
           name: y-octo.${{ matrix.settings.target }}.node
           path: ./y-octo-node
@@ -114,7 +114,7 @@ jobs:
         working-directory: y-octo-node
         shell: bash
       - name: Upload server test coverage results
-        uses: codecov/codecov-action@v3
+        uses: codecov/codecov-action@v5
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: ./y-octo-node/.coverage/lcov.info

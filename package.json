@@ -1,14 +1,14 @@
 {
   "name": "@y-octo/cli",
   "version": "0.0.0",
-  "packageManager": "yarn@3.6.2",
+  "packageManager": "yarn@4.5.3",
   "license": "MIT",
   "workspaces": [
     ".",
     "y-octo-node"
   ],
   "engines": {
-    "node": ">=18.16.1 <19.0.0"
+    "node": ">=18.16.1"
   },
   "scripts": {
     "build:node": "yarn workspace @y-octo/node build",
@@ -17,19 +17,16 @@
     "format": "run-p format:toml format:prettier format:rs",
     "format:toml": "taplo format",
     "format:prettier": "prettier --write .",
-    "format:rs": "cargo +nightly-2024-07-06 fmt --all"
+    "format:rs": "cargo +nightly fmt --all"
   },
   "devDependencies": {
-    "@taplo/cli": "^0.5.2",
-    "husky": "^8.0.3",
-    "lint-staged": "^14.0.0",
+    "@taplo/cli": "^0.7.0",
+    "husky": "^9.1.7",
+    "lint-staged": "^15.2.11",
     "npm-run-all": "^4.1.5",
-    "prettier": "^3.0.2"
+    "prettier": "^3.4.2"
   },
   "lint-staged": {
-    "*.@(js|ts|tsx)": [
-      "eslint -c .eslintrc.yml --fix"
-    ],
     "*.@(js|ts|tsx|yml|yaml|json|md)": [
       "prettier --write"
     ],
@@ -37,7 +34,7 @@
       "taplo format"
     ],
     "*.rs": [
-      "cargo +nightly-2024-07-06 fmt --"
+      "cargo +nightly fmt --"
     ]
   },
   "resolutions": {
