@@ -20,9 +20,7 @@ version = "0.0.1"
 
 [dependencies]
 ahash         = "0.8"
-bitvec        = "1.0"
 byteorder     = "1.5"
-lasso         = { version = "0.7", features = ["multi-threaded"] }
 log           = "0.4"
 nanoid        = "0.4"
 nom           = "7.1"
