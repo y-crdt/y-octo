@@ -36,6 +36,7 @@ thiserror     = "2.0"
 [features]
 bench      = []
 debug      = []
+events     = []
 large_refs = []
 serde_json = []
 
