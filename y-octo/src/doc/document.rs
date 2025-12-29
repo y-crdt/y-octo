@@ -293,6 +293,10 @@ impl Doc {
             }
         }
 
+        if self.opts.gc {
+            store.optimize()?;
+        }
+
         Ok(())
     }
 
