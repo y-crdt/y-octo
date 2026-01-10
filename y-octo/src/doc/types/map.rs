@@ -2,13 +2,18 @@ use std::{collections::hash_map::Iter, rc::Rc};
 
 use super::*;
 use crate::{
+    JwstCodecResult,
     doc::{AsInner, Node, Parent, YTypeRef},
-    impl_type, JwstCodecResult,
+    impl_type,
 };
 
 impl_type!(Map);
 
 pub(crate) trait MapType: AsInner<Inner = YTypeRef> {
+    fn _id(&self) -> Option<Id> {
+        self.as_inner().ty().and_then(|ty| ty.item.get().map(|item| item.id))
+    }
+
     fn _insert<V: Into<Value>>(&mut self, key: String, value: V) -> JwstCodecResult {
         if let Some((mut store, mut ty)) = self.as_inner().write() {
             let left = ty.map.get(&SmolStr::new(&key)).cloned();
@@ -47,19 +52,18 @@ pub(crate) trait MapType: AsInner<Inner = YTypeRef> {
             ty.map
                 .get(key)
                 .and_then(|item| item.get())
-                .map_or(false, |item| !item.deleted())
+                .is_some_and(|item| !item.deleted())
         } else {
             false
         }
     }
 
     fn _remove(&mut self, key: &str) {
-        if let Some((mut store, mut ty)) = self.as_inner().write() {
-            if let Some(item) = ty.map.get(key).cloned() {
-                if let Some(item) = item.get() {
-                    store.delete_item(item, Some(&mut ty));
-                }
-            }
+        if let Some((mut store, mut ty)) = self.as_inner().write()
+            && let Some(item) = ty.map.get(key).cloned()
+            && let Some(item) = item.get()
+        {
+            store.delete_item(item, Some(&mut ty));
         }
     }
 
@@ -67,7 +71,7 @@ pub(crate) trait MapType: AsInner<Inner = YTypeRef> {
         self._keys().count() as u64
     }
 
-    fn _iter(&self) -> EntriesInnerIterator {
+    fn _iter(&self) -> EntriesInnerIterator<'_> {
         let ty = self.as_inner().ty();
 
         if let Some(ty) = ty {
@@ -85,15 +89,15 @@ pub(crate) trait MapType: AsInner<Inner = YTypeRef> {
         }
     }
 
-    fn _keys(&self) -> KeysIterator {
+    fn _keys(&self) -> KeysIterator<'_> {
         KeysIterator(self._iter())
     }
 
-    fn _values(&self) -> ValuesIterator {
+    fn _values(&self) -> ValuesIterator<'_> {
         ValuesIterator(self._iter())
     }
 
-    fn _entries(&self) -> EntriesIterator {
+    fn _entries(&self) -> EntriesIterator<'_> {
         EntriesIterator(self._iter())
     }
 }
@@ -113,10 +117,10 @@ impl<'a> Iterator for EntriesInnerIterator<'a> {
     fn next(&mut self) -> Option<Self::Item> {
         if let Some(iter) = &mut self.iter {
             for (k, v) in iter {
-                if let Some(item) = v.get() {
-                    if !item.deleted() {
-                        return Some((k.as_str(), item));
-                    }
+                if let Some(item) = v.get()
+                    && !item.deleted()
+                {
+                    return Some((k.as_str(), item));
                 }
             }
 
@@ -155,6 +159,11 @@ impl MapType for Map {}
 
 impl Map {
     #[inline(always)]
+    pub fn id(&self) -> Option<Id> {
+        self._id()
+    }
+
+    #[inline(always)]
     pub fn insert<V: Into<Value>>(&mut self, key: String, value: V) -> JwstCodecResult {
         self._insert(key, value)
     }
@@ -185,22 +194,22 @@ impl Map {
     }
 
     #[inline(always)]
-    pub fn iter(&self) -> EntriesIterator {
+    pub fn iter(&self) -> EntriesIterator<'_> {
         self._entries()
     }
 
     #[inline(always)]
-    pub fn entries(&self) -> EntriesIterator {
+    pub fn entries(&self) -> EntriesIterator<'_> {
         self._entries()
     }
 
     #[inline(always)]
-    pub fn keys(&self) -> KeysIterator {
+    pub fn keys(&self) -> KeysIterator<'_> {
         self._keys()
     }
 
     #[inline(always)]
-    pub fn values(&self) -> ValuesIterator {
+    pub fn values(&self) -> ValuesIterator<'_> {
         self._values()
     }
 }
@@ -220,7 +229,7 @@ impl serde::Serialize for Map {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{loom_model, Any, Doc};
+    use crate::{Any, Doc, loom_model};
 
     #[test]
     fn test_map_basic() {

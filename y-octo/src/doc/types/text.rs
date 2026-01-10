@@ -1,7 +1,7 @@
 use std::fmt::Display;
 
 use super::list::ListType;
-use crate::{impl_type, Content, JwstCodecResult};
+use crate::{Content, JwstCodecResult, impl_type};
 
 impl_type!(Text);
 
@@ -57,9 +57,8 @@ mod tests {
     use yrs::{Options, Text, Transact};
 
     use crate::{
-        loom_model,
-        sync::{thread, Arc, AtomicUsize, Ordering},
-        Doc,
+        Doc, loom_model,
+        sync::{Arc, AtomicUsize, Ordering, thread},
     };
 
     #[test]
@@ -86,7 +85,7 @@ mod tests {
     #[test]
     #[cfg(not(loom))]
     fn test_parallel_insert_text() {
-        let seed = rand::thread_rng().gen();
+        let seed = rand::thread_rng().r#gen();
         let rand = ChaCha20Rng::seed_from_u64(seed);
         let mut handles = Vec::new();
 
@@ -198,7 +197,7 @@ mod tests {
 
     #[test]
     fn loom_parallel_ins_del_text() {
-        let seed = rand::thread_rng().gen();
+        let seed = rand::thread_rng().r#gen();
         let mut rand = ChaCha20Rng::seed_from_u64(seed);
         let ranges = (0..20).map(|_| rand.gen_range(0..16)).collect::<Vec<_>>();
 
@@ -255,7 +254,7 @@ mod tests {
         loom_model!({
             // in loom loop
             #[allow(clippy::needless_borrow)]
-            let doc = Doc::try_from_binary_v1(&binary).unwrap();
+            let doc = Doc::try_from_binary_v1(binary).unwrap();
             let mut text = doc.get_or_create_text("greating").unwrap();
 
             assert_eq!(text.to_string(), "hello world");

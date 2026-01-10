@@ -20,6 +20,10 @@ impl Awareness {
         }
     }
 
+    pub fn local_id(&self) -> u64 {
+        self.local_id
+    }
+
     pub fn on_update(&mut self, f: impl Fn(&Awareness, AwarenessEvent) + Send + Sync + 'static) {
         self.callback = Some(Arc::new(f));
     }
@@ -210,7 +214,7 @@ mod tests {
 
                 let values: MutexGuard<Vec<AwarenessEvent>> = values.lock().unwrap();
                 assert_eq!(values.len(), 4);
-                let event = values.get(0).unwrap();
+                let event = values.first().unwrap();
 
                 let mut added = event.added.clone();
                 added.sort();

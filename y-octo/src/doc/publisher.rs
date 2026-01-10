@@ -34,7 +34,10 @@ impl DocPublisher {
             observing: Arc::new(AtomicBool::new(false)),
         };
 
-        if cfg!(not(any(feature = "bench", fuzzing, loom, miri))) {
+        if cfg!(all(
+            feature = "subscribe",
+            not(any(feature = "bench", fuzzing, loom, miri))
+        )) {
             publisher.start();
         }
 
@@ -111,7 +114,7 @@ impl DocPublisher {
                         last_deletes = deletes;
 
                         for cb in subscribers.iter() {
-                            use std::panic::{catch_unwind, AssertUnwindSafe};
+                            use std::panic::{AssertUnwindSafe, catch_unwind};
                             // catch panic if callback throw
                             catch_unwind(AssertUnwindSafe(|| {
                                 cb(&binary, &history);
@@ -175,7 +178,7 @@ mod tests {
         loom_model!({
             let doc = Doc::default();
 
-            let ret = vec![
+            let ret = [
                 vec![vec!["(1, 0)", "test.key1", "val1"]],
                 vec![vec!["(1, 1)", "test.key2", "val2"], vec!["(1, 2)", "test.key3", "val3"]],
                 vec![

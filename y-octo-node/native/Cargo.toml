@@ -1,6 +1,6 @@
 [package]
 authors    = ["DarkSky <darksky2048@gmail.com>"]
-edition    = "2021"
+edition    = "2024"
 license    = "MIT"
 name       = "y-octo-node"
 repository = "https://github.com/toeverything/y-octo"
@@ -12,8 +12,9 @@ crate-type = ["cdylib"]
 
 [dependencies]
 anyhow      = "1"
-napi        = { version = "2", features = ["anyhow", "napi4"] }
+napi        = { version = "2", features = ["anyhow", "napi4", "serde-json"] }
 napi-derive = "2"
+serde_json  = "1.0"
 y-octo      = { workspace = true, features = ["large_refs"] }
 
 [build-dependencies]

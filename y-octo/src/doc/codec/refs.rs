@@ -79,10 +79,10 @@ impl Node {
             _ => {
                 let item = Somr::new(Item::read(decoder, id, info, first_5_bit)?);
 
-                if let Content::Type(ty) = &item.get().unwrap().content {
-                    if let Some(mut ty) = ty.ty_mut() {
-                        ty.item = item.clone();
-                    }
+                if let Content::Type(ty) = &item.get().unwrap().content
+                    && let Some(mut ty) = ty.ty_mut()
+                {
+                    ty.item = item.clone();
                 }
 
                 Ok(Node::Item(item))
@@ -287,12 +287,11 @@ impl Node {
                     }
                 }
 
-                if let Some(Parent::Type(p)) = &litem.parent {
-                    if let Some(parent) = p.ty_mut() {
-                        if let Some(markers) = &parent.markers {
-                            markers.replace_marker(rref.clone(), lref.clone(), -(llen as i64));
-                        }
-                    }
+                if let Some(Parent::Type(p)) = &litem.parent
+                    && let Some(parent) = p.ty_mut()
+                    && let Some(markers) = &parent.markers
+                {
+                    markers.replace_marker(rref.clone(), lref.clone(), -(llen as i64));
                 }
 
                 if ritem.keep() {

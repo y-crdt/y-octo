@@ -5,7 +5,11 @@ mod text;
 mod value;
 mod xml;
 
-use std::{collections::hash_map::Entry, sync::Weak};
+use std::{
+    collections::hash_map::Entry,
+    hash::{Hash, Hasher},
+    sync::Weak,
+};
 
 pub use array::*;
 use list::*;
@@ -19,8 +23,8 @@ use super::{
     *,
 };
 use crate::{
-    sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard},
     Item, JwstCodecError, JwstCodecResult,
+    sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard},
 };
 
 #[derive(Debug, Default)]
@@ -62,6 +66,14 @@ impl PartialEq for YTypeRef {
     }
 }
 
+impl Eq for YTypeRef {}
+
+impl Hash for YTypeRef {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.inner.ptr().hash(state);
+    }
+}
+
 impl YType {
     pub fn new(kind: YTypeKind, tag_name: Option<String>) -> Self {
         YType {
@@ -98,11 +110,11 @@ impl YTypeRef {
         }
     }
 
-    pub fn ty(&self) -> Option<RwLockReadGuard<YType>> {
+    pub fn ty(&self) -> Option<RwLockReadGuard<'_, YType>> {
         self.inner.get().and_then(|ty| ty.read().ok())
     }
 
-    pub fn ty_mut(&self) -> Option<RwLockWriteGuard<YType>> {
+    pub fn ty_mut(&self) -> Option<RwLockWriteGuard<'_, YType>> {
         self.inner.get().and_then(|ty| ty.write().ok())
     }
 
@@ -128,11 +140,11 @@ impl YTypeRef {
     }
 
     #[allow(dead_code)]
-    pub fn read(&self) -> Option<(RwLockReadGuard<DocStore>, RwLockReadGuard<YType>)> {
+    pub fn read(&self) -> Option<(RwLockReadGuard<'_, DocStore>, RwLockReadGuard<'_, YType>)> {
         self.store().and_then(|store| self.ty().map(|ty| (store, ty)))
     }
 
-    pub fn write(&self) -> Option<(RwLockWriteGuard<DocStore>, RwLockWriteGuard<YType>)> {
+    pub fn write(&self) -> Option<(RwLockWriteGuard<'_, DocStore>, RwLockWriteGuard<'_, YType>)> {
         self.store_mut().and_then(|store| self.ty_mut().map(|ty| (store, ty)))
     }
 }

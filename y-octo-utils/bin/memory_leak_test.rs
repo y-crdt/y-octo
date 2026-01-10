@@ -69,9 +69,9 @@ fn run_map_test() {
 }
 
 fn main() {
-    let mut rand = ChaCha20Rng::seed_from_u64(rand::thread_rng().gen());
+    let mut rand = ChaCha20Rng::seed_from_u64(rand::thread_rng().r#gen());
     for _ in 0..10000 {
-        let seed = rand.gen();
+        let seed = rand.r#gen();
         run_array_test(seed);
         run_text_test(seed);
         run_map_test();

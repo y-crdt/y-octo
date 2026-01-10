@@ -4,6 +4,6 @@ target
 y-octo/README.md
 .cargo
 vendor
-index.d.ts
-index.js
+yocto.d.ts
+yocto.js
 .coverage

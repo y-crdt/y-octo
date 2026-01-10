@@ -1,8 +1,8 @@
 use y_octo::{AwarenessState, DocMessage, SyncMessage};
 use y_sync::sync::{Message as YMessage, SyncMessage as YSyncMessage};
 use yrs::{
-    updates::{decoder::Decode, encoder::Encode},
     StateVector,
+    updates::{decoder::Decode, encoder::Encode},
 };
 
 pub fn to_sync_message(msg: YMessage) -> Option<SyncMessage> {
@@ -56,7 +56,7 @@ mod tests {
     use std::collections::HashMap;
 
     use proptest::{collection::vec, prelude::*};
-    use y_octo::{read_sync_message, write_sync_message, SyncMessageScanner};
+    use y_octo::{SyncMessageScanner, read_sync_message, write_sync_message};
     use yrs::updates::{
         decoder::DecoderV1,
         encoder::{Encoder, EncoderV1},

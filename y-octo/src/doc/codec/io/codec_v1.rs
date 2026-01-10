@@ -48,11 +48,7 @@ impl<'b> RawDecoder<'b> {
         let pos = self.buffer.position() as usize;
         let buf = self.buffer.into_inner();
 
-        if pos == 0 {
-            buf
-        } else {
-            &buf[pos..]
-        }
+        if pos == 0 { buf } else { &buf[pos..] }
     }
 }
 
