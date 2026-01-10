@@ -573,7 +573,7 @@ impl DocStore {
                         self.delete_node(&Node::Item(item_owner_ref.clone()), Some(parent));
                     } else {
                         // adjust parent length
-                        if this.parent_sub.is_none() {
+                        if this.parent_sub.is_none() && this.countable() {
                             parent.len += this.len();
                         }
                     }

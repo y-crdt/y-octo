@@ -1,4 +1,7 @@
-use super::{history::StoreHistory, publisher::DocPublisher, store::StoreRef, *};
+#[cfg(feature = "events")]
+use publisher::DocPublisher;
+
+use super::{history::StoreHistory, store::StoreRef, *};
 use crate::sync::{Arc, RwLock};
 
 #[cfg(feature = "debug")]
@@ -133,6 +136,7 @@ pub struct Doc {
     opts: DocOptions,
 
     pub(crate) store: StoreRef,
+    #[cfg(feature = "events")]
     pub publisher: Arc<DocPublisher>,
 }
 
@@ -158,12 +162,14 @@ impl Doc {
 
     pub fn with_options(options: DocOptions) -> Self {
         let store = Arc::new(RwLock::new(DocStore::with_client(options.client_id)));
+        #[cfg(feature = "events")]
         let publisher = Arc::new(DocPublisher::new(store.clone()));
 
         Self {
             client_id: options.client_id,
             opts: options,
             store,
+            #[cfg(feature = "events")]
             publisher,
         }
     }
@@ -287,6 +293,10 @@ impl Doc {
             }
         }
 
+        if self.opts.gc {
+            store.optimize()?;
+        }
+
         Ok(())
     }
 
@@ -361,14 +371,17 @@ impl Doc {
         self.store.read().unwrap().get_state_vector()
     }
 
+    #[cfg(feature = "events")]
     pub fn subscribe(&self, cb: impl Fn(&[u8], &[History]) + Sync + Send + 'static) {
         self.publisher.subscribe(cb);
     }
 
+    #[cfg(feature = "events")]
     pub fn unsubscribe_all(&self) {
         self.publisher.unsubscribe_all();
     }
 
+    #[cfg(feature = "events")]
     pub fn subscribe_count(&self) -> usize {
         self.publisher.count()
     }
@@ -383,7 +396,6 @@ mod tests {
     use yrs::{Array, Map, Options, Transact, types::ToJson, updates::decoder::Decode};
 
     use super::*;
-    use crate::sync::{AtomicU8, Ordering};
 
     #[test]
     fn test_encode_state_as_update() {
@@ -501,8 +513,11 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "events")]
     #[ignore = "inaccurate timing on ci, need for more accurate timing testing"]
     fn test_subscribe() {
+        use crate::sync::{AtomicU8, Ordering};
+
         loom_model!({
             let doc = Doc::default();
             let doc_clone = doc.clone();
