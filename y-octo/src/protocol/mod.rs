@@ -10,8 +10,7 @@ use std::{
 
 pub use awareness::{AwarenessState, AwarenessStates};
 use awareness::{read_awareness, write_awareness};
-pub use doc::DocMessage;
-use doc::{read_doc_message, write_doc_message};
+pub use doc::{DocMessage, read_doc_message, write_doc_message};
 use log::debug;
 use nom::{
     IResult,
