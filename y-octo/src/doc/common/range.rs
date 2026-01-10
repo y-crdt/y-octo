@@ -73,10 +73,10 @@ impl OrderRange {
                     }
                 }
                 next_old = old_iter.next();
-                if let Some(next_old) = &next_old {
-                    if next_old.start > new_range.end {
-                        continue;
-                    }
+                if let Some(next_old) = &next_old
+                    && next_old.start > new_range.end
+                {
+                    continue;
                 }
             }
             next_new = new_iter.next();
@@ -184,10 +184,10 @@ impl OrderRange {
     }
 
     fn make_single(&mut self) {
-        if let OrderRange::Fragment(ranges) = self {
-            if ranges.len() == 1 {
-                *self = OrderRange::Range(ranges[0].clone());
-            }
+        if let OrderRange::Fragment(ranges) = self
+            && ranges.len() == 1
+        {
+            *self = OrderRange::Range(ranges[0].clone());
         }
     }
 

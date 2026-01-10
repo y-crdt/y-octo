@@ -19,8 +19,8 @@ pub fn write_var_buffer<W: Write>(buffer: &mut W, data: &[u8]) -> Result<(), Err
 #[cfg(test)]
 mod tests {
     use nom::{
-        error::{Error, ErrorKind},
         AsBytes, Err,
+        error::{Error, ErrorKind},
     };
 
     use super::*;
@@ -57,7 +57,7 @@ mod tests {
 
         #[cfg(not(miri))]
         {
-            use rand::{thread_rng, Rng};
+            use rand::{Rng, thread_rng};
             let mut rng = thread_rng();
             for _ in 0..100 {
                 test_var_buf_enc_dec(&{

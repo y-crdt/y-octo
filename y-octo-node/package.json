@@ -4,49 +4,45 @@
   "main": "index.js",
   "types": "index.d.ts",
   "napi": {
-    "name": "y-octo",
-    "triples": {
-      "additional": [
-        "aarch64-apple-darwin",
-        "aarch64-pc-windows-msvc",
-        "aarch64-unknown-linux-gnu",
-        "x86_64-unknown-linux-musl",
-        "aarch64-unknown-linux-musl"
-      ]
-    },
-    "ts": {
-      "constEnum": false
-    }
+    "binaryName": "y-octo",
+    "targets": [
+      "aarch64-apple-darwin",
+      "aarch64-pc-windows-msvc",
+      "aarch64-unknown-linux-gnu",
+      "x86_64-unknown-linux-musl",
+      "aarch64-unknown-linux-musl"
+    ],
+    "constEnum": false
   },
   "license": "MIT",
   "devDependencies": {
-    "@napi-rs/cli": "^2.18.4",
-    "@types/node": "^22.10.2",
+    "@napi-rs/cli": "^3.5.1",
+    "@types/node": "^22.19.5",
     "@types/prompts": "^2.4.9",
     "c8": "^10.1.3",
     "prompts": "^2.4.2",
-    "ts-node": "^10.9.2",
-    "typescript": "^5.7.2",
-    "yjs": "^13.6.21"
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3",
+    "yjs": "^13.6.29"
   },
   "engines": {
     "node": ">= 10"
   },
   "scripts": {
     "artifacts": "napi artifacts",
-    "build": "napi build --platform --release --no-const-enum",
-    "build:debug": "napi build --platform --no-const-enum",
+    "build": "napi build --platform --release",
+    "build:debug": "napi build --platform",
     "universal": "napi universal",
-    "test": "NODE_NO_WARNINGS=1 yarn exec ts-node-esm ./scripts/run-test.mts all",
-    "test:watch": "yarn exec ts-node-esm ./scripts/run-test.ts all --watch",
-    "test:coverage": "NODE_OPTIONS=\"--loader ts-node/esm\" c8 node ./scripts/run-test.mts all",
+    "test": "NODE_NO_WARNINGS=1 yarn exec tsx ./scripts/run-test.mts all",
+    "test:watch": "yarn exec tsx ./scripts/run-test.mts all --watch",
+    "test:coverage": "NODE_OPTIONS=\"--import tsx\" c8 node ./scripts/run-test.mts all",
     "version": "napi version"
   },
   "version": "0.0.1",
   "sharedConfig": {
     "nodeArgs": [
-      "--loader",
-      "ts-node/esm",
+      "--import",
+      "tsx",
       "--es-module-specifier-resolution=node"
     ],
     "env": {

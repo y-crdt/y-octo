@@ -17,8 +17,8 @@ pub fn write_var_string<W: Write, S: AsRef<str>>(buffer: &mut W, input: S) -> Re
 #[cfg(test)]
 mod tests {
     use nom::{
-        error::{Error, ErrorKind},
         AsBytes, Err,
+        error::{Error, ErrorKind},
     };
 
     use super::*;

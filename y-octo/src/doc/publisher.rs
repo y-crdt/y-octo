@@ -111,7 +111,7 @@ impl DocPublisher {
                         last_deletes = deletes;
 
                         for cb in subscribers.iter() {
-                            use std::panic::{catch_unwind, AssertUnwindSafe};
+                            use std::panic::{AssertUnwindSafe, catch_unwind};
                             // catch panic if callback throw
                             catch_unwind(AssertUnwindSafe(|| {
                                 cb(&binary, &history);

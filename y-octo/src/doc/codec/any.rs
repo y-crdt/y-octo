@@ -248,11 +248,7 @@ impl From<f64> for Any {
 
 impl From<bool> for Any {
     fn from(value: bool) -> Self {
-        if value {
-            Self::True
-        } else {
-            Self::False
-        }
+        if value { Self::True } else { Self::False }
     }
 }
 
@@ -342,11 +338,7 @@ impl From<&[u8]> for Any {
 // TODO: impl for Any::Undefined
 impl<T: Into<Any>> From<Option<T>> for Any {
     fn from(value: Option<T>) -> Self {
-        if let Some(val) = value {
-            val.into()
-        } else {
-            Any::Null
-        }
+        if let Some(val) = value { val.into() } else { Any::Null }
     }
 }
 

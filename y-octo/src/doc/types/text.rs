@@ -1,7 +1,7 @@
 use std::fmt::Display;
 
 use super::list::ListType;
-use crate::{impl_type, Content, JwstCodecResult};
+use crate::{Content, JwstCodecResult, impl_type};
 
 impl_type!(Text);
 
@@ -58,7 +58,7 @@ mod tests {
 
     #[cfg(not(loom))]
     use crate::sync::{Arc, AtomicUsize, Ordering};
-    use crate::{loom_model, sync::thread, Doc};
+    use crate::{Doc, loom_model, sync::thread};
 
     #[test]
     fn test_manipulate_text() {
@@ -84,7 +84,7 @@ mod tests {
     #[test]
     #[cfg(not(loom))]
     fn test_parallel_insert_text() {
-        let seed = rand::thread_rng().gen();
+        let seed = rand::thread_rng().r#gen();
         let rand = ChaCha20Rng::seed_from_u64(seed);
         let mut handles = Vec::new();
 
@@ -197,7 +197,7 @@ mod tests {
 
     #[test]
     fn loom_parallel_ins_del_text() {
-        let seed = rand::thread_rng().gen();
+        let seed = rand::thread_rng().r#gen();
         let mut rand = ChaCha20Rng::seed_from_u64(seed);
         let ranges = (0..20).map(|_| rand.gen_range(0..16)).collect::<Vec<_>>();
 

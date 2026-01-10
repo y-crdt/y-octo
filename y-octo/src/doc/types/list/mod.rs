@@ -60,7 +60,7 @@ pub(crate) trait ListType: AsInner<Inner = YTypeRef> {
         self.as_inner().ty().unwrap().len
     }
 
-    fn iter_item(&self) -> ListIterator {
+    fn iter_item(&self) -> ListIterator<'_> {
         let inner = self.as_inner().ty().unwrap();
         ListIterator {
             cur: inner.start.clone(),
@@ -84,17 +84,17 @@ pub(crate) trait ListType: AsInner<Inner = YTypeRef> {
             return Some(pos);
         }
 
-        if let Some(markers) = &inner.markers {
-            if let Some(marker) = markers.find_marker(inner, index) {
-                if marker.index > remaining {
-                    remaining = 0
-                } else {
-                    remaining -= marker.index;
-                }
-                pos.index = marker.index;
-                pos.left = marker.ptr.get().map(|ptr| ptr.left.clone()).unwrap_or_default();
-                pos.right = marker.ptr;
+        if let Some(markers) = &inner.markers
+            && let Some(marker) = markers.find_marker(inner, index)
+        {
+            if marker.index > remaining {
+                remaining = 0
+            } else {
+                remaining -= marker.index;
             }
+            pos.index = marker.index;
+            pos.left = marker.ptr.get().map(|ptr| ptr.left.clone()).unwrap_or_default();
+            pos.right = marker.ptr;
         };
 
         while remaining > 0 {
