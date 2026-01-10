@@ -90,7 +90,7 @@ jobs:
         uses: taiki-e/install-action@cargo-llvm-cov
 
       - name: Collect coverage data
-        run: cargo llvm-cov nextest --all-targets -E 'not kind(bench)' --lcov --output-path lcov.info
+        run: cargo llvm-cov nextest --all-targets -E 'not kind(bench)' --test-threads=1 --lcov --output-path lcov.info
       - name: Upload coverage data to codecov
         uses: codecov/codecov-action@v5
         with:
