@@ -4,21 +4,50 @@ impl_type!(Array);
 
 impl ListType for Array {}
 
-pub struct ArrayIter<'a>(ListIterator<'a>);
+pub struct ArrayIter<'a> {
+    iter: ListIterator<'a>,
+    pending: Option<PendingArrayValues>,
+}
+
+enum PendingArrayValues {
+    Any { values: Vec<Any>, index: usize },
+}
 
 impl Iterator for ArrayIter<'_> {
     type Item = Value;
 
     fn next(&mut self) -> Option<Self::Item> {
-        for item in self.0.by_ref() {
-            if let Some(item) = item.get()
-                && item.countable()
-            {
-                return Some(Value::from(&item.content));
+        loop {
+            if let Some(PendingArrayValues::Any { values, index }) = &mut self.pending {
+                if *index < values.len() {
+                    let value = values[*index].clone();
+                    *index += 1;
+                    return Some(Value::Any(value));
+                }
+                self.pending = None;
+            }
+
+            let item = self.iter.next()?;
+            if let Some(item) = item.get() {
+                if !item.countable() {
+                    continue;
+                }
+
+                match &item.content {
+                    Content::Any(values) if !values.is_empty() => {
+                        if values.len() > 1 {
+                            self.pending = Some(PendingArrayValues::Any {
+                                values: values.clone(),
+                                index: 1,
+                            });
+                        }
+
+                        return Some(Value::Any(values[0].clone()));
+                    }
+                    _ => return Some(Value::from(&item.content)),
+                }
             }
         }
-
-        None
     }
 }
 
@@ -41,19 +70,20 @@ impl Array {
     pub fn get(&self, index: u64) -> Option<Value> {
         let (item, offset) = self.get_item_at(index)?;
 
-        if let Some(item) = item.get() {
+        item.get().and_then(|item| {
             // TODO: rewrite to content.read(&mut [Any])
-            return match &item.content {
-                Content::Any(any) => return any.get(offset as usize).map(|any| Value::Any(any.clone())),
+            match &item.content {
+                Content::Any(any) => any.get(offset as usize).map(|any| Value::Any(any.clone())),
                 _ => Some(Value::from(&item.content)),
-            };
-        }
-
-        None
+            }
+        })
     }
 
     pub fn iter(&self) -> ArrayIter<'_> {
-        ArrayIter(self.iter_item())
+        ArrayIter {
+            iter: self.iter_item(),
+            pending: None,
+        }
     }
 
     pub fn push<V: Into<Value>>(&mut self, val: V) -> JwstCodecResult {
