@@ -11,6 +11,8 @@ resolver = "2"
   [workspace.dependencies]
   y-octo       = { path = "./y-octo" }
   y-octo-utils = { path = "./y-octo-utils" }
+  y-sync       = { git = "https://github.com/toeverything/y-sync", rev = "5626851" }
+  yrs          = { git = "https://github.com/toeverything/y-crdt", rev = "a700f09" }
 
 [profile.release]
 codegen-units = 1

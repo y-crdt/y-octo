@@ -17,7 +17,7 @@ Y-Octo also has interoperability and binary compatibility with [yjs]. Developers
 
 <a href="https://affine.pro"><img src="./assets/affine.svg" /></a>
 
-[AFFiNE](https://affine.pro) is using y-octo in production. There are [Electron](https://affine.pro/download) app and [Node.js server](https://github.com/toeverything/AFFiNE/tree/master/packages/storage) using y-octo in production.
+[AFFiNE](https://affine.pro) is using y-octo in production. There are [Electron](https://affine.pro/download) app and [Node.js server](https://github.com/toeverything/AFFiNE/tree/canary/packages/backend/native) using y-octo in production.
 
 <a href="https://www.mysc.app/"><img src="https://www.mysc.app/images/logo_blk.webp" width="120px" /></a>
 

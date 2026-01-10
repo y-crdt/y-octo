@@ -18,7 +18,7 @@ pub(crate) struct ItemPosition {
 impl ItemPosition {
     pub fn forward(&mut self) {
         if let Some(right) = self.right.get() {
-            if !right.deleted() {
+            if right.indexable() {
                 self.index += right.len();
             }
 
@@ -115,7 +115,7 @@ pub(crate) trait ListType: AsInner<Inner = YTypeRef> {
 
         while remaining > 0 {
             if let Some(item) = pos.right.get() {
-                if !item.deleted() {
+                if item.indexable() {
                     let content_len = item.len();
                     if remaining < content_len {
                         pos.offset = remaining;
@@ -154,7 +154,9 @@ pub(crate) trait ListType: AsInner<Inner = YTypeRef> {
     }
 
     fn insert_after(ty: &mut YType, store: &mut DocStore, pos: ItemPosition, content: Content) -> JwstCodecResult {
-        if let Some(markers) = &ty.markers {
+        if let Some(markers) = &ty.markers
+            && content.countable()
+        {
             markers.update_marker_changes(pos.index, content.clock_len() as i64);
         }
 
@@ -221,7 +223,7 @@ pub(crate) trait ListType: AsInner<Inner = YTypeRef> {
 
         while remaining > 0 {
             if let Some(item) = pos.right.get() {
-                if !item.deleted() {
+                if item.indexable() {
                     let content_len = item.len();
                     if remaining < content_len {
                         store.split_node(item.id, remaining)?;

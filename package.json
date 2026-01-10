@@ -1,14 +1,14 @@
 {
   "name": "@y-octo/cli",
-  "version": "0.0.0",
-  "packageManager": "yarn@3.6.2",
+  "version": "1.0.0",
+  "packageManager": "yarn@4.12.0",
   "license": "MIT",
   "workspaces": [
     ".",
     "y-octo-node"
   ],
   "engines": {
-    "node": ">=18.16.1 <19.0.0"
+    "node": ">=22"
   },
   "scripts": {
     "build:node": "yarn workspace @y-octo/node build",
@@ -17,19 +17,16 @@
     "format": "run-p format:toml format:prettier format:rs",
     "format:toml": "taplo format",
     "format:prettier": "prettier --write .",
-    "format:rs": "cargo +nightly-2024-07-06 fmt --all"
+    "format:rs": "cargo +nightly fmt --all"
   },
   "devDependencies": {
     "@taplo/cli": "^0.7.0",
-    "husky": "^8.0.3",
-    "lint-staged": "^14.0.0",
+    "husky": "^9.1.7",
+    "lint-staged": "^15.5.2",
     "npm-run-all": "^4.1.5",
-    "prettier": "^3.0.2"
+    "prettier": "^3.7.4"
   },
   "lint-staged": {
-    "*.@(js|ts|tsx)": [
-      "eslint -c .eslintrc.yml --fix"
-    ],
     "*.@(js|ts|tsx|yml|yaml|json|md)": [
       "prettier --write"
     ],
@@ -37,7 +34,7 @@
       "taplo format"
     ],
     "*.rs": [
-      "cargo +nightly-2024-07-06 fmt --"
+      "cargo +nightly fmt --"
     ]
   },
   "resolutions": {
@@ -51,28 +48,24 @@
     "get-symbol-description": "npm:@nolyfill/get-symbol-description@^1",
     "globalthis": "npm:@nolyfill/globalthis@^1",
     "gopd": "npm:@nolyfill/gopd@^1",
+    "has": "npm:@nolyfill/has@^1",
     "has-property-descriptors": "npm:@nolyfill/has-property-descriptors@^1",
     "has-proto": "npm:@nolyfill/has-proto@^1",
     "has-symbols": "npm:@nolyfill/has-symbols@^1",
     "has-tostringtag": "npm:@nolyfill/has-tostringtag@^1",
-    "hasown": "npm:@nolyfill/hasown@^1",
     "internal-slot": "npm:@nolyfill/internal-slot@^1",
     "is-array-buffer": "npm:@nolyfill/is-array-buffer@^1",
-    "is-core-module": "npm:@nolyfill/is-core-module@^1",
     "is-date-object": "npm:@nolyfill/is-date-object@^1",
     "is-regex": "npm:@nolyfill/is-regex@^1",
     "is-shared-array-buffer": "npm:@nolyfill/is-shared-array-buffer@^1",
     "is-string": "npm:@nolyfill/is-string@^1",
     "is-symbol": "npm:@nolyfill/is-symbol@^1",
-    "is-typed-array": "npm:@nolyfill/is-typed-array@^1",
     "is-weakref": "npm:@nolyfill/is-weakref@^1",
-    "isarray": "npm:@nolyfill/isarray@^1",
     "object-keys": "npm:@nolyfill/object-keys@^1",
     "object.assign": "npm:@nolyfill/object.assign@^1",
     "regexp.prototype.flags": "npm:@nolyfill/regexp.prototype.flags@^1",
     "safe-array-concat": "npm:@nolyfill/safe-array-concat@^1",
     "safe-regex-test": "npm:@nolyfill/safe-regex-test@^1",
-    "set-function-length": "npm:@nolyfill/set-function-length@^1",
     "side-channel": "npm:@nolyfill/side-channel@^1",
     "string.prototype.padend": "npm:@nolyfill/string.prototype.padend@^1",
     "string.prototype.trim": "npm:@nolyfill/string.prototype.trim@^1",
@@ -84,6 +77,9 @@
     "typed-array-length": "npm:@nolyfill/typed-array-length@^1",
     "unbox-primitive": "npm:@nolyfill/unbox-primitive@^1",
     "which-boxed-primitive": "npm:@nolyfill/which-boxed-primitive@^1",
-    "which-typed-array": "npm:@nolyfill/which-typed-array@^1"
+    "which-typed-array": "npm:@nolyfill/which-typed-array@^1",
+    "hasown": "npm:@nolyfill/hasown@^1",
+    "is-core-module": "npm:@nolyfill/is-core-module@^1",
+    "safer-buffer": "npm:@nolyfill/safer-buffer@^1"
   }
 }

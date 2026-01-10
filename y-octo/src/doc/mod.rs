@@ -5,6 +5,7 @@ mod common;
 mod document;
 mod hasher;
 mod history;
+#[cfg(feature = "events")]
 mod publisher;
 mod store;
 mod types;

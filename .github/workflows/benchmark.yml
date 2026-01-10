@@ -20,7 +20,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           ref: main
 
@@ -38,7 +38,7 @@ jobs:
           cargo bench --bench update_benchmarks --features bench -- --save-baseline main
 
       - name: Checkout main branch
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           clean: false
           ref: ${{ github.event.pull_request.head.sha }}
@@ -52,7 +52,7 @@ jobs:
           cargo bench --bench update_benchmarks --features bench -- --save-baseline pr
 
       - name: Upload benchmark results
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: benchmark-results-${{ matrix.os }}
           path: ./target/criterion
@@ -65,7 +65,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
@@ -80,7 +80,7 @@ jobs:
           tool: critcmp
 
       - name: Linux | Download PR benchmark results
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
           name: benchmark-results-ubuntu-latest
           path: ./target/criterion
@@ -95,7 +95,7 @@ jobs:
         run: rm -rf ./target/criterion
 
       - name: Windows | Download PR benchmark results
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
           name: benchmark-results-windows-latest
           path: ./target/criterion
@@ -109,7 +109,7 @@ jobs:
       - name: Find Comment
         # Check if the event is not triggered by a fork
         if: github.event.pull_request.head.repo.full_name == github.repository
-        uses: peter-evans/find-comment@v2
+        uses: peter-evans/find-comment@v3
         id: fc
         with:
           issue-number: ${{ github.event.pull_request.number }}
@@ -119,7 +119,7 @@ jobs:
       - name: Create or update comment
         # Check if the event is not triggered by a fork
         if: github.event.pull_request.head.repo.full_name == github.repository
-        uses: peter-evans/create-or-update-comment@v2
+        uses: peter-evans/create-or-update-comment@v4
         with:
           issue-number: ${{ github.event.pull_request.number }}
           edit-mode: replace
