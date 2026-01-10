@@ -731,13 +731,12 @@ impl DocStore {
                 } else {
                     break;
                 }
-
                 idx += 1;
             }
             for (client, ranges) in pending_delete_sets {
                 self.delete_set.batch_add_ranges(client, ranges);
             }
-        }
+        };
 
         Ok(())
     }

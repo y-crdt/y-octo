@@ -222,23 +222,27 @@ pub(crate) trait ListType: AsInner<Inner = YTypeRef> {
         let mut remaining = len;
 
         while remaining > 0 {
-            if let Some(item) = pos.right.get() {
-                if item.indexable() {
-                    let content_len = item.len();
-                    if remaining < content_len {
-                        store.split_node(item.id, remaining)?;
-                        remaining = 0;
-                    } else {
-                        remaining -= content_len;
-                    }
+            let item_ref = pos.right.clone();
+            let Some((indexable, content_len, item_id)) =
+                item_ref.get().map(|item| (item.indexable(), item.len(), item.id))
+            else {
+                break;
+            };
 
-                    store.delete_item(item, Some(ty));
+            if indexable {
+                if remaining < content_len {
+                    store.split_node(item_id, remaining)?;
+                    remaining = 0;
+                } else {
+                    remaining -= content_len;
                 }
 
-                pos.forward();
-            } else {
-                break;
+                if let Some(item) = item_ref.get() {
+                    store.delete_item(item, Some(ty));
+                }
             }
+
+            pos.forward();
         }
 
         if let Some(markers) = &ty.markers {
