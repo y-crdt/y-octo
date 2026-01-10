@@ -664,9 +664,10 @@ impl DocStore {
                     let map_values = ty.map.values().cloned().collect::<Vec<_>>();
                     for item in map_values {
                         if let Some(item) = item.get()
-                            && !item.deleted() {
-                                Self::delete_item_inner(delete_set, changed, item, Some(&mut ty));
-                            }
+                            && !item.deleted()
+                        {
+                            Self::delete_item_inner(delete_set, changed, item, Some(&mut ty));
+                        }
                     }
                 }
             }
@@ -693,52 +694,49 @@ impl DocStore {
         let end = range.end;
 
         if let Some(items) = self.items.get_mut(&client)
-            && let Some(mut idx) = DocStore::get_node_index(items, start) {
-                {
-                    // id.clock <= range.start < id.end
-                    // need to split the item and delete the right part
-                    // -----item-----
-                    //    ^start
-                    let node = &items[idx];
-                    let id = node.id();
+            && let Some(mut idx) = DocStore::get_node_index(items, start)
+        {
+            {
+                // id.clock <= range.start < id.end
+                // need to split the item and delete the right part
+                // -----item-----
+                //    ^start
+                let node = &items[idx];
+                let id = node.id();
 
-                    if !node.deleted() && id.clock < start {
-                        DocStore::split_node_at(items, idx, start - id.clock)?;
-                        idx += 1;
-                    }
-                };
-
-                let mut pending_delete_sets = HashMap::new();
-                while idx < items.len() {
-                    let node = items[idx].clone();
-                    let id = node.id();
-
-                    if id.clock < end {
-                        if !node.deleted()
-                            && let Some(item) = node.as_item().get()
-                        {
-                            // need to split the item
-                            // -----item-----
-                            //           ^end
-                            if end < id.clock + node.len() {
-                                DocStore::split_node_at(items, idx, end - id.clock)?;
-                            }
-
-                            Self::delete_item_inner(&mut pending_delete_sets, &mut self.changed, item, None);
-                        }
-                    } else {
-                        break;
-                    }
-
-                    if !node.deleted() && id.clock < start {
-                        DocStore::split_node_at(items, idx, start - id.clock)?;
-                        idx += 1;
-                    }
-                }
-                for (client, ranges) in pending_delete_sets {
-                    self.delete_set.batch_add_ranges(client, ranges);
+                if !node.deleted() && id.clock < start {
+                    DocStore::split_node_at(items, idx, start - id.clock)?;
+                    idx += 1;
                 }
             };
+
+            let mut pending_delete_sets = HashMap::new();
+            while idx < items.len() {
+                let node = items[idx].clone();
+                let id = node.id();
+
+                if id.clock < end {
+                    if !node.deleted()
+                        && let Some(item) = node.as_item().get()
+                    {
+                        // need to split the item
+                        // -----item-----
+                        //           ^end
+                        if end < id.clock + node.len() {
+                            DocStore::split_node_at(items, idx, end - id.clock)?;
+                        }
+
+                        Self::delete_item_inner(&mut pending_delete_sets, &mut self.changed, item, None);
+                    }
+                } else {
+                    break;
+                }
+                idx += 1;
+            }
+            for (client, ranges) in pending_delete_sets {
+                self.delete_set.batch_add_ranges(client, ranges);
+            }
+        };
 
         Ok(())
     }
@@ -786,10 +784,6 @@ impl DocStore {
                 vec.push(parent_sub);
             }
         }
-    }
-
-    pub fn reset_changed(&mut self) {
-        self.changed.clear();
     }
 
     pub fn get_changed(&mut self) -> ChangedTypeRefs {
@@ -996,9 +990,10 @@ impl DocStore {
                             (Some(item), Some(other_item)) => item.deep_compare(other_item),
                             (None, None) => true,
                             _ => false,
-                        } {
-                            return false;
                         }
+                    {
+                        return false;
+                    }
                 }
             } else {
                 return false;

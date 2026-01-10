@@ -198,7 +198,7 @@ impl Doc {
         }
     }
 
-    pub fn get_changed(&self) -> ChangedTypeRefs {
+    pub(crate) fn get_changed(&self) -> ChangedTypeRefs {
         self.store.write().unwrap().get_changed()
     }
 

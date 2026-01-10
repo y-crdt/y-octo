@@ -53,19 +53,17 @@ where
         }
     }
 
-    let Some(batch) = doc.batch.get_mut() else {
-        return None;
-    };
-
+    let batch = doc.batch.get_mut()?;
     let result = Some(batch.with_batch(f));
 
     if initial_call
         && let Some(current_batch) = doc.batch.get()
-            && Some(current_batch) == batch_cleanups[0].get() {
-                // Process observer calls and perform cleanup if this is the initial call
-                cleanup_batches(&mut batch_cleanups);
-                doc.batch.swap_take();
-            }
+        && Some(current_batch) == batch_cleanups[0].get()
+    {
+        // Process observer calls and perform cleanup if this is the initial call
+        cleanup_batches(&mut batch_cleanups);
+        doc.batch.swap_take();
+    }
 
     result
 }
