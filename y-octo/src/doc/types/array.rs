@@ -11,10 +11,10 @@ impl Iterator for ArrayIter<'_> {
 
     fn next(&mut self) -> Option<Self::Item> {
         for item in self.0.by_ref() {
-            if let Some(item) = item.get() {
-                if item.countable() {
-                    return Some(Value::from(&item.content));
-                }
+            if let Some(item) = item.get()
+                && item.countable()
+            {
+                return Some(Value::from(&item.content));
             }
         }
 
@@ -47,7 +47,7 @@ impl Array {
         None
     }
 
-    pub fn iter(&self) -> ArrayIter {
+    pub fn iter(&self) -> ArrayIter<'_> {
         ArrayIter(self.iter_item())
     }
 

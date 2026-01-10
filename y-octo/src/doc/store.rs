@@ -1,5 +1,5 @@
 use std::{
-    collections::{hash_map::Entry, VecDeque},
+    collections::{VecDeque, hash_map::Entry},
     mem,
     ops::{Deref, Range},
 };
@@ -174,10 +174,10 @@ impl DocStore {
         let id = (self.client(), self.get_state(self.client())).into();
         let item = Somr::new(Item::new(id, content, left, right, parent, parent_sub));
 
-        if let Content::Type(ty) = &item.get().unwrap().content {
-            if let Some(mut ty) = ty.ty_mut() {
-                ty.item = item.clone();
-            }
+        if let Content::Type(ty) = &item.get().unwrap().content
+            && let Some(mut ty) = ty.ty_mut()
+        {
+            ty.item = item.clone();
         }
 
         item
@@ -189,10 +189,10 @@ impl DocStore {
 
     pub fn get_node_with_idx<I: Into<Id>>(&self, id: I) -> Option<(Node, usize)> {
         let id = id.into();
-        if let Some(items) = self.items.get(&id.client) {
-            if let Some(index) = Self::get_node_index(items, id.clock) {
-                return items.get(index).map(|item| (item.clone(), index));
-            }
+        if let Some(items) = self.items.get(&id.client)
+            && let Some(index) = Self::get_node_index(items, id.clock)
+        {
+            return items.get(index).map(|item| (item.clone(), index));
         }
 
         None
@@ -203,10 +203,10 @@ impl DocStore {
 
         let id = id.into();
 
-        if let Some(items) = self.items.get_mut(&id.client) {
-            if let Some(idx) = Self::get_node_index(items, id.clock) {
-                return Self::split_node_at(items, idx, diff);
-            }
+        if let Some(items) = self.items.get_mut(&id.client)
+            && let Some(idx) = Self::get_node_index(items, id.clock)
+        {
+            return Self::split_node_at(items, idx, diff);
         }
 
         Err(JwstCodecError::StructSequenceNotExists(id.client))
@@ -258,16 +258,16 @@ impl DocStore {
 
     pub fn split_at_and_get_right<I: Into<Id>>(&mut self, id: I) -> JwstCodecResult<Node> {
         let id = id.into();
-        if let Some(items) = self.items.get_mut(&id.client) {
-            if let Some(index) = Self::get_node_index(items, id.clock) {
-                let item = items.get(index).unwrap().clone();
-                let offset = id.clock - item.clock();
-                if offset > 0 && item.is_item() {
-                    let (_, right) = Self::split_node_at(items, index, offset)?;
-                    return Ok(right);
-                } else {
-                    return Ok(item);
-                }
+        if let Some(items) = self.items.get_mut(&id.client)
+            && let Some(index) = Self::get_node_index(items, id.clock)
+        {
+            let item = items.get(index).unwrap().clone();
+            let offset = id.clock - item.clock();
+            if offset > 0 && item.is_item() {
+                let (_, right) = Self::split_node_at(items, index, offset)?;
+                return Ok(right);
+            } else {
+                return Ok(item);
             }
         }
 
@@ -276,16 +276,16 @@ impl DocStore {
 
     pub fn split_at_and_get_left<I: Into<Id>>(&mut self, id: I) -> JwstCodecResult<Node> {
         let id = id.into();
-        if let Some(items) = self.items.get_mut(&id.client) {
-            if let Some(index) = Self::get_node_index(items, id.clock) {
-                let item = items.get(index).unwrap().clone();
-                let offset = id.clock - item.clock();
-                if offset != item.len() - 1 && !item.is_gc() {
-                    let (left, _) = Self::split_node_at(items, index, offset + 1)?;
-                    return Ok(left);
-                } else {
-                    return Ok(item);
-                }
+        if let Some(items) = self.items.get_mut(&id.client)
+            && let Some(index) = Self::get_node_index(items, id.clock)
+        {
+            let item = items.get(index).unwrap().clone();
+            let offset = id.clock - item.clock();
+            if offset != item.len() - 1 && !item.is_gc() {
+                let (left, _) = Self::split_node_at(items, index, offset + 1)?;
+                return Ok(left);
+            } else {
+                return Ok(item);
             }
         }
 
@@ -647,10 +647,10 @@ impl DocStore {
 
                     let map_values = ty.map.values().cloned().collect::<Vec<_>>();
                     for item in map_values {
-                        if let Some(item) = item.get() {
-                            if !item.deleted() {
-                                Self::delete_item_inner(delete_set, item, Some(&mut ty));
-                            }
+                        if let Some(item) = item.get()
+                            && !item.deleted()
+                        {
+                            Self::delete_item_inner(delete_set, item, Some(&mut ty));
                         }
                     }
                 }
@@ -672,49 +672,49 @@ impl DocStore {
         let start = range.start;
         let end = range.end;
 
-        if let Some(items) = self.items.get_mut(&client) {
-            if let Some(mut idx) = DocStore::get_node_index(items, start) {
-                {
-                    // id.clock <= range.start < id.end
-                    // need to split the item and delete the right part
-                    // -----item-----
-                    //    ^start
-                    let node = &items[idx];
-                    let id = node.id();
+        if let Some(items) = self.items.get_mut(&client)
+            && let Some(mut idx) = DocStore::get_node_index(items, start)
+        {
+            {
+                // id.clock <= range.start < id.end
+                // need to split the item and delete the right part
+                // -----item-----
+                //    ^start
+                let node = &items[idx];
+                let id = node.id();
 
-                    if !node.deleted() && id.clock < start {
-                        DocStore::split_node_at(items, idx, start - id.clock)?;
-                        idx += 1;
-                    }
-                };
-
-                let mut pending_delete_sets = HashMap::new();
-                while idx < items.len() {
-                    let node = items[idx].clone();
-                    let id = node.id();
-
-                    if id.clock < end {
-                        if !node.deleted() {
-                            if let Some(item) = node.as_item().get() {
-                                // need to split the item
-                                // -----item-----
-                                //           ^end
-                                if end < id.clock + node.len() {
-                                    DocStore::split_node_at(items, idx, end - id.clock)?;
-                                }
-
-                                Self::delete_item_inner(&mut pending_delete_sets, item, None);
-                            }
-                        }
-                    } else {
-                        break;
-                    }
-
+                if !node.deleted() && id.clock < start {
+                    DocStore::split_node_at(items, idx, start - id.clock)?;
                     idx += 1;
                 }
-                for (client, ranges) in pending_delete_sets {
-                    self.delete_set.batch_add_ranges(client, ranges);
+            };
+
+            let mut pending_delete_sets = HashMap::new();
+            while idx < items.len() {
+                let node = items[idx].clone();
+                let id = node.id();
+
+                if id.clock < end {
+                    if !node.deleted()
+                        && let Some(item) = node.as_item().get()
+                    {
+                        // need to split the item
+                        // -----item-----
+                        //           ^end
+                        if end < id.clock + node.len() {
+                            DocStore::split_node_at(items, idx, end - id.clock)?;
+                        }
+
+                        Self::delete_item_inner(&mut pending_delete_sets, item, None);
+                    }
+                } else {
+                    break;
                 }
+
+                idx += 1;
+            }
+            for (client, ranges) in pending_delete_sets {
+                self.delete_set.batch_add_ranges(client, ranges);
             }
         }
 
@@ -749,10 +749,8 @@ impl DocStore {
             ..Update::default()
         };
 
-        if with_pending {
-            if let Some(pending) = &self.pending {
-                Update::merge_into(&mut update, [pending.clone()])
-            }
+        if with_pending && let Some(pending) = &self.pending {
+            Update::merge_into(&mut update, [pending.clone()])
         }
 
         Ok(update)
@@ -885,11 +883,11 @@ impl DocStore {
     }
 
     fn gc_content(content: &Content) -> JwstCodecResult {
-        if let Content::Type(ty) = content {
-            if let Some(mut ty) = ty.ty_mut() {
-                ty.start = Somr::none();
-                ty.map.clear();
-            }
+        if let Content::Type(ty) = content
+            && let Some(mut ty) = ty.ty_mut()
+        {
+            ty.start = Somr::none();
+            ty.map.clear();
         }
 
         Ok(())

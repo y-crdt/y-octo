@@ -380,7 +380,7 @@ impl Doc {
 
 #[cfg(test)]
 mod tests {
-    use yrs::{types::ToJson, updates::decoder::Decode, Array, Map, Options, Transact};
+    use yrs::{Array, Map, Options, Transact, types::ToJson, updates::decoder::Decode};
 
     use super::*;
     use crate::sync::{AtomicU8, Ordering};

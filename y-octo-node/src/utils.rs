@@ -1,4 +1,4 @@
-use napi::{bindgen_prelude::Either4, Env, Error, JsObject, JsUnknown, Result, Status, ValueType};
+use napi::{Env, Error, JsObject, JsUnknown, Result, Status, ValueType, bindgen_prelude::Either4};
 use y_octo::{AHashMap, Any, HashMapExt, Value};
 
 use super::*;
@@ -60,11 +60,10 @@ pub fn get_any_from_js_object(object: JsObject) -> Result<Any> {
                 if let Ok((obj, key)) = keys.get_element::<JsUnknown>(i).and_then(|o| {
                     o.coerce_to_string()
                         .and_then(|obj| obj.into_utf8().and_then(|s| s.as_str().map(|s| (obj, s.to_string()))))
-                }) {
-                    if let Ok(value) = object.get_property::<_, JsUnknown>(obj) {
-                        println!("key: {}", key);
-                        map.insert(key, get_any_from_js_unknown(value)?);
-                    }
+                }) && let Ok(value) = object.get_property::<_, JsUnknown>(obj)
+                {
+                    println!("key: {}", key);
+                    map.insert(key, get_any_from_js_unknown(value)?);
                 }
             }
         }

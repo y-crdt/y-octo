@@ -269,10 +269,10 @@ impl Iterator for SortedNodes<'_> {
     type Item = Node;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if let Some(current) = self.current.as_mut() {
-            if let Some(node) = current.pop_back() {
-                return Some(node);
-            }
+        if let Some(current) = self.current.as_mut()
+            && let Some(node) = current.pop_back()
+        {
+            return Some(node);
         }
 
         if let Some((_, nodes)) = self.nodes.pop() {

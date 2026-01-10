@@ -97,11 +97,11 @@ impl Update {
         Ok(encoder.into_inner())
     }
 
-    pub(crate) fn iter(&mut self, state: StateVector) -> UpdateIterator {
+    pub(crate) fn iter(&mut self, state: StateVector) -> UpdateIterator<'_> {
         UpdateIterator::new(self, state)
     }
 
-    pub fn delete_set_iter(&mut self, state: StateVector) -> DeleteSetIterator {
+    pub fn delete_set_iter(&mut self, state: StateVector) -> DeleteSetIterator<'_> {
         DeleteSetIterator::new(self, state)
     }
 
@@ -280,16 +280,18 @@ impl<'a> UpdateIterator<'a> {
     fn get_missing_dep(&self, struct_info: &Node) -> Option<Client> {
         if let Some(item) = struct_info.as_item().get() {
             let id = item.id;
-            if let Some(left) = &item.origin_left_id {
-                if left.client != id.client && left.clock >= self.state.get(&left.client) {
-                    return Some(left.client);
-                }
+            if let Some(left) = &item.origin_left_id
+                && left.client != id.client
+                && left.clock >= self.state.get(&left.client)
+            {
+                return Some(left.client);
             }
 
-            if let Some(right) = &item.origin_right_id {
-                if right.client != id.client && right.clock >= self.state.get(&right.client) {
-                    return Some(right.client);
-                }
+            if let Some(right) = &item.origin_right_id
+                && right.client != id.client
+                && right.clock >= self.state.get(&right.client)
+            {
+                return Some(right.client);
             }
 
             if let Some(parent) = &item.parent {
