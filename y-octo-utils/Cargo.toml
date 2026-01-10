@@ -22,6 +22,7 @@ rand        = "0.8"
 rand_chacha = "0.3"
 regex       = { version = "1.10", optional = true }
 y-octo      = { workspace = true }
+y-sync      = { workspace = true }
 yrs         = { workspace = true }
 
 [dev-dependencies]
