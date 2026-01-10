@@ -399,6 +399,7 @@ impl Doc {
         self.publisher.count()
     }
 
+    #[cfg(feature = "events")]
     pub fn subscriber_count(&self) -> usize {
         Arc::<DocPublisher>::strong_count(&self.publisher)
     }
