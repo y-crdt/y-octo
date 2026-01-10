@@ -51,18 +51,18 @@ jobs:
         with:
           tool: clippy-sarif,sarif-fmt
 
+      - name: Format check
+        run: |
+          yarn prettier --check .
+          yarn taplo fmt --check .
+          cargo +nightly fmt --all --check
+
       - name: Build & Check
         run: |
           cargo +nightly clippy --all-features --message-format=json -- -D warnings | clippy-sarif | tee rust-clippy-results.sarif | sarif-fmt
           RUSTDOCFLAGS="-D rustdoc::broken-intra-doc-links" cargo doc --workspace --all-features --no-deps
         env:
           CARGO_TERM_COLOR: always
-
-      - name: Format check
-        run: |
-          yarn prettier --check .
-          yarn taplo fmt --check .
-          cargo +nightly fmt --all --check
 
       - name: Upload analysis results to GitHub
         uses: github/codeql-action/upload-sarif@v2
