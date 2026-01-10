@@ -36,9 +36,11 @@ thiserror     = "2.0"
 [features]
 bench      = []
 debug      = []
+default    = ["subscribe"]
 events     = []
 large_refs = []
 serde_json = []
+subscribe  = []
 
 [target.'cfg(fuzzing)'.dependencies]
 arbitrary     = { version = "1.3", features = ["derive"] }
