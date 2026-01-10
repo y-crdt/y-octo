@@ -84,34 +84,35 @@ mod tests {
 
     #[test]
     fn should_get_changed_items() {
-        // loom_model!({
-        let doc = DocOptions::new().with_client_id(1).build();
+        loom_model!({
+            let doc = DocOptions::new().with_client_id(1).build();
 
-        batch_commit(doc.clone(), |d| {
-            let mut arr = d.get_or_create_array("arr").unwrap();
-            let mut text = d.create_text().unwrap();
-            let mut map = d.create_map().unwrap();
+            batch_commit(doc.clone(), |d| {
+                let mut arr = d.get_or_create_array("arr").unwrap();
+                let mut text = d.create_text().unwrap();
+                let mut map = d.create_map().unwrap();
 
-            batch_commit(doc.clone(), |_| {
-                arr.insert(0, Value::from(text.clone())).unwrap();
-                arr.insert(1, Value::from(map.clone())).unwrap();
-            });
+                batch_commit(doc.clone(), |_| {
+                    arr.insert(0, Value::from(text.clone())).unwrap();
+                    arr.insert(1, Value::from(map.clone())).unwrap();
+                });
 
-            batch_commit(doc.clone(), |_| {
-                text.insert(0, "hello world").unwrap();
-                text.remove(5, 6).unwrap();
-            });
+                batch_commit(doc.clone(), |_| {
+                    text.insert(0, "hello world").unwrap();
+                    text.remove(5, 6).unwrap();
+                });
 
-            batch_commit(doc.clone(), |_| {
-                map.insert("key".into(), 123).unwrap();
-            });
+                batch_commit(doc.clone(), |_| {
+                    map.insert("key".into(), 123).unwrap();
+                });
 
-            batch_commit(doc.clone(), |_| {
-                map.remove("key");
-            });
+                batch_commit(doc.clone(), |_| {
+                    map.remove("key");
+                });
 
-            batch_commit(doc.clone(), |_| {
-                arr.remove(0, 1).unwrap();
+                batch_commit(doc.clone(), |_| {
+                    arr.remove(0, 1).unwrap();
+                });
             });
         });
     }
