@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 #[cfg(feature = "events")]
 use publisher::DocPublisher;
 
@@ -244,12 +242,29 @@ impl Doc {
     pub fn apply_update(&mut self, mut update: Update) -> JwstCodecResult {
         let mut store = self.store.write().unwrap();
         let mut retry = false;
+
         loop {
+            // clone every time to avoid ref count issue
+            let pending_types = update
+                .structs
+                .values()
+                .flatten()
+                .filter_map(|n| {
+                    if let Node::Item(item_ref) = n
+                        && let Some(item) = item_ref.get()
+                        && let Content::Type(ty) = &item.content
+                    {
+                        Some((item.id, ty.clone()))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
             for (mut s, offset) in update.iter(store.get_state_vector()) {
                 if let Node::Item(item) = &mut s {
                     debug_assert!(item.is_owned());
                     let mut item = unsafe { item.get_mut_unchecked() };
-                    store.repair(&mut item, self.store.clone())?;
+                    store.repair(&mut item, self.store.clone(), &pending_types)?;
                 }
                 store.integrate(s, offset, None)?;
             }
@@ -493,41 +508,70 @@ mod tests {
             assert_json_diff::assert_json_matches!(array.to_json(&doc.transact()), json, config);
         };
 
-        let binary = {
-            let doc = Doc::new();
-            let mut array = doc.get_or_create_array("abc").unwrap();
-            array.insert(0, 42).unwrap();
-            array.insert(1, -42).unwrap();
-            array.insert(2, true).unwrap();
-            array.insert(3, false).unwrap();
-            array.insert(4, "hello").unwrap();
-            array.insert(5, "world").unwrap();
+        {
+            let binary = {
+                let doc = Doc::new();
+                let mut array = doc.get_or_create_array("abc").unwrap();
+                array.insert(0, 42).unwrap();
+                array.insert(1, -42).unwrap();
+                array.insert(2, true).unwrap();
+                array.insert(3, false).unwrap();
+                array.insert(4, "hello").unwrap();
+                array.insert(5, "world").unwrap();
 
-            let mut sub_array = doc.create_array().unwrap();
-            array.insert(6, sub_array.clone()).unwrap();
-            // FIXME: array need insert first to compatible with yrs
-            sub_array.insert(0, 1).unwrap();
+                let mut sub_array = doc.create_array().unwrap();
+                array.insert(6, sub_array.clone()).unwrap();
+                // FIXME: array need insert first to compatible with yrs
+                sub_array.insert(0, 1).unwrap();
 
-            doc.encode_update_v1().unwrap()
-        };
+                doc.encode_update_v1().unwrap()
+            };
 
-        let ydoc = yrs::Doc::with_options(yrs_options);
-        let array = ydoc.get_or_insert_array("abc");
-        let mut trx = ydoc.transact_mut();
-        trx.apply_update(yrs::Update::decode_v1(&binary).unwrap()).unwrap();
+            let ydoc = yrs::Doc::with_options(yrs_options);
+            let array = ydoc.get_or_insert_array("abc");
+            let mut trx = ydoc.transact_mut();
+            trx.apply_update(yrs::Update::decode_v1(&binary).unwrap()).unwrap();
 
-        let config = assert_json_diff::Config::new(assert_json_diff::CompareMode::Strict)
-            .numeric_mode(assert_json_diff::NumericMode::AssumeFloat);
-        assert_json_diff::assert_json_matches!(array.to_json(&trx), json, config);
+            let config = assert_json_diff::Config::new(assert_json_diff::CompareMode::Strict)
+                .numeric_mode(assert_json_diff::NumericMode::AssumeFloat);
+            assert_json_diff::assert_json_matches!(array.to_json(&trx), json, config);
 
-        let mut doc = Doc::new();
-        let array = doc.get_or_create_array("abc").unwrap();
-        doc.apply_update_from_binary_v1(binary).unwrap();
+            let mut doc = Doc::new();
+            let array = doc.get_or_create_array("abc").unwrap();
+            doc.apply_update_from_binary_v1(binary).unwrap();
 
-        let list = array.iter().collect::<Vec<_>>();
+            let list = array.iter().collect::<Vec<_>>();
 
-        assert!(list.len() == 7);
-        assert!(matches!(list[6], Value::Array(_)));
+            assert!(list.len() == 7);
+            assert!(matches!(list[6], Value::Array(_)));
+        }
+
+        {
+            let binary_detached = {
+                let doc = Doc::new();
+                let mut array = doc.get_or_create_array("abc").unwrap();
+                array.insert(0, 42).unwrap();
+                array.insert(1, -42).unwrap();
+                array.insert(2, true).unwrap();
+                array.insert(3, false).unwrap();
+                array.insert(4, "hello").unwrap();
+                array.insert(5, "world").unwrap();
+
+                let mut sub_array = doc.create_array().unwrap();
+                sub_array.insert(0, 1).unwrap();
+                array.insert(6, sub_array.clone()).unwrap();
+
+                doc.encode_update_v1().unwrap()
+            };
+
+            let detached_doc = Doc::try_from_binary_v1(binary_detached).unwrap();
+            let detached_array = detached_doc.get_or_create_array("abc").unwrap();
+            let detached_sub_array = match detached_array.get(6).unwrap() {
+                Value::Array(arr) => arr,
+                _ => panic!("expected array at index 6"),
+            };
+            assert_eq!(detached_sub_array.get(0).unwrap(), Value::Any(1.0.into()));
+        }
     }
 
     #[test]
@@ -636,12 +680,27 @@ mod tests {
             let mut text = doc.get_or_create_text("text").unwrap();
             text.insert(0, "hello world").unwrap();
 
+            let mut root = doc.get_or_create_map("root").unwrap();
+            let mut child = doc.create_map().unwrap();
+            child.insert("k".to_string(), "v").unwrap();
+            root.insert("child".to_string(), child.clone()).unwrap();
+
             let update = doc.encode_update_v1().unwrap();
 
             let doc = Doc::try_from_binary_v1(update).unwrap();
             let text = doc.get_or_create_text("text").unwrap();
 
             assert_eq!(&text.to_string(), "hello world");
+
+            let root = doc.get_or_create_map("root").unwrap();
+            if let Some(Value::Map(child)) = root.get("child") {
+                assert!(
+                    matches!(child.get("k"), Some(Value::Any(Any::String(s))) if s == "v"),
+                    "expected nested map value to survive apply_update"
+                );
+            } else {
+                panic!("expected nested map to survive apply_update");
+            }
         });
     }
 
