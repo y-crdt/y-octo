@@ -23,7 +23,7 @@ ahash         = "0.8"
 byteorder     = "1.5"
 log           = "0.4"
 nanoid        = "0.4"
-nom           = "7.1"
+nom           = "8.0"
 ordered-float = "4.1"
 rand          = "0.8"
 rand_chacha   = "0.3"
@@ -36,7 +36,7 @@ thiserror     = "2.0"
 [features]
 bench      = []
 debug      = []
-default    = ["subscribe"]
+default    = []
 events     = []
 large_refs = []
 serde_json = []
