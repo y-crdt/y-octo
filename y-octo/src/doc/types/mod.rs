@@ -57,12 +57,8 @@ impl PartialEq for YType {
 
 impl PartialEq for YTypeRef {
     fn eq(&self, other: &Self) -> bool {
+        // Pointer identity only; avoids lock reentrancy and matches Hash.
         self.inner.ptr_eq(&other.inner)
-            || match (self.ty(), other.ty()) {
-                (Some(l), Some(r)) => *l == *r,
-                (None, None) => true,
-                _ => false,
-            }
     }
 }
 
