@@ -57,7 +57,8 @@ impl PartialEq for YType {
 
 impl PartialEq for YTypeRef {
     fn eq(&self, other: &Self) -> bool {
-        // Pointer identity only; avoids lock reentrancy and matches Hash.
+        // only check pointer equality
+        // currently no scenarios that involve cross document ytype comparisons
         self.inner.ptr_eq(&other.inner)
     }
 }
