@@ -21,6 +21,8 @@ phf         = { workspace = true, features = ["macros"], optional = true }
 rand        = { workspace = true }
 rand_chacha = { workspace = true }
 regex       = { workspace = true, optional = true }
+reqwest     = { workspace = true }
+serde_json  = { workspace = true }
 y-octo      = { workspace = true }
 yrs         = { workspace = true }
 
@@ -41,6 +43,10 @@ path = "bin/doc_merger.rs"
 [[bin]]
 name = "memory_leak_test"
 path = "bin/memory_leak_test.rs"
+
+[[bin]]
+name = "tg_notify"
+path = "bin/tg_notify.rs"
 
 [[bench]]
 harness = false

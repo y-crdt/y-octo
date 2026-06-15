@@ -1,0 +1,81 @@
+name: Daily Fuzzing
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 18 * * *"
+
+env:
+  nightly: nightly-2026-01-10
+  FUZZ_TARGETS: apply_update codec_doc_any_struct codec_doc_any decode_bytes i32_decode i32_encode ins_del_text sync_message u64_decode u64_encode
+  FUZZ_MAX_TOTAL_TIME: "900"
+
+concurrency:
+  group: daily-fuzzing
+  cancel-in-progress: false
+
+jobs:
+  fuzzing:
+    name: daily fuzzing
+    runs-on: ubuntu-latest
+    env:
+      RUSTFLAGS: -D warnings
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: ./.github/actions/setup-rust
+        with:
+          toolchain: ${{ env.nightly }}
+
+      - name: Restore fuzz corpus
+        uses: actions/cache/restore@v4
+        with:
+          path: ./y-octo-utils/fuzz/corpus
+          key: fuzz-corpus-${{ runner.os }}-daily-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            fuzz-corpus-${{ runner.os }}-daily-
+            fuzz-corpus-${{ runner.os }}-
+
+      - name: Run fuzz targets
+        id: fuzzing
+        continue-on-error: true
+        working-directory: ./y-octo-utils
+        run: |
+          cargo install cargo-fuzz
+          for target in $FUZZ_TARGETS; do
+            mkdir -p "fuzz/corpus/$target"
+            timeout --kill-after=30s 20m cargo +${{ env.nightly }} fuzz run "$target" -- -max_total_time="$FUZZ_MAX_TOTAL_TIME"
+          done
+
+      - name: Save fuzz corpus
+        if: ${{ always() && !cancelled() }}
+        uses: actions/cache/save@v4
+        with:
+          path: ./y-octo-utils/fuzz/corpus
+          key: fuzz-corpus-${{ runner.os }}-daily-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Upload fuzz artifacts
+        if: ${{ steps.fuzzing.outcome == 'failure' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifact-${{ github.run_id }}
+          path: ./y-octo-utils/fuzz/artifacts/**/*
+          if-no-files-found: ignore
+
+      - name: Notify Telegram on fuzz failure
+        if: ${{ steps.fuzzing.outcome == 'failure' }}
+        env:
+          TG_NOTIFY_SECRET: ${{ secrets.TG_FUZZ_NOTIFY_CONFIG }}
+          TG_NOTIFY_TEXT: |
+            y-octo daily fuzzing failed
+            Workflow: ${{ github.workflow }}
+            Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+            Ref: ${{ github.ref }}
+            Commit: ${{ github.sha }}
+        run: cargo run -p y-octo-utils --bin tg_notify
+
+      - name: Fail fuzzing job
+        if: ${{ steps.fuzzing.outcome == 'failure' }}
+        run: exit 1
