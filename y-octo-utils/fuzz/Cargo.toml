@@ -1,5 +1,5 @@
 [package]
-edition = "2021"
+edition = "2024"
 name    = "y-octo-fuzz"
 publish = false
 version = "0.0.0"
@@ -8,11 +8,11 @@ version = "0.0.0"
   cargo-fuzz = true
 
 [dependencies]
-lib0          = "=0.16.5"
+lib0          = "=0.16.10"
 libfuzzer-sys = "0.4"
-rand          = "0.8"
-rand_chacha   = "0.3"
-yrs           = "=0.16.5"
+rand          = "0.9"
+rand_chacha   = "0.9"
+yrs           = "=0.23.1"
 
 y-octo-utils = { path = "..", features = ["fuzz"] }
 
@@ -86,8 +86,3 @@ doc  = false
 name = "apply_update"
 path = "fuzz_targets/apply_update.rs"
 test = false
-
-[patch.crates-io]
-lib0   = { git = "https://github.com/toeverything/y-crdt", rev = "a700f09" }
-y-sync = { git = "https://github.com/toeverything/y-sync", rev = "5626851" }
-yrs    = { git = "https://github.com/toeverything/y-crdt", rev = "a700f09" }

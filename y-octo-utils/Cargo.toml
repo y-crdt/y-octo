@@ -14,22 +14,21 @@ fuzz    = ["arbitrary", "phf"]
 merger  = ["clap", "y-octo/large_refs"]
 
 [dependencies]
-arbitrary   = { version = "1.3", features = ["derive"], optional = true }
-clap        = { version = "4.4", features = ["derive"], optional = true }
-lib0        = { version = "=0.16.5", features = ["lib0-serde"] }
-phf         = { version = "0.11", features = ["macros"], optional = true }
-rand        = "0.8"
-rand_chacha = "0.3"
-regex       = { version = "1.10", optional = true }
+arbitrary   = { workspace = true, features = ["derive"], optional = true }
+clap        = { workspace = true, features = ["derive"], optional = true }
+lib0        = { workspace = true, features = ["lib0-serde"] }
+phf         = { workspace = true, features = ["macros"], optional = true }
+rand        = { workspace = true }
+rand_chacha = { workspace = true }
+regex       = { workspace = true, optional = true }
 y-octo      = { workspace = true }
-y-sync      = { workspace = true }
 yrs         = { workspace = true }
 
 [dev-dependencies]
-criterion       = { version = "0.5", features = ["html_reports"] }
-path-ext        = "0.1"
-proptest        = "1.3"
-proptest-derive = "0.5"
+criterion       = { workspace = true }
+path-ext        = { workspace = true }
+proptest        = { workspace = true }
+proptest-derive = { workspace = true }
 
 [[bin]]
 name = "bench_result_render"

@@ -311,7 +311,7 @@ mod tests {
 
         for i in 0..iteration {
             let mut rand: ChaCha20Rng = rand.clone();
-            let pos = rand.gen_range(0..text.len());
+            let pos = rand.random_range(0..text.len());
             let str = format!("hello {i}");
             len += str.len() as u64;
             text.insert(pos, str).unwrap();

@@ -57,11 +57,11 @@ mod tests {
 
         #[cfg(not(miri))]
         {
-            use rand::{Rng, thread_rng};
-            let mut rng = thread_rng();
+            use rand::{Rng, rng};
+            let mut rng = rng();
             for _ in 0..100 {
                 test_var_buf_enc_dec(&{
-                    let mut bytes = vec![0u8; rng.gen_range(0..u16::MAX as usize)];
+                    let mut bytes = vec![0u8; rng.random_range(0..u16::MAX as usize)];
                     rng.fill(&mut bytes[..]);
                     bytes
                 });

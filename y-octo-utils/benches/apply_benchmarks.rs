@@ -22,7 +22,7 @@ fn apply(c: &mut Criterion) {
                     use yrs::{Doc, Transact, Update, updates::decoder::Decode};
                     let update = Update::decode_v1(content).unwrap();
                     let doc = Doc::new();
-                    doc.transact_mut().apply_update(update);
+                    doc.transact_mut().apply_update(update).unwrap();
                 });
             },
         );

@@ -266,11 +266,7 @@ fn advance_text_position(store: &mut DocStore, pos: &mut TextPosition, mut remai
 }
 
 fn minimize_attribute_changes(pos: &mut TextPosition, attrs: &TextAttributes) {
-    loop {
-        let Some(item) = pos.right.get() else {
-            break;
-        };
-
+    while let Some(item) = pos.right.get() {
         if item.deleted() {
             pos.forward();
             continue;
@@ -345,11 +341,7 @@ fn insert_negated_attributes(
     pos: &mut TextPosition,
     mut negated: TextAttributes,
 ) -> JwstCodecResult {
-    loop {
-        let Some(item) = pos.right.get() else {
-            break;
-        };
-
+    while let Some(item) = pos.right.get() {
         if item.deleted() {
             pos.forward();
             continue;
@@ -531,7 +523,7 @@ mod tests {
     #[test]
     #[cfg(not(loom))]
     fn test_parallel_insert_text() {
-        let seed = rand::thread_rng().r#gen();
+        let seed = rand::rng().random();
         let rand = ChaCha20Rng::seed_from_u64(seed);
         let mut handles = Vec::new();
 
@@ -550,7 +542,7 @@ mod tests {
 
                 handles.push(thread::spawn(move || {
                     for j in 0..10 {
-                        let pos = rand.gen_range(0..text.len());
+                        let pos = rand.random_range(0..text.len());
                         let string = format!("hello {}", i * j);
 
                         text.insert(pos, &string).unwrap();
@@ -571,7 +563,7 @@ mod tests {
                 handles.push(thread::spawn(move || {
                     let mut text = doc.get_or_create_text("test").unwrap();
                     for j in 0..10 {
-                        let pos = rand.gen_range(0..text.len());
+                        let pos = rand.random_range(0..text.len());
                         let string = format!("hello doc{}", i * j);
 
                         text.insert(pos, &string).unwrap();
@@ -609,7 +601,7 @@ mod tests {
                     let len = len.clone();
                     let mut text = text.clone();
                     let ins = i % 2 == 0;
-                    let pos = rand.gen_range(0..16);
+                    let pos = rand.random_range(0..16);
 
                     if ins {
                         let str = format!("hello {}", i * j);
@@ -644,9 +636,9 @@ mod tests {
 
     #[test]
     fn loom_parallel_ins_del_text() {
-        let seed = rand::thread_rng().r#gen();
+        let seed = rand::rng().random();
         let mut rand = ChaCha20Rng::seed_from_u64(seed);
-        let ranges = (0..20).map(|_| rand.gen_range(0..16)).collect::<Vec<_>>();
+        let ranges = (0..20).map(|_| rand.random_range(0..16)).collect::<Vec<_>>();
 
         loom_model!({
             let doc = Doc::new();
@@ -701,7 +693,7 @@ mod tests {
             };
             // in loom loop
             #[allow(clippy::needless_borrow)]
-            let doc = Doc::try_from_binary_v1(binary).unwrap();
+            let doc = Doc::try_from_binary_v1(&binary).unwrap();
             let mut text = doc.get_or_create_text("greating").unwrap();
 
             assert_eq!(text.to_string(), "hello world");
