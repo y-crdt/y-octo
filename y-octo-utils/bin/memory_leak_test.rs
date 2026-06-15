@@ -14,7 +14,7 @@ fn run_text_test(seed: u64) {
     for i in 0..iteration {
         let mut text = text.clone();
         let ins = i % 2 == 0;
-        let pos = rand.gen_range(0..if ins { text.len() } else { len / 2 });
+        let pos = rand.random_range(0..if ins { text.len() } else { len / 2 });
         if ins {
             let str = format!("hello {i}");
             text.insert(pos, &str).unwrap();
@@ -41,7 +41,7 @@ fn run_array_test(seed: u64) {
     for i in 0..iteration {
         let mut array = array.clone();
         let ins = i % 2 == 0;
-        let pos = rand.gen_range(0..if ins { array.len() } else { len / 2 });
+        let pos = rand.random_range(0..if ins { array.len() } else { len / 2 });
         if ins {
             array.insert(pos, 1).unwrap();
             len += 1;
@@ -69,9 +69,9 @@ fn run_map_test() {
 }
 
 fn main() {
-    let mut rand = ChaCha20Rng::seed_from_u64(rand::thread_rng().r#gen());
+    let mut rand = ChaCha20Rng::seed_from_u64(rand::rng().random());
     for _ in 0..10000 {
-        let seed = rand.r#gen();
+        let seed = rand.random();
         run_array_test(seed);
         run_text_test(seed);
         run_map_test();

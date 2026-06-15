@@ -9,10 +9,35 @@ members = [
 resolver = "2"
 
   [workspace.dependencies]
-  y-octo       = { path = "./y-octo" }
-  y-octo-utils = { path = "./y-octo-utils" }
-  y-sync       = { git = "https://github.com/toeverything/y-sync", rev = "5626851" }
-  yrs          = { git = "https://github.com/toeverything/y-crdt", rev = "a700f09" }
+  ahash            = "0.8"
+  arbitrary        = { version = "1.3", features = ["derive"] }
+  assert-json-diff = "2.0"
+  async-lock       = { version = "3.4.0", features = ["loom"] }
+  byteorder        = "1.5"
+  clap             = { version = "4.4", features = ["derive"] }
+  criterion        = { version = "0.5", features = ["html_reports"] }
+  lib0             = { version = "0.16", features = ["lib0-serde"] }
+  log              = "0.4"
+  loom             = { version = "0.7", features = ["checkpoint"] }
+  nanoid           = "0.4"
+  nom              = "8"
+  ordered-float    = "5"
+  path-ext         = "0.1.2"
+  phf              = { version = "0.11", features = ["macros"] }
+  proptest         = "1.3"
+  proptest-derive  = "0.5"
+  rand             = "0.9"
+  rand_chacha      = "0.9"
+  rand_distr       = "0.5"
+  regex            = "1.10"
+  reqwest          = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+  serde            = "1"
+  serde_json       = "1"
+  smol_str         = "0.3"
+  thiserror        = "2"
+  y-octo           = { path = "./y-octo" }
+  y-octo-utils     = { path = "./y-octo-utils" }
+  yrs              = "0.23.0"
 
 [profile.release]
 codegen-units = 1
@@ -33,5 +58,4 @@ inherits = "fast-release"
 
 [patch.crates-io]
 lib0   = { git = "https://github.com/toeverything/y-crdt", rev = "a700f09" }
-y-sync = { git = "https://github.com/toeverything/y-sync", rev = "5626851" }
 yrs    = { git = "https://github.com/toeverything/y-crdt", rev = "a700f09" }

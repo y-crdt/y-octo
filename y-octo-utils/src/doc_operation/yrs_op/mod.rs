@@ -15,7 +15,7 @@ use xml_fragment::*;
 use xml_text::*;
 use yrs::{
     Array, ArrayPrelim, ArrayRef, Doc, GetString, Map, MapPrelim, MapRef, Text, TextPrelim, TextRef, Transact,
-    XmlFragment, XmlTextPrelim,
+    XmlFragment, XmlTextPrelim, XmlTextRef,
 };
 
 use super::*;
@@ -82,9 +82,11 @@ pub fn yrs_create_nest_type_from_root(doc: &yrs::Doc, target_type: CRDTNestType,
         CRDTNestType::Array => YrsNestType::ArrayType(doc.get_or_insert_array(key)),
         CRDTNestType::Map => YrsNestType::MapType(doc.get_or_insert_map(key)),
         CRDTNestType::Text => YrsNestType::TextType(doc.get_or_insert_text(key)),
-        CRDTNestType::XMLElement => YrsNestType::XMLElementType(doc.get_or_insert_xml_element(key)),
+        CRDTNestType::XMLElement => YrsNestType::XMLElementType(doc.get_or_insert_xml_fragment(key)),
         CRDTNestType::XMLFragment => YrsNestType::XMLFragmentType(doc.get_or_insert_xml_fragment(key)),
-        CRDTNestType::XMLText => YrsNestType::XMLTextType(doc.get_or_insert_xml_text(key)),
+        CRDTNestType::XMLText => {
+            YrsNestType::XMLTextType((AsRef::<XmlTextRef>::as_ref(&doc.get_or_insert_text(key))).clone())
+        }
     }
 }
 

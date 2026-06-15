@@ -8,7 +8,7 @@ fn insert_op(doc: &yrs::Doc, nest_input: &YrsNestType, params: CRDTParam) {
         _ => unreachable!(),
     };
     let mut trx = doc.transact_mut();
-    map.insert(&mut trx, params.key, params.value).unwrap();
+    map.insert(&mut trx, params.key, params.value);
 }
 
 fn remove_op(doc: &yrs::Doc, nest_input: &YrsNestType, params: CRDTParam) {
@@ -64,23 +64,20 @@ pub fn yrs_create_map_from_nest_type(
         }
     };
     let mut trx = doc.transact_mut();
-    let map_prelim = MapPrelim::<String>::from(HashMap::new());
+    let map_prelim = MapPrelim::from([("deepkey".to_owned(), "deepvalue")]);
     match current {
         YrsNestType::ArrayType(array) => {
             let index = cal_index(array.len(&trx));
-            Some(array.insert(&mut trx, index, map_prelim).unwrap())
+            Some(array.insert(&mut trx, index, map_prelim))
         }
-        YrsNestType::MapType(map) => Some(map.insert(&mut trx, key, map_prelim).unwrap()),
+        YrsNestType::MapType(map) => Some(map.insert(&mut trx, key, map_prelim)),
         YrsNestType::TextType(text) => {
             let str = text.get_string(&trx);
             let len = str.chars().fold(0, |acc, _| acc + 1);
             let index = random_pick_num(len, insert_pos) as usize;
             let byte_start_offset = str.chars().take(index).fold(0, |acc, ch| acc + ch.len_utf8());
 
-            Some(
-                text.insert_embed(&mut trx, byte_start_offset as u32, map_prelim)
-                    .unwrap(),
-            )
+            Some(text.insert_embed(&mut trx, byte_start_offset as u32, map_prelim))
         }
         YrsNestType::XMLTextType(xml_text) => {
             let str = xml_text.get_string(&trx);
@@ -88,11 +85,7 @@ pub fn yrs_create_map_from_nest_type(
             let index = random_pick_num(len, insert_pos) as usize;
             let byte_start_offset = str.chars().take(index).fold(0, |acc, ch| acc + ch.len_utf8());
 
-            Some(
-                xml_text
-                    .insert_embed(&mut trx, byte_start_offset as u32, map_prelim)
-                    .unwrap(),
-            )
+            Some(xml_text.insert_embed(&mut trx, byte_start_offset as u32, map_prelim))
         }
         _ => None,
     }

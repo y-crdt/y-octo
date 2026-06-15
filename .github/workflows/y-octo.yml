@@ -120,10 +120,10 @@ jobs:
   fuzzing:
     name: fuzzing
     runs-on: ubuntu-latest
-    continue-on-error: true
     env:
       RUSTFLAGS: -D warnings
       CARGO_TERM_COLOR: always
+      FUZZ_TARGETS: apply_update codec_doc_any_struct codec_doc_any decode_bytes i32_decode i32_encode ins_del_text sync_message u64_decode u64_encode
     steps:
       - uses: actions/checkout@v4
 
@@ -132,28 +132,55 @@ jobs:
         with:
           toolchain: ${{ env.nightly }}
 
+      - name: Restore fuzz corpus
+        uses: actions/cache/restore@v4
+        with:
+          path: ./y-octo-utils/fuzz/corpus
+          key: fuzz-corpus-${{ runner.os }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            fuzz-corpus-${{ runner.os }}-
+
       - name: fuzzing
+        id: fuzzing
+        continue-on-error: true
         working-directory: ./y-octo-utils
         run: |
           cargo install cargo-fuzz
-          cargo +${{ env.nightly }} fuzz run apply_update -- -max_total_time=30
-          cargo +${{ env.nightly }} fuzz run codec_doc_any_struct -- -max_total_time=30
-          cargo +${{ env.nightly }} fuzz run codec_doc_any -- -max_total_time=30
-          cargo +${{ env.nightly }} fuzz run decode_bytes -- -max_total_time=30
-          cargo +${{ env.nightly }} fuzz run i32_decode -- -max_total_time=30
-          cargo +${{ env.nightly }} fuzz run i32_encode -- -max_total_time=30
-          cargo +${{ env.nightly }} fuzz run ins_del_text -- -max_total_time=30
-          cargo +${{ env.nightly }} fuzz run sync_message -- -max_total_time=30
-          cargo +${{ env.nightly }} fuzz run u64_decode -- -max_total_time=30
-          cargo +${{ env.nightly }} fuzz run u64_encode -- -max_total_time=30
-          cargo +${{ env.nightly }} fuzz run apply_update -- -max_total_time=30
+          for target in $FUZZ_TARGETS; do
+            mkdir -p "fuzz/corpus/$target"
+            timeout --kill-after=30s 3m cargo +${{ env.nightly }} fuzz run "$target" -- -max_total_time=30
+          done
+
+      - name: Save fuzz corpus
+        if: ${{ always() && !cancelled() }}
+        uses: actions/cache/save@v4
+        with:
+          path: ./y-octo-utils/fuzz/corpus
+          key: fuzz-corpus-${{ runner.os }}-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: upload fuzz artifacts
-        if: ${{ failure() }}
+        if: ${{ steps.fuzzing.outcome == 'failure' }}
         uses: actions/upload-artifact@v4
         with:
           name: fuzz-artifact
           path: ./y-octo-utils/fuzz/artifacts/**/*
+          if-no-files-found: ignore
+
+      - name: Notify Telegram on fuzz failure
+        if: ${{ steps.fuzzing.outcome == 'failure' && github.event_name != 'pull_request' }}
+        env:
+          TG_NOTIFY_SECRET: ${{ secrets.TG_FUZZ_NOTIFY_CONFIG }}
+          TG_NOTIFY_TEXT: |
+            y-octo fuzzing failed
+            Workflow: ${{ github.workflow }}
+            Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+            Ref: ${{ github.ref }}
+            Commit: ${{ github.sha }}
+        run: cargo run -p y-octo-utils --bin tg_notify
+
+      - name: Fail fuzzing job
+        if: ${{ steps.fuzzing.outcome == 'failure' }}
+        run: exit 1
 
   miri:
     name: miri code check

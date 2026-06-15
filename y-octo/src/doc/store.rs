@@ -94,7 +94,7 @@ impl DocStore {
             if let Some(last_struct) = structs.back() {
                 last_struct.clock() + last_struct.len()
             } else {
-                warn!("client {} has no struct info", client);
+                warn!("client {client} has no struct info");
                 0
             }
         } else {
@@ -116,7 +116,7 @@ impl DocStore {
             if let Some(last_struct) = structs.back() {
                 state.insert(*client, last_struct.clock() + last_struct.len());
             } else {
-                warn!("client {} has no struct info", client);
+                warn!("client {client} has no struct info");
             }
         }
         state

@@ -10,7 +10,7 @@ fn insert_op(doc: &yrs::Doc, nest_input: &YrsNestType, params: CRDTParam) {
     let mut trx = doc.transact_mut();
     let len = array.len(&trx);
     let index = random_pick_num(len, &params.insert_pos);
-    array.insert(&mut trx, index, params.value).unwrap();
+    array.insert(&mut trx, index, params.value);
 }
 
 fn delete_op(doc: &yrs::Doc, nest_input: &YrsNestType, params: CRDTParam) {
@@ -22,7 +22,7 @@ fn delete_op(doc: &yrs::Doc, nest_input: &YrsNestType, params: CRDTParam) {
     let len = array.len(&trx);
     if len >= 1 {
         let index = random_pick_num(len - 1, &params.insert_pos);
-        array.remove(&mut trx, index).unwrap();
+        array.remove(&mut trx, index);
     }
 }
 
@@ -34,7 +34,7 @@ fn clear_op(doc: &yrs::Doc, nest_input: &YrsNestType, _params: CRDTParam) {
     let mut trx = doc.transact_mut();
     let len = array.len(&trx);
     for _ in 0..len {
-        array.remove(&mut trx, 0).unwrap();
+        array.remove(&mut trx, 0);
     }
 }
 
@@ -62,19 +62,16 @@ pub fn yrs_create_array_from_nest_type(
     match current {
         YrsNestType::ArrayType(array) => {
             let index = cal_index(array.len(&trx));
-            Some(array.insert(&mut trx, index, array_prelim).unwrap())
+            Some(array.insert(&mut trx, index, array_prelim))
         }
-        YrsNestType::MapType(map) => Some(map.insert(&mut trx, key, array_prelim).unwrap()),
+        YrsNestType::MapType(map) => Some(map.insert(&mut trx, key, array_prelim)),
         YrsNestType::TextType(text) => {
             let str = text.get_string(&trx);
             let len = str.chars().fold(0, |acc, _| acc + 1);
             let index = random_pick_num(len, insert_pos) as usize;
             let byte_start_offset = str.chars().take(index).fold(0, |acc, ch| acc + ch.len_utf8());
 
-            Some(
-                text.insert_embed(&mut trx, byte_start_offset as u32, array_prelim)
-                    .unwrap(),
-            )
+            Some(text.insert_embed(&mut trx, byte_start_offset as u32, array_prelim))
         }
         YrsNestType::XMLTextType(xml_text) => {
             let str = xml_text.get_string(&trx);
@@ -82,11 +79,7 @@ pub fn yrs_create_array_from_nest_type(
             let index = random_pick_num(len, insert_pos) as usize;
             let byte_start_offset = str.chars().take(index).fold(0, |acc, ch| acc + ch.len_utf8());
 
-            Some(
-                xml_text
-                    .insert_embed(&mut trx, byte_start_offset as u32, array_prelim)
-                    .unwrap(),
-            )
+            Some(xml_text.insert_embed(&mut trx, byte_start_offset as u32, array_prelim))
         }
         _ => None,
     }

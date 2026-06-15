@@ -12,7 +12,7 @@ fn operations(c: &mut Criterion) {
         let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(1234);
 
         let idxs = (0..99)
-            .map(|_| rng.gen_range(0..base_text.len() as u64))
+            .map(|_| rng.random_range(0..base_text.len() as u64))
             .collect::<Vec<_>>();
         b.iter(|| {
             use y_octo::*;
@@ -37,7 +37,7 @@ fn operations(c: &mut Criterion) {
             text.insert(0, base_text).unwrap();
             text.insert(0, base_text).unwrap();
             text.insert(0, base_text).unwrap();
-            for idx in (base_text.len() as u64)..0 {
+            for idx in (0..base_text.len() as u64).rev() {
                 text.remove(idx, 1).unwrap();
             }
         });
