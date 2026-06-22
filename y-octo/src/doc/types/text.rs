@@ -522,6 +522,40 @@ mod tests {
 
     #[test]
     #[cfg(not(loom))]
+    fn test_insert_before_leading_tombstone_converges() {
+        fn sync(from: &Doc, to: &mut Doc) {
+            let sv = to.get_state_vector();
+            let update = from.encode_state_as_update_v1(&sv).unwrap();
+            to.apply_update_from_binary_v1(update).unwrap();
+        }
+
+        let c0 = Doc::with_client(0);
+        let mut t0 = c0.get_or_create_text("text").unwrap();
+        let mut c1 = Doc::with_client(1);
+        let mut t1 = c1.get_or_create_text("text").unwrap();
+        let mut c2 = Doc::with_client(2);
+        let mut t2 = c2.get_or_create_text("text").unwrap();
+
+        t0.insert(0, "a").unwrap();
+        sync(&c0, &mut c1);
+        t1.insert(1, "b").unwrap();
+
+        t0.insert(1, "c").unwrap();
+        t0.remove(0, 1).unwrap();
+
+        sync(&c0, &mut c2);
+        t2.insert(0, "d").unwrap();
+
+        sync(&c1, &mut c2);
+        sync(&c2, &mut c1);
+
+        let s1 = t1.to_string();
+        let s2 = t2.to_string();
+        assert_eq!(s1, s2, "c1 and c2 diverged: {s1:?} vs {s2:?}");
+    }
+
+    #[test]
+    #[cfg(not(loom))]
     fn test_parallel_insert_text() {
         let seed = rand::rng().random();
         let rand = ChaCha20Rng::seed_from_u64(seed);
