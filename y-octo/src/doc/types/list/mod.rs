@@ -106,6 +106,7 @@ pub(crate) trait ListType: AsInner<Inner = YTypeRef> {
         // avoid the first item of the list being deleted
         while let Some(item) = pos.right.get() {
             if item.deleted() {
+                pos.left = pos.right.clone();
                 pos.right = item.right.clone();
                 continue;
             } else {
