@@ -1,8 +1,10 @@
 target
 .turbo
+.context
 .env
 .DS_Store
 *.db*
+*.md
 /data/*
 **/.next
 **/out
@@ -15,6 +17,9 @@ target
 **/*.xcodeproj
 **/*.xcworkspace
 Cargo.lock
+# The fuzz crate is a standalone workspace; its lockfile pins the toolchain
+# used by ClusterFuzzLite/OSS-Fuzz builds and must stay committed.
+!y-octo-utils/fuzz/Cargo.lock
 .pnp.*
 .yarn/*
 !.yarn/patches

@@ -191,6 +191,31 @@ impl OrderRange {
         }
     }
 
+    /// Ranges sorted by start with all continuous ranges merged, mirroring
+    /// what yjs does when encoding delete sets (sortAndMergeDeleteSet), so the
+    /// wire format stays canonical regardless of insertion or decoding order.
+    pub(crate) fn canonical_ranges(&self) -> Vec<Range<u64>> {
+        let mut ranges: Vec<Range<u64>> = self.into_iter().collect();
+        ranges.sort_by(|a, b| a.start.cmp(&b.start).then(a.end.cmp(&b.end)));
+
+        let mut merged: Vec<Range<u64>> = Vec::with_capacity(ranges.len());
+        for range in ranges {
+            // empty ranges delete nothing; dropping them keeps the wire
+            // format canonical (mirrors yjs' sortAndMergeDeleteSet)
+            if range.is_empty() {
+                continue;
+            }
+            match merged.last_mut() {
+                // ranges are sorted by start, so continuity only depends on the end
+                Some(last) if last.end >= range.start => {
+                    last.end = last.end.max(range.end);
+                }
+                _ => merged.push(range),
+            }
+        }
+        merged
+    }
+
     /// Merge all available ranges list into one.
     pub fn squash(&mut self) {
         // merge all available ranges

@@ -720,4 +720,22 @@ mod tests {
             doc.apply_update_from_binary_v1(&update).unwrap();
         }
     }
+
+    #[test]
+    fn test_reject_cyclic_type_nesting() {
+        // found by fuzzing (decode_doc_update): this corrupt update nests a
+        // type into its own descendant. Deleting items of such cyclic types
+        // used to re-lock an already held type lock and deadlock the thread;
+        // the update must be rejected instead.
+        let update = [
+            0x01, 0x07, 0x00, 0x00, 0x27, 0x07, 0x00, 0x00, 0x00, 0x00, 0x83, 0x00, 0x00, 0x00, 0x01, 0x73, 0x00, 0x00,
+            0x74, 0x00, 0x00, 0x61, 0x00, 0x01, 0x20, 0x01, 0x00, 0x00, 0x80, 0x00, 0x07, 0x01, 0x80, 0x00, 0x00, 0x00,
+            0x09, 0x00,
+        ];
+
+        assert!(matches!(
+            Doc::try_from_binary_v1(update),
+            Err(JwstCodecError::InvalidParent)
+        ));
+    }
 }

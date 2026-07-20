@@ -1,0 +1,5 @@
+# The ClusterFuzzLite build context is the repository root; keep build
+# artifacts and VCS data out of the docker image.
+**/.git
+**/target
+**/node_modules

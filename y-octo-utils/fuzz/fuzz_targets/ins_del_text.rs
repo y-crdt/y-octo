@@ -1,34 +1,52 @@
 #![no_main]
 
+use arbitrary::Arbitrary;
 use libfuzzer_sys::fuzz_target;
-use rand::{Rng, SeedableRng};
-use rand_chacha::ChaCha20Rng;
 use y_octo::*;
 
-fuzz_target!(|seed: u64| {
-  // println!("seed: {}", seed);
-  let doc = Doc::with_client(1);
-  let mut rand = ChaCha20Rng::seed_from_u64(seed);
-  let mut text = doc.get_or_create_text("test").unwrap();
-  text.insert(0, "This is a string with length 32.").unwrap();
+#[derive(Arbitrary, Debug)]
+enum TextOp {
+    Insert(u16, String),
+    Remove(u16, u8),
+}
 
-  let iteration = 20;
-  let mut len = 32;
+// Map arbitrary chars into printable ASCII so byte length, char count and
+// content length stay identical and the length invariant below holds.
+fn to_ascii(input: &str) -> String {
+    input.chars().map(|c| ((c as u8) % 94 + 32) as char).collect()
+}
 
-  for i in 0..iteration {
-    let mut text = text.clone();
-    let ins = i % 2 == 0;
-    let pos = rand.random_range(0..if ins { text.len() } else { len / 2 });
-    if ins {
-      let str = format!("hello {i}");
-      text.insert(pos, &str).unwrap();
-      len += str.len() as u64;
-    } else {
-      text.remove(pos, 6).unwrap();
-      len -= 6;
+fuzz_target!(|ops: Vec<TextOp>| {
+    let doc = Doc::with_client(1);
+    let mut text = doc.get_or_create_text("test").unwrap();
+    text.insert(0, "This is a string with length 32.").unwrap();
+
+    let mut len = 32u64;
+    for op in ops {
+        match op {
+            TextOp::Insert(pos, content) => {
+                let content = to_ascii(&content);
+                if content.is_empty() {
+                    continue;
+                }
+                // insert_at rejects index > len, so stay within [0, len]
+                let pos = pos as u64 % (len + 1);
+                text.insert(pos, &content).unwrap();
+                len += content.len() as u64;
+            }
+            TextOp::Remove(pos, remove_len) => {
+                if len == 0 {
+                    continue;
+                }
+                // remove_at rejects pos >= len; clamp the range to the tail
+                let pos = pos as u64 % len;
+                let remove_len = 1 + remove_len as u64 % (len - pos);
+                text.remove(pos, remove_len).unwrap();
+                len -= remove_len;
+            }
+        }
     }
-  }
 
-  assert_eq!(text.to_string().len(), len as usize);
-  assert_eq!(text.len(), len);
+    assert_eq!(text.to_string().len(), len as usize);
+    assert_eq!(text.len(), len);
 });

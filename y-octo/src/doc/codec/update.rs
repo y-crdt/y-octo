@@ -34,7 +34,13 @@ impl<R: CrdtReader> CrdtRead<R> for Update {
 
             for _ in 0..num_of_structs {
                 let struct_info = Node::read(decoder, Id::new(client, clock))?;
-                clock += struct_info.len();
+                // reject corrupt updates instead of overflowing the clock
+                clock = clock
+                    .checked_add(struct_info.len())
+                    .ok_or(JwstCodecError::StructClockInvalid {
+                        expect: clock,
+                        actually: u64::MAX,
+                    })?;
                 structs.push_back(struct_info);
             }
 
@@ -60,19 +66,29 @@ impl<R: CrdtReader> CrdtRead<R> for Update {
 
 impl<W: CrdtWriter> CrdtWrite<W> for Update {
     fn write(&self, encoder: &mut W) -> JwstCodecResult {
-        encoder.write_var_u64(self.structs.len() as u64)?;
-
         let mut clients = self.structs.keys().copied().collect::<Vec<_>>();
 
         // Descending
         clients.sort_by(|a, b| b.cmp(a));
 
-        for client in clients {
-            let structs = self.structs.get(&client).unwrap();
+        // Skip zero-length structs and clients left empty by that: they carry
+        // neither content nor deletions and apply() just drops them again, so
+        // emitting them would produce non-canonical updates.
+        let entries = clients
+            .into_iter()
+            .filter_map(|client| {
+                let structs = self.structs.get(&client).unwrap();
+                let structs = structs.iter().filter(|s| s.len() > 0).collect::<Vec<_>>();
+                (!structs.is_empty()).then_some((client, structs))
+            })
+            .collect::<Vec<_>>();
 
+        encoder.write_var_u64(entries.len() as u64)?;
+
+        for (client, structs) in entries {
             encoder.write_var_u64(structs.len() as u64)?;
             encoder.write_var_u64(client)?;
-            encoder.write_var_u64(structs.front().map(|s| s.clock()).unwrap_or(0))?;
+            encoder.write_var_u64(structs.first().map(|s| s.clock()).unwrap_or(0))?;
 
             for struct_info in structs {
                 struct_info.write(encoder)?;
@@ -142,7 +158,9 @@ impl Update {
             // structs[index + 1].id().clock
             let mut index = 0;
             let mut merged_index = vec![];
-            while index < structs.len() - 1 {
+            // a client may hold zero structs (e.g. all of them were skips),
+            // so compare with index + 1 instead of len() - 1 to avoid underflow
+            while index + 1 < structs.len() {
                 let cur = &structs[index];
                 let next = &structs[index + 1];
 

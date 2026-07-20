@@ -10,7 +10,12 @@ impl<R: CrdtReader> CrdtRead<R> for Range<u64> {
     fn read(decoder: &mut R) -> JwstCodecResult<Self> {
         let clock = decoder.read_var_u64()?;
         let len = decoder.read_var_u64()?;
-        Ok(clock..clock + len)
+        // reject corrupt ranges instead of overflowing the end clock
+        let end = clock.checked_add(len).ok_or(JwstCodecError::StructClockInvalid {
+            expect: clock,
+            actually: u64::MAX,
+        })?;
+        Ok(clock..end)
     }
 }
 
@@ -28,7 +33,8 @@ impl<R: CrdtReader> CrdtRead<R> for OrderRange {
         if num_of_deletes == 1 {
             Ok(OrderRange::Range(Range::<u64>::read(decoder)?))
         } else {
-            let mut deletes = VecDeque::with_capacity(num_of_deletes);
+            // See: [HASHMAP_SAFE_CAPACITY]
+            let mut deletes = VecDeque::with_capacity(num_of_deletes.min(HASHMAP_SAFE_CAPACITY));
 
             for _ in 0..num_of_deletes {
                 deletes.push_back(Range::<u64>::read(decoder)?);
@@ -41,17 +47,12 @@ impl<R: CrdtReader> CrdtRead<R> for OrderRange {
 
 impl<W: CrdtWriter> CrdtWrite<W> for OrderRange {
     fn write(&self, encoder: &mut W) -> JwstCodecResult {
-        match self {
-            OrderRange::Range(range) => {
-                encoder.write_var_u64(1)?;
-                range.write(encoder)?;
-            }
-            OrderRange::Fragment(ranges) => {
-                encoder.write_var_u64(ranges.len() as u64)?;
-                for range in ranges {
-                    range.write(encoder)?;
-                }
-            }
+        // canonicalize like yjs' sortAndMergeDeleteSet so the wire format is
+        // stable no matter how the ranges were inserted or decoded
+        let ranges = self.canonical_ranges();
+        encoder.write_var_u64(ranges.len() as u64)?;
+        for range in ranges {
+            range.write(encoder)?;
         }
 
         Ok(())
@@ -150,11 +151,19 @@ impl<R: CrdtReader> CrdtRead<R> for DeleteSet {
 
 impl<W: CrdtWriter> CrdtWrite<W> for DeleteSet {
     fn write(&self, encoder: &mut W) -> JwstCodecResult {
-        encoder.write_var_u64(self.len() as u64)?;
         let mut clients = self.keys().copied().collect::<Vec<_>>();
 
         // Descending
         clients.sort_by(|a, b| b.cmp(a));
+
+        // skip clients whose ranges canonicalize to nothing (e.g. only
+        // zero-length ranges), keeping the wire format minimal and stable
+        let clients = clients
+            .into_iter()
+            .filter(|client| !self.get(client).unwrap().canonical_ranges().is_empty())
+            .collect::<Vec<_>>();
+
+        encoder.write_var_u64(clients.len() as u64)?;
 
         for client in clients {
             encoder.write_var_u64(client)?;

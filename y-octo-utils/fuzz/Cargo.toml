@@ -8,10 +8,9 @@ version = "0.0.0"
   cargo-fuzz = true
 
 [dependencies]
+arbitrary     = { version = "1.3", features = ["derive"] }
 lib0          = "=0.16.10"
 libfuzzer-sys = "0.4"
-rand          = "0.9"
-rand_chacha   = "0.9"
 yrs           = "=0.23.1"
 
 y-octo-utils = { path = "..", features = ["fuzz"] }
@@ -42,6 +41,12 @@ test = false
 doc  = false
 name = "decode_bytes"
 path = "fuzz_targets/decode_bytes.rs"
+test = false
+
+[[bin]]
+doc  = false
+name = "decode_doc_update"
+path = "fuzz_targets/decode_doc_update.rs"
 test = false
 
 [[bin]]

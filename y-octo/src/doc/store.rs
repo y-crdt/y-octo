@@ -465,6 +465,41 @@ impl DocStore {
                 }
 
                 if let Some(Parent::Type(ty)) = &this.parent {
+                    // Corrupt updates may nest a type into itself or one of its
+                    // own descendants. Deleting items of such cyclic types
+                    // would re-lock an already held type lock and deadlock the
+                    // thread, so reject the cycle here instead.
+                    if let Content::Type(inner) = &this.content {
+                        if inner == ty {
+                            return Err(JwstCodecError::InvalidParent);
+                        }
+                        // When integrating from an update no type lock is held
+                        // yet, so the ancestry can be walked safely with read
+                        // locks. Mutation callers already hold the parent lock
+                        // and can only create direct loops, checked above.
+                        if parent.is_none() {
+                            let next_ancestor = |current: &YTypeRef| {
+                                current.ty().and_then(|t| {
+                                    t.item.get().and_then(|item| match &item.parent {
+                                        Some(Parent::Type(parent_ty)) => Some(parent_ty.clone()),
+                                        _ => None,
+                                    })
+                                })
+                            };
+                            let mut visited = HashSet::new();
+                            let mut ancestor = next_ancestor(ty);
+                            while let Some(current) = ancestor {
+                                if !visited.insert(current.clone()) {
+                                    break;
+                                }
+                                if current == *inner {
+                                    return Err(JwstCodecError::InvalidParent);
+                                }
+                                ancestor = next_ancestor(&current);
+                            }
+                        }
+                    }
+
                     let mut parent_lock: Option<RwLockWriteGuard<YType>> = None;
                     let parent = if let Some(p) = parent {
                         p

@@ -172,7 +172,9 @@ impl Item {
     pub fn last_id(&self) -> Id {
         let Id { client, clock } = self.id;
 
-        Id::new(client, clock + self.len() - 1)
+        // degenerate zero-length structs are accepted on decode; avoid
+        // underflowing when computing their last id
+        Id::new(client, clock + self.len().saturating_sub(1))
     }
 
     pub fn split_at(&self, offset: u64) -> JwstCodecResult<(Self, Self)> {
