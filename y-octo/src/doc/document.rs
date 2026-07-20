@@ -722,6 +722,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(loom, ignore)]
     fn test_reject_cyclic_type_nesting() {
         // found by fuzzing (decode_doc_update): this corrupt update nests a
         // type into its own descendant. Deleting items of such cyclic types
