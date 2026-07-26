@@ -321,14 +321,15 @@ impl Item {
                         encoder.write_item_id(id)?;
                     }
                     Parent::Type(ty) => {
-                        if let Some(ty) = ty.ty() {
-                            if let Some(item) = ty.item.get() {
-                                encoder.write_var_u64(0)?;
-                                encoder.write_item_id(&item.id)?;
-                            } else if let Some(name) = &ty.root_name {
-                                encoder.write_var_u64(1)?;
-                                encoder.write_var_string(name)?;
-                            }
+                        let ty = ty.ty().ok_or(JwstCodecError::InvalidParent)?;
+                        if let Some(item) = ty.item.get() {
+                            encoder.write_var_u64(0)?;
+                            encoder.write_item_id(&item.id)?;
+                        } else if let Some(name) = &ty.root_name {
+                            encoder.write_var_u64(1)?;
+                            encoder.write_var_string(name)?;
+                        } else {
+                            return Err(JwstCodecError::InvalidParent);
                         }
                     }
                 }

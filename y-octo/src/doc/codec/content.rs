@@ -195,13 +195,12 @@ impl Content {
                     .write_var_string(serde_json::to_string(value).map_err(|_| JwstCodecError::DamagedDocumentJson)?)?;
             }
             Self::Type(ty) => {
-                if let Some(ty) = ty.ty() {
-                    let type_ref = u64::from(ty.kind());
-                    encoder.write_var_u64(type_ref)?;
+                let ty = ty.ty().ok_or(JwstCodecError::InvalidStructType("released y type"))?;
+                let type_ref = u64::from(ty.kind());
+                encoder.write_var_u64(type_ref)?;
 
-                    if matches!(ty.kind(), YTypeKind::XMLElement | YTypeKind::XMLHook) {
-                        encoder.write_var_string(ty.name.as_ref().unwrap())?;
-                    }
+                if matches!(ty.kind(), YTypeKind::XMLElement | YTypeKind::XMLHook) {
+                    encoder.write_var_string(ty.name.as_ref().unwrap())?;
                 }
             }
             Self::Any(any) => {

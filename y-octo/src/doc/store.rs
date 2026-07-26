@@ -908,17 +908,7 @@ impl DocStore {
                             }
 
                             if !item.keep() {
-                                let parent_gced = matches!(&item.parent, Some(p) if {
-                                    if let Parent::Type(ty) = p {
-                                        if let Some(ty) = ty.ty() {
-                                            (ty.start.is_none() && ty.map.is_empty()) || ty.item.get().map(|item|item.deleted()).unwrap_or(false)
-                                        } else {
-                                            false
-                                        }
-                                    } else {
-                                        false
-                                    }
-                                });
+                                let parent_gced = Self::parent_is_gced(item);
                                 Self::gc_item(items, idx, parent_gced)?;
                             }
                         }
@@ -929,7 +919,44 @@ impl DocStore {
             }
         }
 
+        loop {
+            let mut replaced = 0usize;
+            for items in self.items.values_mut() {
+                for idx in 0..items.len() {
+                    let should_gc = match &items[idx] {
+                        Node::Item(item_ref) => item_ref
+                            .get()
+                            .is_some_and(|item| !item.keep() && Self::parent_is_gced(item)),
+                        _ => false,
+                    };
+                    if should_gc {
+                        Self::gc_item(items, idx, true)?;
+                        replaced += 1;
+                    }
+                }
+            }
+            if replaced == 0 {
+                break;
+            }
+        }
+
         Ok(())
+    }
+
+    fn parent_is_gced(item: &Item) -> bool {
+        let Some(Parent::Type(parent)) = &item.parent else {
+            return false;
+        };
+        let Some(parent) = parent.ty() else {
+            return true;
+        };
+
+        (parent.start.is_none() && parent.map.is_empty())
+            || parent
+                .item
+                .get()
+                .map(|item| item.deleted())
+                .unwrap_or(parent.root_name.is_none())
     }
 
     fn gc_item(items: &mut VecDeque<Node>, idx: usize, replace: bool) -> JwstCodecResult {
@@ -1388,6 +1415,25 @@ mod tests {
                 store.get_node((1, 7)).unwrap(), // " world" GCd
                 Node::new_gc((1, 6).into(), 6)
             );
+
+            let parent = YTypeRef::new(YTypeKind::Array, None);
+            let item = Somr::new(
+                ItemBuilder::new()
+                    .id((2, 8).into())
+                    .parent(Some(Parent::Type(parent.clone())))
+                    .content(Content::Any(vec![Any::Integer(1); 8]))
+                    .build(),
+            );
+            item.get().unwrap().delete();
+            parent.ty_mut().unwrap().start = item.clone();
+
+            let mut orphan_store = DocStore::with_client(2);
+            orphan_store.add_node(Node::new_gc((2, 0).into(), 8)).unwrap();
+            orphan_store.add_node(Node::Item(item)).unwrap();
+            orphan_store.delete_set.add_range(2, 0..8);
+            orphan_store.gc_delete_set().unwrap();
+
+            assert_eq!(orphan_store.get_node((2, 8)).unwrap(), Node::new_gc((2, 8).into(), 8));
         });
     }
 
