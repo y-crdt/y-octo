@@ -16,6 +16,6 @@ fn roundtrip(any: Any) {
 fuzz_target!(|data: Vec<(String, Any)>| {
     // Keys must be derived from the fuzz input as well; pulling them from a
     // thread-local rng makes runs non-deterministic and crashes irreproducible.
-    roundtrip(Any::Object(data.iter().cloned().collect()));
+    roundtrip(Any::Object(Box::new(data.iter().cloned().collect())));
     roundtrip(Any::Array(data.into_iter().map(|(_, value)| value).collect()));
 });

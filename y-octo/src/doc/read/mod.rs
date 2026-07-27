@@ -469,6 +469,8 @@ mod tests {
         doc::{DeleteSet, HashMap, Item, Node, Parent, Somr, YType, YTypeRef},
     };
 
+    type UpdateCase = (&'static str, fn() -> Vec<u8>);
+
     fn map_json(map: ReadMap<'_>) -> JsonValue {
         JsonValue::Object(
             map.iter()
@@ -916,7 +918,7 @@ mod tests {
     #[test]
     #[cfg_attr(loom, ignore)]
     fn updates_match_mutable_views() {
-        let cases: [(&str, fn() -> Vec<u8>); 13] = [
+        let cases: [UpdateCase; 13] = [
             ("empty", || Doc::new().encode_update_v1().unwrap()),
             ("any scalars and containers", any_spectrum_update),
             ("text with embeds", embed_text_update),
