@@ -436,10 +436,10 @@ mod tests {
 
     #[test]
     fn test_encode_state_as_update() {
-        let yrs_options_left = Options::default();
-        let yrs_options_right = Options::default();
+        loom_model!(64 << 10, {
+            let yrs_options_left = Options::default();
+            let yrs_options_right = Options::default();
 
-        loom_model!({
             let (binary, binary_new) = if cfg!(miri) {
                 let doc = Doc::new();
 
@@ -679,7 +679,7 @@ mod tests {
 
     #[test]
     fn test_update_from_vec_ref() {
-        loom_model!({
+        loom_model!(64 << 10, {
             let doc = Doc::new();
 
             let mut text = doc.get_or_create_text("text").unwrap();

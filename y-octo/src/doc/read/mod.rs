@@ -911,6 +911,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(loom, ignore)]
     fn updates_match_mutable_views() {
         let cases: [(&str, fn() -> Vec<u8>); 13] = [
             ("empty", || Doc::new().encode_update_v1().unwrap()),
@@ -936,6 +937,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(loom, ignore)]
     fn skip_structs_mark_snapshot_incomplete() {
         // merge fills coverage holes of a client with Skip structs, so an update
         // carrying a Skip can never resolve from an empty state: the read side
@@ -969,6 +971,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(loom, ignore)]
     fn random_multi_client_histories_match() {
         let mut rng = ChaCha8Rng::seed_from_u64(0x5EED);
 
@@ -1062,6 +1065,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(loom, ignore)]
     fn invalid_or_incomplete_updates_are_classified() {
         let mut dependent = Item::new(
             Id::new(1, 0),
@@ -1148,6 +1152,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(loom, ignore)]
     fn reads_map_array_text_and_nested_types() {
         let doc = Doc::new();
         let mut map = doc.get_or_create_map("map").unwrap();
@@ -1222,6 +1227,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(loom, ignore)]
     fn fixtures_match_mutable_views() {
         let fixtures: [&[u8]; 5] = [
             include_bytes!("../../fixtures/basic.bin"),

@@ -247,7 +247,7 @@ mod tests {
 
     #[test]
     fn test_content() {
-        loom_model!({
+        loom_model!(64 << 10, {
             let contents = [
                 Content::Deleted(42),
                 Content::Json(vec![None, Some("test_1".to_string()), Some("test_2".to_string())]),
@@ -320,6 +320,7 @@ mod tests {
     proptest! {
         #[test]
         #[cfg_attr(miri, ignore)]
+        #[cfg_attr(loom, ignore)]
         fn test_random_content(contents in vec(any::<Content>(), 0..10)) {
             for content in &contents {
                 content_round_trip(content).unwrap();
