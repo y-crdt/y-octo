@@ -719,9 +719,7 @@ impl DocStore {
                 let id = node.id();
 
                 if id.clock < end {
-                    if !node.deleted()
-                        && let Some(item) = node.as_item().get()
-                    {
+                    if !node.deleted() && node.is_item() {
                         // need to split the item
                         // -----item-----
                         //           ^end
@@ -729,7 +727,11 @@ impl DocStore {
                             DocStore::split_node_at(items, idx, end - id.clock)?;
                         }
 
-                        Self::delete_item_inner(&mut pending_delete_sets, &mut self.changed, item, None);
+                        // borrow after the split: split_node_at mutates the item in
+                        // place and would invalidate a guard acquired earlier
+                        if let Some(item) = node.as_item().get() {
+                            Self::delete_item_inner(&mut pending_delete_sets, &mut self.changed, item, None);
+                        }
                     }
                 } else {
                     break;
