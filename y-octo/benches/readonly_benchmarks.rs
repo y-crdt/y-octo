@@ -1,6 +1,7 @@
 use std::{
     alloc::{GlobalAlloc, Layout, System},
     fs,
+    hint::black_box,
     path::Path,
     sync::{
         Arc,
@@ -9,7 +10,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use y_octo::{Any, Doc, ReadDoc, Update};
 
 struct CountingAllocator;

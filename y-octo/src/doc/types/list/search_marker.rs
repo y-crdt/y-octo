@@ -228,7 +228,7 @@ impl MarkerList {
 #[cfg(test)]
 mod tests {
     #[cfg(not(loom))]
-    use rand::{Rng, SeedableRng};
+    use rand::{RngExt, SeedableRng};
     #[cfg(not(loom))]
     use rand_chacha::ChaCha20Rng;
     use yrs::{Array, Options, Transact};

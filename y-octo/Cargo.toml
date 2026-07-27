@@ -14,7 +14,7 @@ license = "MIT"
 name = "y-octo"
 readme = "README.md"
 repository = "https://github.com/toeverything/y-octo"
-version = "0.0.3"
+version = "0.1.0"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -26,7 +26,6 @@ nanoid        = { workspace = true }
 nom           = { workspace = true }
 ordered-float = { workspace = true }
 rand          = { workspace = true }
-rand_chacha   = { workspace = true }
 rand_distr    = { workspace = true }
 serde         = { workspace = true, features = ["derive"] }
 serde_json    = { workspace = true }
@@ -59,6 +58,7 @@ ordered-float    = { workspace = true, features = ["proptest"] }
 path-ext         = { workspace = true }
 proptest         = { workspace = true }
 proptest-derive  = { workspace = true }
+rand_chacha      = { workspace = true }
 yrs              = { workspace = true }
 
 [lints.rust]

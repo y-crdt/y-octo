@@ -57,7 +57,7 @@ mod tests {
 
         #[cfg(not(miri))]
         {
-            use rand::{Rng, rng};
+            use rand::{RngExt, rng};
             let mut rng = rng();
             for _ in 0..100 {
                 test_var_buf_enc_dec(&{

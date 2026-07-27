@@ -457,7 +457,7 @@ impl ReadDoc {
 mod tests {
     use std::collections::BTreeSet;
 
-    use rand::{Rng, SeedableRng};
+    use rand::{RngExt, SeedableRng};
     use rand_chacha::ChaCha8Rng;
     use serde_json::{Map as JsonMap, Value as JsonValue};
     use smol_str::SmolStr;
