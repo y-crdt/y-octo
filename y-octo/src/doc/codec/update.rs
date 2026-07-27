@@ -1,7 +1,7 @@
 use std::{collections::VecDeque, ops::Range};
 
 use super::*;
-use crate::doc::StateVector;
+use crate::doc::{StateVector, codec::decoder::v1 as decoder, find_missing_dependency};
 
 #[derive(Debug, Default, Clone)]
 pub struct Update {
@@ -18,49 +18,266 @@ pub struct Update {
     pub(crate) pending_delete_set: DeleteSet,
 }
 
-impl<R: CrdtReader> CrdtRead<R> for Update {
-    fn read(decoder: &mut R) -> JwstCodecResult<Self> {
-        let num_of_clients = decoder.read_var_u64()? as usize;
-
-        // See: [HASHMAP_SAFE_CAPACITY]
-        let mut map = ClientMap::with_capacity(num_of_clients.min(HASHMAP_SAFE_CAPACITY));
-        for _ in 0..num_of_clients {
-            let num_of_structs = decoder.read_var_u64()? as usize;
-            let client = decoder.read_var_u64()?;
-            let mut clock = decoder.read_var_u64()?;
-
-            // same reason as above
-            let mut structs = VecDeque::with_capacity(num_of_structs.min(HASHMAP_SAFE_CAPACITY));
-
-            for _ in 0..num_of_structs {
-                let struct_info = Node::read(decoder, Id::new(client, clock))?;
-                // reject corrupt updates instead of overflowing the clock
-                clock = clock
-                    .checked_add(struct_info.len())
-                    .ok_or(JwstCodecError::StructClockInvalid {
-                        expect: clock,
-                        actually: u64::MAX,
-                    })?;
-                structs.push_back(struct_info);
+impl<'a> CrdtRead<RawDecoder<'a>> for Update {
+    fn read(decoder: &mut RawDecoder<'a>) -> JwstCodecResult<Self> {
+        let update = decoder::decode(
+            decoder.rest_ref(),
+            OwnedUpdateSink::default(),
+            decoder::DecodeLimits::UNRESTRICTED,
+        )
+        .map_err(|error| match error {
+            decoder::Error::Codec(error) => error,
+            decoder::Error::Resource(name) => {
+                JwstCodecError::IncompleteDocument(format!("{name} exceeds platform size"))
             }
+        })?;
+        decoder.consume_rest();
+        Ok(update)
+    }
+}
 
-            structs.shrink_to_fit();
-            map.insert(client, structs);
+#[derive(Default)]
+struct OwnedUpdateSink {
+    update: Update,
+    json: Vec<Option<String>>,
+    content_any: Vec<Any>,
+    any_stack: Vec<AnyFrame>,
+    any_root: Option<Any>,
+}
+
+enum AnyFrame {
+    Object(HashMap<String, Any>, Option<String>),
+    Array(Vec<Any>),
+}
+
+impl OwnedUpdateSink {
+    fn push_any(&mut self, value: Any) -> decoder::Result<()> {
+        match self.any_stack.last_mut() {
+            Some(AnyFrame::Array(values)) => values.push(value),
+            Some(AnyFrame::Object(values, key)) => {
+                let key = key.take().ok_or_else(|| {
+                    decoder::Error::Codec(JwstCodecError::IncompleteDocument(
+                        "Any object value without key".into(),
+                    ))
+                })?;
+                values.insert(key, value);
+            }
+            None if self.any_root.is_none() => self.any_root = Some(value),
+            None => {
+                return Err(decoder::Error::Codec(JwstCodecError::IncompleteDocument(
+                    "multiple Any roots".into(),
+                )));
+            }
         }
+        Ok(())
+    }
+}
 
-        map.shrink_to_fit();
+impl<'a> decoder::Sink<'a> for OwnedUpdateSink {
+    type Output = Update;
+    type Content = Content;
+    type Any = Any;
 
-        let delete_set = DeleteSet::read(decoder)?;
+    fn begin_client(&mut self, client: u64, count: usize) -> decoder::Result<()> {
+        self.update
+            .structs
+            .insert(client, VecDeque::with_capacity(count.min(HASHMAP_SAFE_CAPACITY)));
+        Ok(())
+    }
 
-        if !decoder.is_empty() {
-            return Err(JwstCodecError::UpdateNotFullyConsumed(decoder.len() as usize));
+    fn gc(&mut self, id: Id, len: u64) -> decoder::Result<()> {
+        self.update
+            .structs
+            .get_mut(&id.client)
+            .unwrap()
+            .push_back(Node::new_gc(id, len));
+        Ok(())
+    }
+
+    fn skip(&mut self, id: Id, len: u64) -> decoder::Result<()> {
+        self.update
+            .structs
+            .get_mut(&id.client)
+            .unwrap()
+            .push_back(Node::new_skip(id, len));
+        Ok(())
+    }
+
+    fn item(&mut self, id: Id, _len: u64, meta: decoder::ItemMeta<'a>, content: Content) -> decoder::Result<()> {
+        let parent = match meta.parent {
+            decoder::WireParent::Root(name) => Some(Parent::String(SmolStr::new(name.value))),
+            decoder::WireParent::Item(id) => Some(Parent::Id(id)),
+            decoder::WireParent::Inherit => None,
+        };
+        let item = Somr::new(Item {
+            id,
+            origin_left_id: meta.origin_left,
+            origin_right_id: meta.origin_right,
+            left: Somr::none(),
+            right: Somr::none(),
+            parent,
+            parent_sub: meta.parent_sub.map(|value| SmolStr::new(value.value)),
+            flags: ItemFlag::from(if content.countable() {
+                item_flags::ITEM_COUNTABLE
+            } else {
+                0
+            }),
+            content,
+        });
+        if matches!(item.get().unwrap().content, Content::Deleted(_)) {
+            item.get().unwrap().flags.set_deleted();
         }
+        if let Content::Type(ty) = &item.get().unwrap().content
+            && let Some(mut ty) = ty.ty_mut()
+        {
+            ty.item = item.clone();
+        }
+        self.update
+            .structs
+            .get_mut(&id.client)
+            .unwrap()
+            .push_back(Node::Item(item));
+        Ok(())
+    }
 
-        Ok(Update {
-            structs: map,
-            delete_set,
-            ..Update::default()
+    fn content_atom(&mut self, atom: decoder::ContentAtom<'a>) -> decoder::Result<Content> {
+        Ok(match atom {
+            decoder::ContentAtom::Deleted(len) => Content::Deleted(len),
+            decoder::ContentAtom::Binary(value) => Content::Binary(value.value.to_vec()),
+            decoder::ContentAtom::String(value) => Content::String(value.value.to_string()),
+            decoder::ContentAtom::Embed(value) => Content::Embed(
+                serde_json::from_str(value.value)
+                    .map_err(|_| decoder::Error::Codec(JwstCodecError::DamagedDocumentJson))?,
+            ),
+            decoder::ContentAtom::Format { key, value } => Content::Format {
+                key: key.value.to_string(),
+                value: serde_json::from_str(value.value)
+                    .map_err(|_| decoder::Error::Codec(JwstCodecError::DamagedDocumentJson))?,
+            },
+            decoder::ContentAtom::Type { kind, tag } => Content::Type(YTypeRef::new(
+                YTypeKind::from(kind),
+                tag.map(|value| value.value.to_string()),
+            )),
         })
+    }
+
+    fn json_start(&mut self, count: usize) -> decoder::Result<()> {
+        self.json = Vec::with_capacity(count.min(HASHMAP_SAFE_CAPACITY));
+        Ok(())
+    }
+
+    fn json_value(&mut self, value: decoder::WireStr<'a>) -> decoder::Result<()> {
+        self.json
+            .push((value.value != "undefined").then(|| value.value.to_string()));
+        Ok(())
+    }
+
+    fn json_finish(&mut self) -> decoder::Result<Content> {
+        Ok(Content::Json(std::mem::take(&mut self.json)))
+    }
+
+    fn any_content_start(&mut self, count: usize) -> decoder::Result<()> {
+        self.content_any = Vec::with_capacity(count.min(HASHMAP_SAFE_CAPACITY));
+        Ok(())
+    }
+
+    fn any_content_value(&mut self, value: Any) -> decoder::Result<()> {
+        self.content_any.push(value);
+        Ok(())
+    }
+
+    fn any_content_finish(&mut self) -> decoder::Result<Content> {
+        Ok(Content::Any(std::mem::take(&mut self.content_any)))
+    }
+
+    fn doc_content(&mut self, guid: decoder::WireStr<'a>, options: Any) -> decoder::Result<Content> {
+        Ok(Content::Doc {
+            guid: guid.value.to_string(),
+            opts: options,
+        })
+    }
+
+    fn any_start(&mut self) -> decoder::Result<()> {
+        self.any_stack.clear();
+        self.any_root = None;
+        Ok(())
+    }
+
+    fn any_event(&mut self, event: decoder::AnyEvent<'a>) -> decoder::Result<()> {
+        match event {
+            decoder::AnyEvent::Undefined => self.push_any(Any::Undefined),
+            decoder::AnyEvent::Null => self.push_any(Any::Null),
+            decoder::AnyEvent::Integer(value) => self.push_any(Any::Integer(value)),
+            decoder::AnyEvent::Float32(value) => self.push_any(Any::Float32(value.into())),
+            decoder::AnyEvent::Float64(value) => self.push_any(Any::Float64(value.into())),
+            decoder::AnyEvent::BigInt64(value) => self.push_any(Any::BigInt64(value)),
+            decoder::AnyEvent::False => self.push_any(Any::False),
+            decoder::AnyEvent::True => self.push_any(Any::True),
+            decoder::AnyEvent::String(value) => self.push_any(Any::String(value.value.to_string())),
+            decoder::AnyEvent::Binary(value) => self.push_any(Any::Binary(value.value.to_vec())),
+            decoder::AnyEvent::BeginObject(count) => {
+                self.any_stack.push(AnyFrame::Object(
+                    HashMap::with_capacity(count.min(HASHMAP_SAFE_CAPACITY)),
+                    None,
+                ));
+                Ok(())
+            }
+            decoder::AnyEvent::ObjectKey(value) => match self.any_stack.last_mut() {
+                Some(AnyFrame::Object(_, key)) => {
+                    *key = Some(value.value.to_string());
+                    Ok(())
+                }
+                _ => Err(decoder::Error::Codec(JwstCodecError::IncompleteDocument(
+                    "Any object key outside object".into(),
+                ))),
+            },
+            decoder::AnyEvent::BeginArray(count) => {
+                self.any_stack
+                    .push(AnyFrame::Array(Vec::with_capacity(count.min(HASHMAP_SAFE_CAPACITY))));
+                Ok(())
+            }
+            decoder::AnyEvent::EndContainer => {
+                let frame = self.any_stack.pop().ok_or_else(|| {
+                    decoder::Error::Codec(JwstCodecError::IncompleteDocument(
+                        "Any container end without start".into(),
+                    ))
+                })?;
+                let value = match frame {
+                    AnyFrame::Object(values, None) => Any::Object(values),
+                    AnyFrame::Object(_, Some(_)) => {
+                        return Err(decoder::Error::Codec(JwstCodecError::IncompleteDocument(
+                            "Any object key without value".into(),
+                        )));
+                    }
+                    AnyFrame::Array(values) => Any::Array(values),
+                };
+                self.push_any(value)
+            }
+        }
+    }
+
+    fn any_finish(&mut self, _range: Range<usize>) -> decoder::Result<Any> {
+        if !self.any_stack.is_empty() {
+            return Err(decoder::Error::Codec(JwstCodecError::IncompleteDocument(
+                "unterminated Any container".into(),
+            )));
+        }
+        self.any_root
+            .take()
+            .ok_or_else(|| decoder::Error::Codec(JwstCodecError::IncompleteDocument("missing Any value".into())))
+    }
+
+    fn delete_range(&mut self, client: u64, range: Range<u64>) -> decoder::Result<()> {
+        self.update.delete_set.add_range(client, range);
+        Ok(())
+    }
+
+    fn finish(mut self) -> decoder::Result<Update> {
+        for structs in self.update.structs.values_mut() {
+            structs.shrink_to_fit();
+        }
+        self.update.structs.shrink_to_fit();
+        Ok(self.update)
     }
 }
 
@@ -296,35 +513,13 @@ impl<'a> UpdateIterator<'a> {
     /// tell if current update's dependencies(left, right, parent) has already
     /// been consumed and recorded and return the client of them if not.
     fn get_missing_dep(&self, struct_info: &Node) -> Option<Client> {
-        if let Some(item) = struct_info.as_item().get() {
-            let id = item.id;
-            if let Some(left) = &item.origin_left_id
-                && left.client != id.client
-                && left.clock >= self.state.get(&left.client)
-            {
-                return Some(left.client);
-            }
-
-            if let Some(right) = &item.origin_right_id
-                && right.client != id.client
-                && right.clock >= self.state.get(&right.client)
-            {
-                return Some(right.client);
-            }
-
-            if let Some(parent) = &item.parent {
-                match parent {
-                    Parent::Id(parent_id)
-                        if parent_id.client != id.client && parent_id.clock >= self.state.get(&parent_id.client) =>
-                    {
-                        return Some(parent_id.client);
-                    }
-                    _ => {}
-                }
-            }
-        }
-
-        None
+        let owner = struct_info.as_item();
+        let item = owner.get()?;
+        let parent = match &item.parent {
+            Some(Parent::Id(parent_id)) => Some(*parent_id),
+            _ => None,
+        };
+        find_missing_dependency(item.id, item.origin_left_id, item.origin_right_id, parent, &self.state)
     }
 
     fn next_candidate(&mut self) -> Option<Node> {

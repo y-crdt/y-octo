@@ -136,17 +136,6 @@ impl Any {
         Ok(())
     }
 
-    pub(crate) fn read_multiple<R: CrdtReader>(reader: &mut R) -> JwstCodecResult<Vec<Any>> {
-        let len = reader.read_var_u64()? as usize;
-        // See: [HASHMAP_SAFE_CAPACITY]
-        let mut vec = Vec::with_capacity(len.min(HASHMAP_SAFE_CAPACITY));
-        for _ in 0..len {
-            vec.push(Any::read(reader)?);
-        }
-
-        Ok(vec)
-    }
-
     pub(crate) fn write_multiple<W: CrdtWriter>(writer: &mut W, any: &[Any]) -> JwstCodecResult {
         writer.write_var_u64(any.len() as u64)?;
         for value in any {

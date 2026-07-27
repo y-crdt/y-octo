@@ -229,71 +229,10 @@ impl Item {
         info
     }
 
+    #[cfg(test)]
     pub fn is_valid(&self) -> bool {
         let has_id = self.origin_left_id.is_some() || self.origin_right_id.is_some();
         !has_id && self.parent.is_some() || has_id && self.parent.is_none() && self.parent_sub.is_none()
-    }
-
-    pub fn read<R: CrdtReader>(decoder: &mut R, id: Id, info: u8, first_5_bit: u8) -> JwstCodecResult<Self> {
-        let flags: ItemFlag = info.into();
-        let has_left_id = flags.check(item_flags::ITEM_HAS_LEFT_ID);
-        let has_right_id = flags.check(item_flags::ITEM_HAS_RIGHT_ID);
-        let has_parent_sub = flags.check(item_flags::ITEM_HAS_PARENT_SUB);
-        let has_not_sibling = flags.not(item_flags::ITEM_HAS_SIBLING);
-
-        // NOTE: read order must keep the same as the order in yjs
-        // TODO: this data structure design will break the cpu OOE, need to be optimized
-        let item = Self {
-            id,
-            origin_left_id: if has_left_id {
-                Some(decoder.read_item_id()?)
-            } else {
-                None
-            },
-            origin_right_id: if has_right_id {
-                Some(decoder.read_item_id()?)
-            } else {
-                None
-            },
-            parent: {
-                if has_not_sibling {
-                    let has_parent = decoder.read_var_u64()? == 1;
-                    Some(if has_parent {
-                        Parent::String(SmolStr::new(decoder.read_var_string()?))
-                    } else {
-                        Parent::Id(decoder.read_item_id()?)
-                    })
-                } else {
-                    None
-                }
-            },
-            parent_sub: if has_not_sibling && has_parent_sub {
-                Some(SmolStr::new(decoder.read_var_string()?))
-            } else {
-                None
-            },
-            content: {
-                // tag must not GC or Skip, this must process in parse_struct
-                debug_assert_ne!(first_5_bit, 0);
-                debug_assert_ne!(first_5_bit, 10);
-                Content::read(decoder, first_5_bit)?
-            },
-            left: Somr::none(),
-            right: Somr::none(),
-            flags: ItemFlag::from(0),
-        };
-
-        if item.content.countable() {
-            item.flags.set_countable();
-        }
-
-        if matches!(item.content, Content::Deleted(_)) {
-            item.flags.set_deleted();
-        }
-
-        debug_assert!(item.is_valid());
-
-        Ok(item)
     }
 
     pub fn write<W: CrdtWriter>(&self, encoder: &mut W) -> JwstCodecResult {
@@ -408,22 +347,23 @@ mod tests {
         if !item.is_valid() {
             return Ok(());
         }
+        if item.content.clock_len() == 0 || item.id.clock.checked_add(item.content.clock_len()).is_none() {
+            return Ok(());
+        }
 
         if item.content.countable() {
             item.flags.set_countable();
         }
 
-        let mut encoder = RawEncoder::default();
-        item.write(&mut encoder)?;
+        let mut update = Update::default();
+        update.structs.insert(item.id.client, [Node::from(item.clone())].into());
+        let decoded = Update::decode_v1(update.encode_v1()?)?;
+        let decoded_item = match decoded.structs.get(&item.id.client).unwrap().front().unwrap() {
+            Node::Item(item) => item.get().unwrap(),
+            _ => unreachable!(),
+        };
 
-        let update = encoder.into_inner();
-        let mut decoder = RawDecoder::new(&update);
-
-        let info = decoder.read_info()?;
-        let first_5_bit = info & 0b11111;
-        let decoded_item = Item::read(&mut decoder, item.id, info, first_5_bit)?;
-
-        assert_eq!(item, &decoded_item);
+        assert_eq!(item, decoded_item);
 
         Ok(())
     }

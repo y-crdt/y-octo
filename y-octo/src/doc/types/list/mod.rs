@@ -115,23 +115,20 @@ pub(crate) trait ListType: AsInner<Inner = YTypeRef> {
         }
 
         while remaining > 0 {
-            if let Some(item) = pos.right.get() {
-                if item.indexable() {
-                    let content_len = item.len();
-                    if remaining < content_len {
-                        pos.offset = remaining;
-                        remaining = 0;
-                    } else {
-                        pos.index += content_len;
-                        remaining -= content_len;
-                    }
+            let item = pos.right.get()?;
+            if item.indexable() {
+                let content_len = item.len();
+                if remaining < content_len {
+                    pos.offset = remaining;
+                    remaining = 0;
+                } else {
+                    pos.index += content_len;
+                    remaining -= content_len;
                 }
-
-                pos.left = pos.right.clone();
-                pos.right = item.right.clone();
-            } else {
-                return None;
             }
+
+            pos.left = pos.right.clone();
+            pos.right = item.right.clone();
         }
 
         Some(pos)

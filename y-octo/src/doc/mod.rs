@@ -7,8 +7,9 @@ mod hasher;
 mod history;
 #[cfg(feature = "events")]
 mod publisher;
+mod read;
 mod store;
-mod types;
+pub(crate) mod types;
 mod utils;
 
 pub use ahash::{HashMap, HashMapExt, HashSet, HashSetExt};
@@ -19,6 +20,7 @@ pub use common::*;
 pub use document::{Doc, DocOptions};
 pub use hasher::ClientMap;
 pub use history::{History, HistoryOptions, StoreHistory};
+pub use read::*;
 use smol_str::SmolStr;
 pub(crate) use store::DocStore;
 pub use types::*;

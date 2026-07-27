@@ -98,59 +98,6 @@ impl std::fmt::Debug for Content {
 }
 
 impl Content {
-    pub(crate) fn read<R: CrdtReader>(decoder: &mut R, tag_type: u8) -> JwstCodecResult<Self> {
-        match tag_type {
-            1 => Ok(Self::Deleted(decoder.read_var_u64()?)), // Deleted
-            2 => {
-                let len = decoder.read_var_u64()?;
-                let strings = (0..len)
-                    .map(|_| decoder.read_var_string().map(|s| (s != "undefined").then_some(s)))
-                    .collect::<Result<Vec<_>, _>>()?;
-
-                Ok(Self::Json(strings))
-            } // JSON
-            3 => Ok(Self::Binary(decoder.read_var_buffer()?.to_vec())), // Binary
-            4 => Ok(Self::String(decoder.read_var_string()?)), // String
-            5 => {
-                let string = decoder.read_var_string()?;
-                let json = serde_json::from_str(&string).map_err(|_| JwstCodecError::DamagedDocumentJson)?;
-
-                Ok(Self::Embed(json))
-            } // Embed
-            6 => {
-                let key = decoder.read_var_string()?;
-                let value = decoder.read_var_string()?;
-                let value = serde_json::from_str(&value).map_err(|_| JwstCodecError::DamagedDocumentJson)?;
-
-                Ok(Self::Format { key, value })
-            } // Format
-            7 => {
-                let type_ref = decoder.read_var_u64()?;
-                let kind = YTypeKind::from(type_ref);
-                let tag_name = match kind {
-                    YTypeKind::XMLElement | YTypeKind::XMLHook => Some(decoder.read_var_string()?),
-                    YTypeKind::Unknown => {
-                        return Err(JwstCodecError::IncompleteDocument(format!(
-                            "Unknown y type: {type_ref}"
-                        )));
-                    }
-                    _ => None,
-                };
-
-                Ok(Self::Type(YTypeRef::new(kind, tag_name)))
-            } // YType
-            8 => Ok(Self::Any(Any::read_multiple(decoder)?)), // Any
-            9 => {
-                let guid = decoder.read_var_string()?;
-                let opts = Any::read(decoder)?;
-                Ok(Self::Doc { guid, opts })
-            } // Doc
-            tag_type => Err(JwstCodecError::IncompleteDocument(format!(
-                "Unknown content type: {tag_type}"
-            ))),
-        }
-    }
-
     pub(crate) fn get_info(&self) -> u8 {
         match self {
             Self::Deleted(_) => 1,
@@ -237,7 +184,8 @@ impl Content {
     pub fn split(&self, diff: u64) -> JwstCodecResult<(Self, Self)> {
         match self {
             Self::String(str) => {
-                let (left, right) = Self::split_as_utf16_str(str.as_str(), diff);
+                let offset = utf16_offset_to_utf8(str, diff);
+                let (left, right) = str.split_at(offset);
                 Ok((Self::String(left.to_string()), Self::String(right.to_string())))
             }
             Self::Json(vec) => {
@@ -256,21 +204,6 @@ impl Content {
             _ => Err(JwstCodecError::ContentSplitNotSupport(diff)),
         }
     }
-
-    /// consider `offset` as a utf-16 encoded string offset
-    fn split_as_utf16_str(s: &str, offset: u64) -> (&str, &str) {
-        let mut utf_16_offset = 0;
-        let mut utf_8_offset = 0;
-        for ch in s.chars() {
-            utf_16_offset += ch.len_utf16();
-            utf_8_offset += ch.len_utf8();
-            if utf_16_offset as u64 >= offset {
-                break;
-            }
-        }
-
-        s.split_at(utf_8_offset)
-    }
 }
 
 #[cfg(test)]
@@ -280,14 +213,25 @@ mod tests {
     use super::*;
 
     fn content_round_trip(content: &Content) -> JwstCodecResult {
-        let mut writer = RawEncoder::default();
-        writer.write_u8(content.get_info())?;
-        content.write(&mut writer)?;
-        let update = writer.into_inner();
-
-        let mut reader = RawDecoder::new(&update);
-        let tag_type = reader.read_u8()?;
-        let decoded = Content::read(&mut reader, tag_type)?;
+        if content.clock_len() == 0 {
+            return Ok(());
+        }
+        let id = Id::new(1, 0);
+        let item = Item::new(
+            id,
+            content.clone(),
+            Somr::none(),
+            Somr::none(),
+            Some(Parent::String("root".into())),
+            None,
+        );
+        let mut update = Update::default();
+        update.structs.insert(1, [Node::from(item)].into());
+        let decoded = Update::decode_v1(update.encode_v1()?)?;
+        let decoded = match decoded.structs.get(&1).unwrap().front().unwrap() {
+            Node::Item(item) => item.get().unwrap().content.clone(),
+            _ => unreachable!(),
+        };
         match (&decoded, content) {
             (Content::Type(decoded_ty), Content::Type(original_ty)) => {
                 let decoded_ty = decoded_ty.ty().expect("decoded ytype must exist");

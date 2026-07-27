@@ -148,29 +148,9 @@ impl DocStore {
 
     /// binary search struct info on a sorted array
     pub fn get_node_index(items: &VecDeque<Node>, clock: Clock) -> Option<usize> {
-        if items.is_empty() {
-            return None;
-        }
-
-        let mut left = 0usize;
-        let mut right = items.len();
-
-        while left < right {
-            let middle_index = left + (right - left) / 2;
-            let middle = &items[middle_index];
-            let middle_clock = middle.clock();
-            let middle_end = middle_clock.saturating_add(middle.len());
-
-            if clock < middle_clock {
-                right = middle_index;
-            } else if clock >= middle_end {
-                left = middle_index + 1;
-            } else {
-                return Some(middle_index);
-            }
-        }
-
-        None
+        find_clock_segment(items.len(), clock, |index| {
+            items.get(index).map(|node| (node.clock(), node.len()))
+        })
     }
 
     pub fn create_item(
@@ -526,7 +506,7 @@ impl DocStore {
                     // conflicts
                     if left.is_none() && right_is_null_or_has_left || left_has_other_right_than_self {
                         // set the first conflicting item
-                        let mut conflict = if let Some(left) = left.get() {
+                        let conflict = if let Some(left) = left.get() {
                             left.right.clone()
                         } else if let Some(parent_sub) = &this.parent_sub {
                             parent.map.get(parent_sub).cloned().unwrap_or(Somr::none())
@@ -534,46 +514,28 @@ impl DocStore {
                             parent.start.clone()
                         };
 
-                        let mut conflicting_items = HashSet::new();
-                        let mut items_before_origin = HashSet::new();
-
-                        while conflict.is_some() {
-                            if conflict == right {
-                                break;
-                            }
-                            if let Some(conflict_item) = conflict.get() {
-                                let conflict_id = conflict_item.id;
-
-                                items_before_origin.insert(conflict_id);
-                                conflicting_items.insert(conflict_id);
-
-                                if this.origin_left_id == conflict_item.origin_left_id {
-                                    // case 1
-                                    if conflict_id.client < this.id.client {
-                                        left = conflict.clone();
-                                        conflicting_items.clear();
-                                    } else if this.origin_right_id == conflict_item.origin_right_id {
-                                        // `this` and `c` are conflicting and point to the same
-                                        // integration points. The id decides which item comes first.
-                                        // Since `this` is to the left of `c`, we can break here.
-                                        break;
-                                    }
-                                } else if let Some(conflict_item_left) = conflict_item.origin_left_id {
-                                    if items_before_origin.contains(&conflict_item_left)
-                                        && !conflicting_items.contains(&conflict_item_left)
-                                    {
-                                        left = conflict.clone();
-                                        conflicting_items.clear();
-                                    }
-                                } else {
-                                    break;
-                                }
-
-                                conflict = conflict_item.right.clone();
-                            } else {
-                                break;
-                            }
-                        }
+                        left = find_conflict_left(
+                            ConflictItem {
+                                id: this.id,
+                                origin_left: this.origin_left_id,
+                                origin_right: this.origin_right_id,
+                            },
+                            left.is_some().then(|| left.clone()),
+                            conflict.is_some().then(|| conflict.clone()),
+                            right.is_some().then(|| right.clone()),
+                            |item| {
+                                item.get().map(|item| ConflictItem {
+                                    id: item.id,
+                                    origin_left: item.origin_left_id,
+                                    origin_right: item.origin_right_id,
+                                })
+                            },
+                            |item| {
+                                item.get()
+                                    .and_then(|item| item.right.is_some().then(|| item.right.clone()))
+                            },
+                        )
+                        .unwrap_or_else(Somr::none);
                     }
 
                     // reconnect left/right

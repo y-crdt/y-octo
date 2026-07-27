@@ -1,7 +1,7 @@
-mod array;
+pub(crate) mod array;
 mod list;
-mod map;
-mod text;
+pub(crate) mod map;
+pub(crate) mod text;
 mod value;
 mod xml;
 

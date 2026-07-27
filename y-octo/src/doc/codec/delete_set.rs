@@ -1,47 +1,16 @@
 use std::{
-    collections::{VecDeque, hash_map::Entry},
+    collections::hash_map::Entry,
     ops::{Deref, DerefMut, Range},
 };
 
 use super::*;
 use crate::doc::OrderRange;
 
-impl<R: CrdtReader> CrdtRead<R> for Range<u64> {
-    fn read(decoder: &mut R) -> JwstCodecResult<Self> {
-        let clock = decoder.read_var_u64()?;
-        let len = decoder.read_var_u64()?;
-        // reject corrupt ranges instead of overflowing the end clock
-        let end = clock.checked_add(len).ok_or(JwstCodecError::StructClockInvalid {
-            expect: clock,
-            actually: u64::MAX,
-        })?;
-        Ok(clock..end)
-    }
-}
-
 impl<W: CrdtWriter> CrdtWrite<W> for Range<u64> {
     fn write(&self, encoder: &mut W) -> JwstCodecResult {
         encoder.write_var_u64(self.start)?;
         encoder.write_var_u64(self.end - self.start)?;
         Ok(())
-    }
-}
-
-impl<R: CrdtReader> CrdtRead<R> for OrderRange {
-    fn read(decoder: &mut R) -> JwstCodecResult<Self> {
-        let num_of_deletes = decoder.read_var_u64()? as usize;
-        if num_of_deletes == 1 {
-            Ok(OrderRange::Range(Range::<u64>::read(decoder)?))
-        } else {
-            // See: [HASHMAP_SAFE_CAPACITY]
-            let mut deletes = VecDeque::with_capacity(num_of_deletes.min(HASHMAP_SAFE_CAPACITY));
-
-            for _ in 0..num_of_deletes {
-                deletes.push_back(Range::<u64>::read(decoder)?);
-            }
-
-            Ok(OrderRange::Fragment(deletes))
-        }
     }
 }
 
@@ -132,23 +101,6 @@ impl DeleteSet {
     }
 }
 
-impl<R: CrdtReader> CrdtRead<R> for DeleteSet {
-    fn read(decoder: &mut R) -> JwstCodecResult<Self> {
-        let num_of_clients = decoder.read_var_u64()? as usize;
-        // See: [HASHMAP_SAFE_CAPACITY]
-        let mut map = ClientMap::with_capacity(num_of_clients.min(HASHMAP_SAFE_CAPACITY));
-
-        for _ in 0..num_of_clients {
-            let client = decoder.read_var_u64()?;
-            let deletes = OrderRange::read(decoder)?;
-            map.insert(client, deletes);
-        }
-
-        map.shrink_to_fit();
-        Ok(DeleteSet(map))
-    }
-}
-
 impl<W: CrdtWriter> CrdtWrite<W> for DeleteSet {
     fn write(&self, encoder: &mut W) -> JwstCodecResult {
         let mut clients = self.keys().copied().collect::<Vec<_>>();
@@ -226,11 +178,11 @@ mod tests {
     #[test]
     fn test_encode_decode() {
         let delete_set = DeleteSet::from([(1, vec![0..10, 20..30]), (2, vec![0..5, 10..20])]);
-        let mut encoder = RawEncoder::default();
-        delete_set.write(&mut encoder).unwrap();
-        let update = encoder.into_inner();
-        let mut decoder = RawDecoder::new(&update);
-        let decoded = DeleteSet::read(&mut decoder).unwrap();
-        assert_eq!(delete_set, decoded);
+        let update = Update {
+            delete_set: delete_set.clone(),
+            ..Update::default()
+        };
+        let decoded = Update::decode_v1(update.encode_v1().unwrap()).unwrap();
+        assert_eq!(delete_set, decoded.delete_set);
     }
 }

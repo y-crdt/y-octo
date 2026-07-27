@@ -61,33 +61,6 @@ impl Node {
         Self::GC(Box::new(NodeLen { id, len }))
     }
 
-    pub fn read<R: CrdtReader>(decoder: &mut R, id: Id) -> JwstCodecResult<Self> {
-        let info = decoder.read_info()?;
-        let first_5_bit = info & 0b11111;
-
-        match first_5_bit {
-            0 => {
-                let len = decoder.read_var_u64()?;
-                Ok(Node::new_gc(id, len))
-            }
-            10 => {
-                let len = decoder.read_var_u64()?;
-                Ok(Node::new_skip(id, len))
-            }
-            _ => {
-                let item = Somr::new(Item::read(decoder, id, info, first_5_bit)?);
-
-                if let Content::Type(ty) = &item.get().unwrap().content
-                    && let Some(mut ty) = ty.ty_mut()
-                {
-                    ty.item = item.clone();
-                }
-
-                Ok(Node::Item(item))
-            }
-        }
-    }
-
     pub fn id(&self) -> Id {
         match self {
             Node::GC(item) => item.id,
@@ -437,20 +410,21 @@ mod tests {
             ];
 
             for info in struct_infos {
-                let mut encoder = RawEncoder::default();
-                info.write(&mut encoder).unwrap();
+                let mut update = Update::default();
+                update.structs.insert(info.client(), [info.clone()].into());
+                let decoded = Update::decode_v1(update.encode_v1().unwrap()).unwrap();
+                let decoded = decoded.structs.get(&info.client()).unwrap().front().unwrap();
 
-                let update = encoder.into_inner();
-                let mut decoder = RawDecoder::new(&update);
-                let decoded = Node::read(&mut decoder, info.id()).unwrap();
-
-                assert_eq!(info, decoded);
+                assert_eq!(&info, decoded);
             }
         });
     }
 
     #[cfg(not(loom))]
     fn struct_info_round_trip(info: &mut Node) -> JwstCodecResult {
+        if info.len() == 0 || info.clock().checked_add(info.len()).is_none() {
+            return Ok(());
+        }
         if let Node::Item(item) = info
             && let Some(item) = item.get_mut()
         {
@@ -462,15 +436,12 @@ mod tests {
                 item.flags.set_countable();
             }
         }
-        let mut encoder = RawEncoder::default();
-        info.write(&mut encoder)?;
+        let mut update = Update::default();
+        update.structs.insert(info.client(), [info.clone()].into());
+        let decoded = Update::decode_v1(update.encode_v1()?)?;
+        let decoded = decoded.structs.get(&info.client()).unwrap().front().unwrap();
 
-        let ret = encoder.into_inner();
-        let mut decoder = RawDecoder::new(&ret);
-
-        let decoded = Node::read(&mut decoder, info.id())?;
-
-        assert_eq!(info, &decoded);
+        assert_eq!(info, decoded);
 
         Ok(())
     }

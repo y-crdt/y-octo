@@ -51,6 +51,12 @@ test = false
 
 [[bin]]
 doc  = false
+name = "decode_read_doc"
+path = "fuzz_targets/decode_read_doc.rs"
+test = false
+
+[[bin]]
+doc  = false
 name = "ins_del_text"
 path = "fuzz_targets/ins_del_text.rs"
 test = false

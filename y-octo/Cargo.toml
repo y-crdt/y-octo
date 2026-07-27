@@ -92,5 +92,9 @@ name    = "apply_benchmarks"
 harness = false
 name    = "update_benchmarks"
 
+[[bench]]
+harness = false
+name    = "readonly_benchmarks"
+
 [lib]
 bench = true

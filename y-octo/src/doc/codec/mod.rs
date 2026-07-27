@@ -1,5 +1,6 @@
 mod any;
 mod content;
+pub(crate) mod decoder;
 mod delete_set;
 mod id;
 mod io;
