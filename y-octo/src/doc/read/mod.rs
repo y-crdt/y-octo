@@ -1227,7 +1227,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(loom, ignore)]
+    #[cfg_attr(any(miri, loom), ignore)]
     fn fixtures_match_mutable_views() {
         let fixtures: [&[u8]; 5] = [
             include_bytes!("../../fixtures/basic.bin"),

@@ -10,12 +10,12 @@ fn process_duration(duration: &str) -> Option<(f64, f64)> {
     }
     let units = dur_split[1]
         .chars()
-        .skip_while(|c| c.is_ascii_digit())
+        .skip_while(|c| c.is_ascii_digit() || *c == '.')
         .collect::<String>();
     let dur_secs = dur_split[0].parse::<f64>().ok()?;
     let error_secs = dur_split[1]
         .chars()
-        .take_while(|c| c.is_ascii_digit())
+        .take_while(|c| c.is_ascii_digit() || *c == '.')
         .collect::<String>()
         .parse::<f64>()
         .ok()?;
