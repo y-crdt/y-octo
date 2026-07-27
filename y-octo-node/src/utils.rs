@@ -67,7 +67,7 @@ pub fn get_any_from_js_object(object: JsObject) -> Result<Any> {
                 }
             }
         }
-        Ok(Any::Object(map))
+        Ok(Any::Object(Box::new(map)))
     }
 }
 

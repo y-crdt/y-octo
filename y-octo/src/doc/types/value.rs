@@ -70,7 +70,7 @@ impl From<&Content> for Value {
                     .collect::<Vec<_>>(),
             )),
             Content::Binary(buf) => Value::Any(Any::Binary(buf.clone())),
-            Content::Embed(v) => Value::Any(v.clone()),
+            Content::Embed(v) => Value::Any(v.as_ref().clone()),
             Content::Type(ty) => match ty.ty().unwrap().kind {
                 YTypeKind::Array => Value::Array(Array::from_unchecked(ty.clone())),
                 YTypeKind::Map => Value::Map(Map::from_unchecked(ty.clone())),
@@ -83,7 +83,7 @@ impl From<&Content> for Value {
                 YTypeKind::Unknown => Value::Any(Any::Undefined),
             },
             Content::Doc { guid: _, opts } => Value::Doc(
-                DocOptions::try_from(opts.clone())
+                DocOptions::try_from(opts.as_ref().clone())
                     .expect("Failed to parse doc options")
                     .build(),
             ),
@@ -100,7 +100,7 @@ impl From<Value> for Content {
             Value::Any(any) => Content::from(any),
             Value::Doc(doc) => Content::Doc {
                 guid: doc.guid().to_owned(),
-                opts: Any::from(doc.options().clone()),
+                opts: Box::new(Any::from(doc.options().clone())),
             },
             Value::Array(v) => Content::Type(v.0),
             Value::Map(v) => Content::Type(v.0),

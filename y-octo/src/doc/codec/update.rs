@@ -103,7 +103,7 @@ impl<'a> decoder::Sink<'a> for OwnedUpdateSink {
         Ok(())
     }
 
-    fn item(&mut self, id: Id, _len: u64, meta: decoder::ItemMeta<'a>, content: Content) -> decoder::Result<()> {
+    fn item(&mut self, id: Id, len: u64, meta: decoder::ItemMeta<'a>, content: Content) -> decoder::Result<()> {
         let parent = match meta.parent {
             decoder::WireParent::Root(name) => Some(Parent::String(SmolStr::new(name.value))),
             decoder::WireParent::Item(id) => Some(Parent::Id(id)),
@@ -111,6 +111,7 @@ impl<'a> decoder::Sink<'a> for OwnedUpdateSink {
         };
         let item = Somr::new(Item {
             id,
+            len,
             origin_left_id: meta.origin_left,
             origin_right_id: meta.origin_right,
             left: Somr::none(),
@@ -145,14 +146,16 @@ impl<'a> decoder::Sink<'a> for OwnedUpdateSink {
             decoder::ContentAtom::Deleted(len) => Content::Deleted(len),
             decoder::ContentAtom::Binary(value) => Content::Binary(value.value.to_vec()),
             decoder::ContentAtom::String(value) => Content::String(value.value.to_string()),
-            decoder::ContentAtom::Embed(value) => Content::Embed(
+            decoder::ContentAtom::Embed(value) => Content::Embed(Box::new(
                 serde_json::from_str(value.value)
                     .map_err(|_| decoder::Error::Codec(JwstCodecError::DamagedDocumentJson))?,
-            ),
+            )),
             decoder::ContentAtom::Format { key, value } => Content::Format {
                 key: key.value.to_string(),
-                value: serde_json::from_str(value.value)
-                    .map_err(|_| decoder::Error::Codec(JwstCodecError::DamagedDocumentJson))?,
+                value: Box::new(
+                    serde_json::from_str(value.value)
+                        .map_err(|_| decoder::Error::Codec(JwstCodecError::DamagedDocumentJson))?,
+                ),
             },
             decoder::ContentAtom::Type { kind, tag } => Content::Type(YTypeRef::new(
                 YTypeKind::from(kind),
@@ -193,7 +196,7 @@ impl<'a> decoder::Sink<'a> for OwnedUpdateSink {
     fn doc_content(&mut self, guid: decoder::WireStr<'a>, options: Any) -> decoder::Result<Content> {
         Ok(Content::Doc {
             guid: guid.value.to_string(),
-            opts: options,
+            opts: Box::new(options),
         })
     }
 
@@ -243,7 +246,7 @@ impl<'a> decoder::Sink<'a> for OwnedUpdateSink {
                     ))
                 })?;
                 let value = match frame {
-                    AnyFrame::Object(values, None) => Any::Object(values),
+                    AnyFrame::Object(values, None) => Any::Object(Box::new(values)),
                     AnyFrame::Object(_, Some(_)) => {
                         return Err(decoder::Error::Codec(JwstCodecError::IncompleteDocument(
                             "Any object key without value".into(),

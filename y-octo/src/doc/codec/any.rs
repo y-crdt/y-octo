@@ -27,7 +27,7 @@ pub enum Any {
     String(String),
     // FIXME: due to macro's overflow evaluating, we can't use proptest here
     #[cfg_attr(test, proptest(skip))]
-    Object(HashMap<String, Any>),
+    Object(Box<HashMap<String, Any>>),
     #[cfg_attr(test, proptest(skip))]
     Array(Vec<Any>),
     Binary(Vec<u8>),
@@ -53,7 +53,7 @@ impl<R: CrdtReader> CrdtRead<R> for Any {
                     .map(|_| Self::read_key_value(reader))
                     .collect::<Result<Vec<_>, _>>()?;
 
-                Ok(Any::Object(object.into_iter().collect()))
+                Ok(Any::Object(Box::new(object.into_iter().collect())))
             } // Object
             10 => {
                 let len = reader.read_var_u64()?;
@@ -100,7 +100,7 @@ impl<W: CrdtWriter> CrdtWrite<W> for Any {
             Any::Object(value) => {
                 writer.write_u8(127 - 9)?;
                 writer.write_var_u64(value.len() as u64)?;
-                for (key, value) in value {
+                for (key, value) in value.iter() {
                     Self::write_key_value(writer, key, value)?;
                 }
             }
@@ -258,7 +258,7 @@ impl TryFrom<Any> for HashMap<String, Any> {
 
     fn try_from(value: Any) -> Result<Self, Self::Error> {
         match value {
-            Any::Object(map) => Ok(map),
+            Any::Object(map) => Ok(*map),
             _ => Err(JwstCodecError::UnexpectedType("Object")),
         }
     }
@@ -303,13 +303,13 @@ impl FromIterator<(String, Any)> for Any {
     fn from_iter<I: IntoIterator<Item = (String, Any)>>(iter: I) -> Self {
         let mut map = HashMap::new();
         map.extend(iter);
-        Self::Object(map)
+        Self::Object(Box::new(map))
     }
 }
 
 impl From<HashMap<String, Any>> for Any {
     fn from(value: HashMap<String, Any>) -> Self {
-        Self::Object(value)
+        Self::Object(Box::new(value))
     }
 }
 
@@ -355,7 +355,9 @@ impl From<serde_json::Value> for Any {
             }
             serde_json::Value::String(s) => Self::String(s),
             serde_json::Value::Array(vec) => Self::Array(vec.into_iter().map(|v| v.into()).collect::<Vec<_>>()),
-            serde_json::Value::Object(obj) => Self::Object(obj.into_iter().map(|(k, v)| (k, v.into())).collect()),
+            serde_json::Value::Object(obj) => {
+                Self::Object(Box::new(obj.into_iter().map(|(k, v)| (k, v.into())).collect()))
+            }
         }
     }
 }
@@ -453,9 +455,9 @@ impl<'de> serde::Deserialize<'de> for Any {
                             values.insert(key, value);
                         }
 
-                        Ok(Any::Object(values))
+                        Ok(Any::Object(Box::new(values)))
                     }
-                    None => Ok(Any::Object(HashMap::new())),
+                    None => Ok(Any::Object(Box::default())),
                 }
             }
         }
@@ -545,29 +547,32 @@ mod tests {
 
     #[test]
     fn test_any_codec() {
-        let any = Any::Object(
+        #[cfg(target_pointer_width = "64")]
+        assert_eq!(std::mem::size_of::<Any>(), 32);
+
+        let any = Any::Object(Box::new(
             vec![
                 ("name".to_string(), Any::String("Alice".to_string())),
                 ("age".to_string(), Any::Integer(25)),
                 (
                     "contacts".to_string(),
                     Any::Array(vec![
-                        Any::Object(
+                        Any::Object(Box::new(
                             vec![
                                 ("type".to_string(), Any::String("Mobile".to_string())),
                                 ("number".to_string(), Any::String("1234567890".to_string())),
                             ]
                             .into_iter()
                             .collect(),
-                        ),
-                        Any::Object(
+                        )),
+                        Any::Object(Box::new(
                             vec![
                                 ("type".to_string(), Any::String("Email".to_string())),
                                 ("address".to_string(), Any::String("alice@example.com".to_string())),
                             ]
                             .into_iter()
                             .collect(),
-                        ),
+                        )),
                         Any::Undefined,
                     ]),
                 ),
@@ -582,7 +587,7 @@ mod tests {
                         Any::BigInt64(-1145141919810),
                         Any::False,
                         Any::True,
-                        Any::Object(
+                        Any::Object(Box::new(
                             vec![
                                 ("name".to_string(), Any::String("tadokoro".to_string())),
                                 ("age".to_string(), Any::String("24".to_string())),
@@ -590,14 +595,14 @@ mod tests {
                             ]
                             .into_iter()
                             .collect(),
-                        ),
+                        )),
                         Any::Binary(vec![1, 2, 3, 4, 5]),
                     ]),
                 ),
             ]
             .into_iter()
             .collect(),
-        );
+        ));
 
         let mut encoder = RawEncoder::default();
         any.write(&mut encoder).unwrap();
@@ -672,7 +677,10 @@ mod tests {
 
         assert_eq!(
             vec![("key".to_string(), 10u64.into())].into_iter().collect::<Any>(),
-            Any::Object(HashMap::from_iter(vec![("key".to_string(), Any::Integer(10))]))
+            Any::Object(Box::new(HashMap::from_iter(vec![(
+                "key".to_string(),
+                Any::Integer(10)
+            )])))
         );
 
         let any: Any = 10u64.into();

@@ -71,14 +71,14 @@ impl Text {
                         if is_nullish(value) {
                             attrs.remove(key.as_str());
                         } else {
-                            attrs.insert(key.to_string(), value.clone());
+                            attrs.insert(key.to_string(), value.as_ref().clone());
                         }
                     }
                     Content::String(text) => {
                         push_insert(&mut ops, TextInsert::Text(text.clone()), &attrs);
                     }
                     Content::Embed(embed) => {
-                        push_insert(&mut ops, TextInsert::Embed(vec![embed.clone()]), &attrs);
+                        push_insert(&mut ops, TextInsert::Embed(vec![embed.as_ref().clone()]), &attrs);
                     }
                     Content::Any(any) => {
                         push_insert(&mut ops, TextInsert::Embed(any.clone()), &attrs);
@@ -121,7 +121,7 @@ impl Text {
                                     &mut store,
                                     &mut ty,
                                     &mut pos,
-                                    Content::Embed(value.clone()),
+                                    Content::Embed(Box::new(value.clone())),
                                     attrs.clone(),
                                 )?;
                             }
@@ -193,7 +193,7 @@ impl TextPosition {
                     if is_nullish(value) {
                         self.attrs.remove(key.as_str());
                     } else {
-                        self.attrs.insert(key.to_string(), value.clone());
+                        self.attrs.insert(key.to_string(), value.as_ref().clone());
                     }
                 } else if right.countable() {
                     self.index += right.len();
@@ -274,7 +274,7 @@ fn minimize_attribute_changes(pos: &mut TextPosition, attrs: &TextAttributes) {
 
         if let Content::Format { key, value } = &item.content {
             let attr = attrs.get(key.as_str()).cloned().unwrap_or(Any::Null);
-            if attr == *value {
+            if attr == **value {
                 pos.forward();
                 continue;
             }
@@ -327,7 +327,7 @@ fn insert_attributes(
             pos,
             Content::Format {
                 key: key.to_string(),
-                value: value.clone(),
+                value: Box::new(value.clone()),
             },
         )?;
     }
@@ -349,7 +349,7 @@ fn insert_negated_attributes(
 
         if let Content::Format { key, value } = &item.content
             && let Some(negated_value) = negated.get(key.as_str())
-            && negated_value == value
+            && negated_value == value.as_ref()
         {
             negated.remove(key.as_str());
             pos.forward();
@@ -366,7 +366,7 @@ fn insert_negated_attributes(
             pos,
             Content::Format {
                 key: key.to_string(),
-                value,
+                value: Box::new(value),
             },
         )?;
     }
@@ -422,10 +422,10 @@ fn format_text(
         match &item.content {
             Content::Format { key, value } => {
                 if let Some(attr) = attrs.get(key.as_str()) {
-                    if attr == value {
+                    if attr == value.as_ref() {
                         negated.remove(key.as_str());
                     } else {
-                        negated.insert(key.to_string(), value.clone());
+                        negated.insert(key.to_string(), value.as_ref().clone());
                     }
                     store.delete_item(item, Some(ty));
                     pos.forward();

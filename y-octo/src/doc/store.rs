@@ -221,7 +221,8 @@ impl DocStore {
             unsafe {
                 let mut left_item = item_ref.get_mut_unchecked();
                 let mut right_item = right_ref.get_mut_unchecked();
-                left_item.content = left_ref.get_unchecked().content.clone();
+                left_item
+                    .replace_content_with_len(left_ref.get_unchecked().content.clone(), left_ref.get_unchecked().len());
 
                 // we had the correct left/right content
                 // now build the references
@@ -441,7 +442,8 @@ impl DocStore {
                         this.origin_left_id = left_ref.get().map(|left| left.last_id());
                         this.left = left_ref;
                     }
-                    this.content = this.content.split(offset)?.1;
+                    let right_content = this.content.split(offset)?.1;
+                    this.replace_content_with_len(right_content, this.len - offset);
                 }
 
                 if let Some(Parent::Type(ty)) = &this.parent {
@@ -939,7 +941,8 @@ impl DocStore {
                 let _ = mem::replace(&mut items[idx], Node::new_gc(item.id, item.len()));
             } else {
                 let mut item = unsafe { item_ref.get_mut_unchecked() };
-                item.content = Content::Deleted(item.len());
+                let len = item.len();
+                item.replace_content(Content::Deleted(len));
                 item.flags.clear_countable();
                 debug_assert!(!item.flags.countable());
             }

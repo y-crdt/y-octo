@@ -14,6 +14,8 @@ pub(crate) enum Parent {
 #[cfg_attr(all(test, not(loom)), derive(proptest_derive::Arbitrary))]
 pub(crate) struct Item {
     pub id: Id,
+    #[cfg_attr(all(test, not(loom)), proptest(value = "0"))]
+    pub(crate) len: u64,
     pub origin_left_id: Option<Id>,
     pub origin_right_id: Option<Id>,
     #[cfg_attr(all(test, not(loom)), proptest(value = "Somr::none()"))]
@@ -79,6 +81,7 @@ impl Default for Item {
     fn default() -> Self {
         Self {
             id: Id::default(),
+            len: 0,
             origin_left_id: None,
             origin_right_id: None,
             left: Somr::none(),
@@ -100,6 +103,7 @@ impl Item {
         parent: Option<Parent>,
         parent_sub: Option<SmolStr>,
     ) -> Self {
+        let len = content.clock_len();
         let flags = ItemFlag::from(if content.countable() {
             item_flags::ITEM_COUNTABLE
         } else {
@@ -108,6 +112,7 @@ impl Item {
 
         Self {
             id,
+            len,
             origin_left_id: left.get().map(|left| left.last_id()),
             left,
             origin_right_id: right.get().map(|right| right.id),
@@ -140,7 +145,18 @@ impl Item {
     }
 
     pub fn len(&self) -> u64 {
-        self.content.clock_len()
+        self.len
+    }
+
+    pub(crate) fn replace_content(&mut self, content: Content) {
+        let len = content.clock_len();
+        self.replace_content_with_len(content, len);
+    }
+
+    pub(crate) fn replace_content_with_len(&mut self, content: Content, len: u64) {
+        debug_assert_eq!(content.clock_len(), len);
+        self.content = content;
+        self.len = len;
     }
 
     pub fn deleted(&self) -> bool {
@@ -344,6 +360,7 @@ mod tests {
 
     #[cfg(not(loom))]
     fn item_round_trip(item: &mut Item) -> JwstCodecResult {
+        item.len = item.content.clock_len();
         if !item.is_valid() {
             return Ok(());
         }

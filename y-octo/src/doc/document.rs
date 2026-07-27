@@ -9,13 +9,74 @@ use super::{
 use crate::sync::{Arc, RwLock};
 
 #[cfg(feature = "debug")]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct DocStoreStatus {
+    pub clients: usize,
     pub nodes: usize,
+    pub items: usize,
+    pub gc_nodes: usize,
+    pub skip_nodes: usize,
+    pub deleted_items: usize,
+    pub type_contents: usize,
+    pub any_contents: usize,
+    pub string_contents: usize,
+    pub json_contents: usize,
+    pub binary_contents: usize,
+    pub deleted_contents: usize,
+    pub other_contents: usize,
     pub delete_sets: usize,
     pub types: usize,
     pub dangling_types: usize,
     pub pending_nodes: usize,
+    pub changed_types: usize,
+    pub changed_keys: usize,
+}
+
+#[cfg(feature = "debug")]
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct DocMemoryLayout {
+    pub id: usize,
+    pub option_id: usize,
+    pub parent: usize,
+    pub content: usize,
+    pub any: usize,
+    pub item: usize,
+    pub item_ref: usize,
+    pub item_allocation: usize,
+    pub node: usize,
+    pub node_len: usize,
+    pub y_type: usize,
+    pub y_type_ref: usize,
+}
+
+#[cfg(feature = "debug")]
+pub fn memory_layout() -> DocMemoryLayout {
+    use std::mem::size_of;
+
+    DocMemoryLayout {
+        id: size_of::<Id>(),
+        option_id: size_of::<Option<Id>>(),
+        parent: size_of::<Parent>(),
+        content: size_of::<Content>(),
+        any: size_of::<Any>(),
+        item: size_of::<Item>(),
+        item_ref: size_of::<ItemRef>(),
+        item_allocation: size_of::<SomrInner<Item>>(),
+        node: size_of::<Node>(),
+        node_len: size_of::<NodeLen>(),
+        y_type: size_of::<YType>(),
+        y_type_ref: size_of::<YTypeRef>(),
+    }
+}
+
+#[cfg(feature = "debug")]
+pub fn reset_profiling_counters() {
+    reset_clock_len_counters();
+}
+
+#[cfg(feature = "debug")]
+pub fn profiling_counters() -> (u64, u64, u64) {
+    clock_len_counters()
 }
 
 /// [DocOptions] used to create a new [Doc]
@@ -83,10 +144,10 @@ impl DocOptions {
 
 impl From<DocOptions> for Any {
     fn from(value: DocOptions) -> Self {
-        Any::Object(HashMap::from_iter([
+        Any::Object(Box::new(HashMap::from_iter([
             ("gc".into(), value.gc.into()),
             ("guid".into(), value.guid.into()),
-        ]))
+        ])))
     }
 }
 
@@ -97,7 +158,7 @@ impl TryFrom<Any> for DocOptions {
         match value {
             Any::Object(map) => {
                 let mut options = DocOptions::default();
-                for (key, value) in map {
+                for (key, value) in *map {
                     match key.as_str() {
                         "gc" => {
                             options.gc = bool::try_from(value)?;
@@ -192,13 +253,55 @@ impl Doc {
     pub fn store_status(&self) -> DocStoreStatus {
         let store = self.store.read().unwrap();
 
-        DocStoreStatus {
+        let mut status = DocStoreStatus {
+            clients: store.items.len(),
             nodes: store.total_nodes(),
+            items: 0,
+            gc_nodes: 0,
+            skip_nodes: 0,
+            deleted_items: 0,
+            type_contents: 0,
+            any_contents: 0,
+            string_contents: 0,
+            json_contents: 0,
+            binary_contents: 0,
+            deleted_contents: 0,
+            other_contents: 0,
             delete_sets: store.total_delete_sets(),
             types: store.total_types(),
             dangling_types: store.total_dangling_types(),
             pending_nodes: store.total_pending_nodes(),
+            changed_types: store.changed.len(),
+            changed_keys: store.changed.values().map(Vec::len).sum(),
+        };
+
+        for node in store.items.values().flatten() {
+            match node {
+                Node::GC(_) => status.gc_nodes += 1,
+                Node::Skip(_) => status.skip_nodes += 1,
+                Node::Item(item) => {
+                    status.items += 1;
+                    let item = unsafe { item.get_unchecked() };
+                    status.deleted_items += usize::from(item.deleted());
+                    match &item.content {
+                        Content::Type(_) => status.type_contents += 1,
+                        Content::Any(_) => status.any_contents += 1,
+                        Content::String(_) => status.string_contents += 1,
+                        Content::Json(_) => status.json_contents += 1,
+                        Content::Binary(_) => status.binary_contents += 1,
+                        Content::Deleted(_) => status.deleted_contents += 1,
+                        _ => status.other_contents += 1,
+                    }
+                }
+            }
         }
+
+        status
+    }
+
+    #[cfg(feature = "debug")]
+    pub fn clear_change_tracking(&self) {
+        self.store.write().unwrap().changed.clear();
     }
 
     pub(crate) fn get_changed(&self) -> ChangedTypeRefs {

@@ -642,13 +642,16 @@ mod tests {
         .unwrap();
         map.insert(
             "object".into(),
-            Any::Object(HashMap::from_iter([
+            Any::Object(Box::new(HashMap::from_iter([
                 ("nested".into(), Any::Array(vec![Any::Null, Any::Undefined])),
                 (
                     "deep".into(),
-                    Any::Object(HashMap::from_iter([("leaf".into(), Any::Float64(0.5.into()))])),
+                    Any::Object(Box::new(HashMap::from_iter([(
+                        "leaf".into(),
+                        Any::Float64(0.5.into()),
+                    )]))),
                 ),
-            ])),
+            ]))),
         )
         .unwrap();
         let mut array = doc.get_or_create_array("array").unwrap();
@@ -689,7 +692,7 @@ mod tests {
                     0,
                     Content::Doc {
                         guid: "sub".into(),
-                        opts: Any::from(DocOptions::new().with_guid("sub".into())),
+                        opts: Box::new(Any::from(DocOptions::new().with_guid("sub".into()))),
                     },
                     "docs",
                     Some("sub"),

@@ -224,6 +224,7 @@ impl Node {
                 let mut litem = unsafe { lref.get_mut_unchecked() };
                 let mut ritem = unsafe { rref.get_mut_unchecked() };
                 let llen = litem.len();
+                let rlen = ritem.len();
 
                 let parent_kind = match &litem.parent {
                     Some(Parent::Type(ty)) => ty.ty().map(|ty| ty.kind()),
@@ -280,6 +281,7 @@ impl Node {
                     litem.flags.set_keep()
                 }
 
+                litem.len += rlen;
                 litem.right = ritem.right.clone();
                 unsafe {
                     if litem.right.is_some() {

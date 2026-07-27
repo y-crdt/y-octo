@@ -467,10 +467,13 @@ mod tests {
             Any::String("hello 😀".into()),
             Any::Binary(vec![0, 159, 146, 150]),
             Any::Array(vec![Any::Integer(1), "two".into(), Any::True]),
-            Any::Object(HashMap::from_iter([(
+            Any::Object(Box::new(HashMap::from_iter([(
                 "deep".into(),
-                Any::Object(HashMap::from_iter([("leaf".into(), Any::Float64(0.5.into()))])),
-            )])),
+                Any::Object(Box::new(HashMap::from_iter([(
+                    "leaf".into(),
+                    Any::Float64(0.5.into()),
+                )]))),
+            )]))),
         ];
         let cases = [
             ("null", (|value| value.is_null()) as fn(ReadAny) -> bool),

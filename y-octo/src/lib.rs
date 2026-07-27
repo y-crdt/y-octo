@@ -14,6 +14,8 @@ pub use doc::{
     types::{array::Array, map::Map, text::Text},
 };
 pub(crate) use doc::{Content, Item};
+#[cfg(feature = "debug")]
+pub use doc::{DocMemoryLayout, memory_layout, profiling_counters, reset_profiling_counters};
 use log::{debug, warn};
 use nom::IResult;
 pub use protocol::{

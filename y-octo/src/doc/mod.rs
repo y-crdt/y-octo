@@ -18,6 +18,8 @@ pub use batch::{Batch, batch_commit};
 pub use codec::*;
 pub use common::*;
 pub use document::{Doc, DocOptions};
+#[cfg(feature = "debug")]
+pub use document::{DocMemoryLayout, memory_layout, profiling_counters, reset_profiling_counters};
 pub use hasher::ClientMap;
 pub use history::{History, HistoryOptions, StoreHistory};
 pub use read::*;

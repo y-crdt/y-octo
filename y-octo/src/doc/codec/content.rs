@@ -1,4 +1,30 @@
+#[cfg(feature = "debug")]
+use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
+
 use super::*;
+
+#[cfg(feature = "debug")]
+static CLOCK_LEN_CALLS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "debug")]
+static STRING_CLOCK_LEN_CALLS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "debug")]
+static STRING_BYTES_SCANNED: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(feature = "debug")]
+pub(crate) fn clock_len_counters() -> (u64, u64, u64) {
+    (
+        CLOCK_LEN_CALLS.load(AtomicOrdering::Relaxed),
+        STRING_CLOCK_LEN_CALLS.load(AtomicOrdering::Relaxed),
+        STRING_BYTES_SCANNED.load(AtomicOrdering::Relaxed),
+    )
+}
+
+#[cfg(feature = "debug")]
+pub(crate) fn reset_clock_len_counters() {
+    CLOCK_LEN_CALLS.store(0, AtomicOrdering::Relaxed);
+    STRING_CLOCK_LEN_CALLS.store(0, AtomicOrdering::Relaxed);
+    STRING_BYTES_SCANNED.store(0, AtomicOrdering::Relaxed);
+}
 
 #[derive(Clone)]
 #[cfg_attr(test, derive(proptest_derive::Arbitrary))]
@@ -8,18 +34,18 @@ pub(crate) enum Content {
     Binary(Vec<u8>),
     String(String),
     #[cfg_attr(test, proptest(skip))]
-    Embed(Any),
+    Embed(Box<Any>),
     #[cfg_attr(test, proptest(skip))]
     Format {
         key: String,
-        value: Any,
+        value: Box<Any>,
     },
     #[cfg_attr(test, proptest(skip))]
     Type(YTypeRef),
     Any(Vec<Any>),
     Doc {
         guid: String,
-        opts: Any,
+        opts: Box<Any>,
     },
 }
 
@@ -162,6 +188,14 @@ impl Content {
     }
 
     pub fn clock_len(&self) -> u64 {
+        #[cfg(feature = "debug")]
+        {
+            CLOCK_LEN_CALLS.fetch_add(1, AtomicOrdering::Relaxed);
+            if let Self::String(string) = self {
+                STRING_CLOCK_LEN_CALLS.fetch_add(1, AtomicOrdering::Relaxed);
+                STRING_BYTES_SCANNED.fetch_add(string.len() as u64, AtomicOrdering::Relaxed);
+            }
+        }
         match self {
             Self::Deleted(len) => *len,
             Self::Json(strings) => strings.len() as u64,
@@ -247,16 +281,19 @@ mod tests {
 
     #[test]
     fn test_content() {
+        #[cfg(target_pointer_width = "64")]
+        assert_eq!(std::mem::size_of::<Content>(), 40);
+
         loom_model!(64 << 10, {
             let contents = [
                 Content::Deleted(42),
                 Content::Json(vec![None, Some("test_1".to_string()), Some("test_2".to_string())]),
                 Content::Binary(vec![1, 2, 3]),
                 Content::String("hello".to_string()),
-                Content::Embed(Any::True),
+                Content::Embed(Box::new(Any::True)),
                 Content::Format {
                     key: "key".to_string(),
-                    value: Any::Integer(42),
+                    value: Box::new(Any::Integer(42)),
                 },
                 Content::Type(YTypeRef::new(YTypeKind::Array, None)),
                 Content::Type(YTypeRef::new(YTypeKind::Map, None)),
@@ -268,7 +305,7 @@ mod tests {
                 Content::Any(vec![Any::BigInt64(42), Any::String("Test Any".to_string())]),
                 Content::Doc {
                     guid: "my_guid".to_string(),
-                    opts: Any::BigInt64(42),
+                    opts: Box::new(Any::BigInt64(42)),
                 },
             ];
 
@@ -293,6 +330,19 @@ mod tests {
             assert_eq!(left, Content::String("h".to_string()));
             assert_eq!(right, Content::String("ello".to_string()));
         }
+
+        let item = Item::new(
+            Id::new(1, 0),
+            Content::String("a😀b".to_string()),
+            Somr::none(),
+            Somr::none(),
+            Some(Parent::String("text".into())),
+            None,
+        );
+        let (left, right) = item.split_at(3).unwrap();
+        assert_eq!((item.len(), left.len(), right.len()), (4, 3, 1));
+        assert_eq!(left.content, Content::String("a😀".to_string()));
+        assert_eq!(right.content, Content::String("b".to_string()));
 
         {
             let (left, right) = contents[1].split(1).unwrap();
