@@ -71,8 +71,10 @@ pub fn read_var_i32(input: &[u8]) -> IResult<&[u8], i32> {
         }
 
         // negate the number if the sign bit is set
+        // wrapping: adversarial inputs can set bit 63 via wrapping_shl, making
+        // num == i64::MIN, where plain negation would overflow
         if sign_bit == 1 {
-            num = -num;
+            num = num.wrapping_neg();
         }
 
         Ok((rest, num as i32))
@@ -162,5 +164,19 @@ mod tests {
         test_var_int_enc_dec(i32::MIN);
         test_var_int_enc_dec(((1 << 20) - 1) * 8);
         test_var_int_enc_dec(-((1 << 20) - 1) * 8);
+    }
+
+    #[test]
+    fn test_var_int_decode_malformed_no_panic() {
+        // sign bit set and enough continuation bytes for wrapping_shl to set
+        // bit 63, making the accumulated i64 value i64::MIN before negation
+        let mut input = vec![0b1100_0000];
+        input.extend([0b1000_0000; 8]);
+        input.push(0b0000_0010);
+        let (rest, _) = read_var_i32(&input).unwrap();
+        assert_eq!(rest.len(), 0);
+
+        // unterminated continuation bytes
+        assert!(read_var_i32(&[0b1111_1111; 16]).is_err());
     }
 }
