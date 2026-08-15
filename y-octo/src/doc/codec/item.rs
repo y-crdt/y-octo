@@ -219,11 +219,13 @@ impl Item {
             self.parent_sub.clone(),
         );
 
-        if left_item.deleted() {
+        if self.deleted() {
             left_item.flags.set_deleted();
+            right_item.flags.set_deleted();
         }
-        if left_item.keep() {
+        if self.keep() {
             left_item.flags.set_keep();
+            right_item.flags.set_keep();
         }
 
         Ok((left_item, right_item))
@@ -394,5 +396,45 @@ mod tests {
                 item_round_trip(item).unwrap();
             }
         }
+    }
+
+    #[test]
+    #[cfg(not(loom))]
+    fn split_at_inherits_flags() {
+        let build = || {
+            Item::new(
+                Id::new(1, 0),
+                Content::String("abc".into()),
+                Somr::none(),
+                Somr::none(),
+                Some(Parent::String("t".into())),
+                None,
+            )
+        };
+
+        let (left, right) = build().split_at(1).unwrap();
+        assert!(
+            !left.deleted() && !right.deleted(),
+            "a live item splits into live halves"
+        );
+        assert!(!left.keep() && !right.keep());
+
+        let deleted = build();
+        deleted.flags.set_deleted();
+        let (left, right) = deleted.split_at(1).unwrap();
+        assert!(left.deleted(), "left half of a deleted item stays deleted");
+        assert!(right.deleted(), "right half of a deleted item stays deleted");
+
+        let kept = build();
+        kept.flags.set_keep();
+        let (left, right) = kept.split_at(1).unwrap();
+        assert!(left.keep() && right.keep(), "both halves stay protected from gc");
+
+        // the halves own their flags, they do not share a flag word
+        let deleted = build();
+        deleted.flags.set_deleted();
+        let (left, right) = deleted.split_at(1).unwrap();
+        right.flags.clear_deleted();
+        assert!(left.deleted() && !right.deleted());
     }
 }

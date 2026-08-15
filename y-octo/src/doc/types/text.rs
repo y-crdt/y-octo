@@ -497,7 +497,7 @@ mod tests {
     use super::{TextAttributes, TextDeltaOp, TextInsert};
     #[cfg(not(loom))]
     use crate::sync::{Arc, AtomicUsize, Ordering};
-    use crate::{Any, Doc, loom_model, sync::thread};
+    use crate::{Any, Doc, DocOptions, loom_model, sync::thread};
 
     #[test]
     fn test_manipulate_text() {
@@ -552,6 +552,43 @@ mod tests {
         let s1 = t1.to_string();
         let s2 = t2.to_string();
         assert_eq!(s1, s2, "c1 and c2 diverged: {s1:?} vs {s2:?}");
+    }
+
+    #[test]
+    #[cfg(not(loom))]
+    fn test_split_of_tombstoned_item_keeps_both_halves_deleted() {
+        fn sync(from: &Doc, to: &mut Doc) {
+            let sv = to.get_state_vector();
+            let update = from.encode_state_as_update_v1(&sv).unwrap();
+            to.apply_update_from_binary_v1(update).unwrap();
+        }
+
+        for gc in [false, true] {
+            let mut c0 = DocOptions::new().with_client_id(0).auto_gc(gc).build();
+            let mut t0 = c0.get_or_create_text("text").unwrap();
+            let mut c1 = DocOptions::new().with_client_id(1).auto_gc(gc).build();
+            let mut t1 = c1.get_or_create_text("text").unwrap();
+
+            // one item covering clocks 0 to 2
+            t0.insert(0, "abc").unwrap();
+            sync(&c0, &mut c1);
+
+            // "z" is anchored at (0, 0) and (0, 1), pointing into that item
+            t1.insert(1, "z").unwrap();
+            t0.remove(0, 3).unwrap();
+
+            // repairing "z" splits the tombstoned item
+            sync(&c1, &mut c0);
+            sync(&c0, &mut c1);
+
+            assert_eq!(t0.to_string(), "z", "gc {gc}: c0 kept a resurrected half");
+            assert_eq!(t1.to_string(), "z", "gc {gc}: c1 kept a resurrected half");
+
+            // a document whose flags disagree with its delete set fails every later gc pass
+            t1.insert(0, "q").unwrap();
+            sync(&c1, &mut c0);
+            assert_eq!(t0.to_string(), "qz", "gc {gc}: c0 stopped accepting updates");
+        }
     }
 
     #[test]

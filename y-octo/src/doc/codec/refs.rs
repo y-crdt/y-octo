@@ -175,7 +175,7 @@ impl Node {
             let right_id = Id::new(id.client, id.clock + offset);
             let (left_content, right_content) = item.content.split(offset)?;
 
-            let left_item = Somr::new(Item::new(
+            let left_item = Item::new(
                 id,
                 left_content,
                 // let caller connect left <-> node <-> right
@@ -183,9 +183,9 @@ impl Node {
                 Somr::none(),
                 item.parent.clone(),
                 item.parent_sub.clone(),
-            ));
+            );
 
-            let right_item = Somr::new(Item::new(
+            let right_item = Item::new(
                 right_id,
                 right_content,
                 // let caller connect left <-> node <-> right
@@ -193,9 +193,18 @@ impl Node {
                 Somr::none(),
                 item.parent.clone(),
                 item.parent_sub.clone(),
-            ));
+            );
 
-            Ok((Self::Item(left_item), Self::Item(right_item)))
+            if item.deleted() {
+                left_item.flags.set_deleted();
+                right_item.flags.set_deleted();
+            }
+            if item.keep() {
+                left_item.flags.set_keep();
+                right_item.flags.set_keep();
+            }
+
+            Ok((Self::Item(Somr::new(left_item)), Self::Item(Somr::new(right_item))))
         } else {
             Err(JwstCodecError::ItemSplitNotSupport)
         }
