@@ -48,6 +48,7 @@ pub(crate) fn find_conflict_left<T: Clone + Eq>(
     right: Option<T>,
     mut item: impl FnMut(&T) -> Option<ConflictItem>,
     mut next: impl FnMut(&T) -> Option<T>,
+    mut head_of: impl FnMut(Id) -> Option<Id>, // resolves an id to the head id of the item covering it
 ) -> Option<T> {
     let mut conflicting = HashSet::default();
     let mut before_origin = HashSet::default();
@@ -69,8 +70,10 @@ pub(crate) fn find_conflict_left<T: Clone + Eq>(
             } else if this.origin_right == candidate.origin_right {
                 break;
             }
-        } else if let Some(candidate_left) = candidate.origin_left {
-            if before_origin.contains(&candidate_left) && !conflicting.contains(&candidate_left) {
+        } else if let Some(candidate_left) = candidate.origin_left.and_then(&mut head_of)
+            && before_origin.contains(&candidate_left)
+        {
+            if !conflicting.contains(&candidate_left) {
                 left = Some(current.clone());
                 conflicting.clear();
             }
@@ -194,6 +197,7 @@ mod tests {
     #[derive(Clone, PartialEq, Eq, Debug)]
     struct ConflictNode {
         id: Id,
+        len: u64,
         origin_left: Option<Id>,
         origin_right: Option<Id>,
         right: Option<usize>,
@@ -219,6 +223,14 @@ mod tests {
                 })
             },
             |&index| nodes.get(index).and_then(|node| node.right),
+            |id| {
+                nodes
+                    .iter()
+                    .find(|node| {
+                        node.id.client == id.client && node.id.clock <= id.clock && id.clock < node.id.clock + node.len
+                    })
+                    .map(|node| node.id)
+            },
         )
     }
 
@@ -236,6 +248,7 @@ mod tests {
         let concurrent = |this_client: u64, other_client: u64| {
             let nodes = [ConflictNode {
                 id: Id::new(other_client, 0),
+                len: 1,
                 origin_left: None,
                 origin_right: None,
                 right: None,
@@ -249,6 +262,7 @@ mod tests {
         // insert before the candidate
         let nodes = [ConflictNode {
             id: Id::new(2, 0),
+            len: 1,
             origin_left: Some(Id::new(1, 0)),
             origin_right: Some(Id::new(1, 5)),
             right: None,
@@ -269,18 +283,21 @@ mod tests {
         let nodes = [
             ConflictNode {
                 id: Id::new(1, 0),
+                len: 1,
                 origin_left: Some(Id::new(8, 0)),
                 origin_right: None,
                 right: Some(1),
             },
             ConflictNode {
                 id: Id::new(2, 0),
+                len: 1,
                 origin_left: Some(Id::new(8, 0)),
                 origin_right: None,
                 right: Some(2),
             },
             ConflictNode {
                 id: Id::new(3, 0),
+                len: 1,
                 origin_left: Some(Id::new(1, 0)),
                 origin_right: None,
                 right: None,
@@ -294,6 +311,7 @@ mod tests {
         // a conflict chain that reaches the right neighbor keeps the current left
         let nodes = [ConflictNode {
             id: Id::new(2, 0),
+            len: 1,
             origin_left: Some(Id::new(1, 0)),
             origin_right: None,
             right: Some(1),
@@ -301,6 +319,34 @@ mod tests {
         assert_eq!(
             conflict_left(item(3, 0, Some(Id::new(9, 0)), None), None, Some(0), Some(1), &nodes),
             None
+        );
+    }
+
+    #[test]
+    fn conflict_left_resolves_origins_inside_multi_element_items() {
+        // the first item covers clocks 0 and 1, so the second one has
+        // origin_left (1, 1) while the first is recorded under (1, 0)
+        let nodes = [
+            ConflictNode {
+                id: Id::new(1, 0),
+                len: 2,
+                origin_left: None,
+                origin_right: None,
+                right: Some(1),
+            },
+            ConflictNode {
+                id: Id::new(2, 0),
+                len: 1,
+                origin_left: Some(Id::new(1, 1)),
+                origin_right: None,
+                right: None,
+            },
+        ];
+
+        // an item with no origins walks both and must end up after the second one
+        assert_eq!(
+            conflict_left(item(3, 0, None, None), None, Some(0), None, &nodes),
+            Some(1)
         );
     }
 }

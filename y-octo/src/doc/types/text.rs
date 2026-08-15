@@ -556,6 +556,45 @@ mod tests {
 
     #[test]
     #[cfg(not(loom))]
+    fn test_insert_beside_multi_element_item_converges() {
+        // client 0 inserts "ab" as one item, client 1 appends "c", client 2
+        // concurrently inserts "i" into an empty document. Every delivery
+        // order of the three updates has to give the same text.
+        let c0 = Doc::with_client(0);
+        let mut t0 = c0.get_or_create_text("text").unwrap();
+        t0.insert(0, "ab").unwrap();
+        let update_ab = c0.encode_update_v1().unwrap();
+        let sv_ab = c0.get_state_vector();
+
+        let mut c1 = Doc::with_client(1);
+        c1.apply_update_from_binary_v1(&update_ab).unwrap();
+        let mut t1 = c1.get_or_create_text("text").unwrap();
+        t1.insert(2, "c").unwrap();
+        let update_c = c1.encode_state_as_update_v1(&sv_ab).unwrap();
+
+        // client 2 has seen nothing, so its item carries no origins at all
+        let c2 = Doc::with_client(2);
+        let mut t2 = c2.get_or_create_text("text").unwrap();
+        t2.insert(0, "i").unwrap();
+        let update_i = c2.encode_update_v1().unwrap();
+
+        let orders = [
+            [&update_ab, &update_c, &update_i],
+            [&update_i, &update_ab, &update_c],
+            [&update_ab, &update_i, &update_c],
+        ];
+        for (index, order) in orders.iter().enumerate() {
+            let mut replica = Doc::with_client(10 + index as u64);
+            for update in *order {
+                replica.apply_update_from_binary_v1(update).unwrap();
+            }
+            let text = replica.get_or_create_text("text").unwrap().to_string();
+            assert_eq!(text, "abci", "delivery order {index} produced {text:?}");
+        }
+    }
+
+    #[test]
+    #[cfg(not(loom))]
     fn test_parallel_insert_text() {
         let seed = rand::rng().random();
         let rand = ChaCha20Rng::seed_from_u64(seed);

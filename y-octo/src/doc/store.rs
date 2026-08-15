@@ -536,6 +536,11 @@ impl DocStore {
                                 item.get()
                                     .and_then(|item| item.right.is_some().then(|| item.right.clone()))
                             },
+                            |id| {
+                                let nodes = self.items.get(&id.client)?;
+                                let index = Self::get_node_index(nodes, id.clock)?;
+                                nodes.get(index).map(|node| node.id())
+                            },
                         )
                         .unwrap_or_else(Somr::none);
                     }

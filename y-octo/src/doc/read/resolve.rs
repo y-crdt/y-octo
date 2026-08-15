@@ -230,6 +230,7 @@ impl Builder {
                 right,
                 |id| Some(self.conflict_item(*id)),
                 |id| self.nodes[*id as usize].right(),
+                |id| self.locate(id).ok().map(|(_, node_id)| self.nodes[node_id as usize].id),
             );
         }
 
