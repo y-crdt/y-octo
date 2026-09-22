@@ -374,8 +374,8 @@ impl Update {
         for structs in target.structs.values_mut() {
             structs.make_contiguous().sort_by_key(|s| s.id().clock);
 
-            // insert [Node::Skip] if structs[index].id().clock + structs[index].len() <
-            // structs[index + 1].id().clock
+            // insert [Node::Skip] if structs[index].id().clock +
+            // structs[index].len() < structs[index + 1].id().clock
             let mut index = 0;
             let mut merged_index = vec![];
             // a client may hold zero structs (e.g. all of them were skips),
@@ -532,8 +532,8 @@ impl<'a> UpdateIterator<'a> {
             cur.replace(self.stack.pop().unwrap());
         } else if let Some(client) = self.next_client() {
             // Safety:
-            // client index of updates and update length are both checked in next_client
-            // safe to use unwrap
+            // client index of updates and update length are both checked in
+            // next_client safe to use unwrap
             cur.replace(self.update.structs.get_mut(&client).unwrap().pop_front().unwrap());
         }
 
@@ -556,14 +556,16 @@ impl Iterator for UpdateIterator<'_> {
             } else if !self.state.contains(&id) {
                 // missing local state of same client
                 // can't apply the continuous updates from same client
-                // push into the stack and put tell all the items in stack are unapplicable
+                // push into the stack and put tell all the items in stack are
+                // unapplicable
                 self.stack.push(cur_update);
                 self.update_missing_state(id.client, id.clock - 1);
                 self.add_stack_to_rest();
             } else {
                 let id = cur_update.id();
                 let dep = self.get_missing_dep(&cur_update);
-                // some dependency is missing, we need to turn to iterate the dependency first.
+                // some dependency is missing, we need to turn to iterate the
+                // dependency first.
                 if let Some(dep) = dep {
                     self.stack.push(cur_update);
 
@@ -583,8 +585,9 @@ impl Iterator for UpdateIterator<'_> {
                 } else {
                     // we finally find the first applicable update
                     let local_state = self.state.get(&id.client);
-                    // we've already check the local state is greater or equal to current update's
-                    // clock so offset here will never be negative
+                    // we've already check the local state is greater or equal
+                    // to current update's clock so offset
+                    // here will never be negative
                     let offset = local_state - id.clock;
                     if offset == 0 || offset < cur_update.len() {
                         self.state.set_max(id.client, id.clock + cur_update.len());

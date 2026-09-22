@@ -12,7 +12,8 @@ pub fn read_var_u64(input: &[u8]) -> IResult<&[u8], u64> {
         let mut curr_byte = *next_byte;
         let mut rest = &input[1..];
 
-        // same logic in loop, but enable early exit when dealing with small numbers
+        // same logic in loop, but enable early exit when dealing with small
+        // numbers
         let mut num = (curr_byte & 0b0111_1111) as u64;
 
         // if the sign bit is set, we need more bits

@@ -4,9 +4,10 @@ use libfuzzer_sys::fuzz_target;
 use y_octo::Doc;
 
 fuzz_target!(|data: &[u8]| {
-    // Feed arbitrary (possibly malformed) bytes to the most exposed entry point:
-    // decoding an untrusted yjs update into a doc. Decoding must never panic,
-    // and a successfully decoded doc must always re-encode without panicking.
+    // Feed arbitrary (possibly malformed) bytes to the most exposed entry
+    // point: decoding an untrusted yjs update into a doc. Decoding must
+    // never panic, and a successfully decoded doc must always re-encode
+    // without panicking.
     //
     // Malformed inputs can integrate into corrupt states whose encoding is
     // rejected on re-apply or serialized in a different (still valid) order,

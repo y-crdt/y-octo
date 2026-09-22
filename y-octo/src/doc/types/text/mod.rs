@@ -1,6 +1,9 @@
+mod identity;
 use std::{collections::BTreeMap, fmt::Display};
 
-use super::{AsInner, list::ListType};
+pub use identity::TextIdentityRun;
+
+use super::{AsInner, Id, list::ListType};
 use crate::{
     Any, Content, JwstCodecError, JwstCodecResult,
     doc::{DocStore, ItemRef, Node, Parent, Somr, YType, YTypeRef},
@@ -850,9 +853,60 @@ mod tests {
                 text.to_delta(),
                 vec![TextDeltaOp::Insert {
                     insert: TextInsert::Text("😀".to_string()),
-                    format: Some(attrs),
+                    format: Some(attrs.clone()),
                 }]
             );
+            let runs = text.identity_runs().unwrap();
+            assert_eq!(runs.len(), 1);
+            assert_eq!(runs[0].attributes, attrs);
+            assert_eq!(runs[0].insert, TextInsert::Text("😀".into()));
+            assert_eq!(text.identity().unwrap(), crate::TypeIdentity::Root("text".into()));
+            let mut decoded = Doc::with_client(77);
+            decoded
+                .apply_update_from_binary_v1(doc.encode_update_v1().unwrap())
+                .unwrap();
+            let restored = decoded.get_or_create_text("text").unwrap();
+            assert_eq!(restored.identity().unwrap(), text.identity().unwrap());
+            assert_eq!(restored.identity_runs().unwrap(), runs);
+            text.insert(2, "tail").unwrap();
+            let tail = text.identity_runs().unwrap().last().unwrap().id;
+            text.remove(2, 1).unwrap();
+            doc.gc().unwrap();
+            let surviving = text.identity_runs().unwrap();
+            assert_eq!(surviving[0].id, runs[0].id);
+            assert_eq!(surviving[1].id, tail + 1);
+            assert_eq!(
+                doc.get_delete_sets()
+                    .iter()
+                    .any(|(client, ranges)| *client == tail.client && ranges.contains(tail.clock)),
+                true
+            );
+        });
+        loom_model!({
+            let doc = Doc::new();
+            let mut parent = doc.get_or_create_map("parent").unwrap();
+            let nested = doc.create_text().unwrap();
+            parent
+                .insert("text".into(), crate::Value::Text(nested.clone()))
+                .unwrap();
+            let old_identity = nested.identity().unwrap();
+            let replacement = doc.create_text().unwrap();
+            parent
+                .insert("text".into(), crate::Value::Text(replacement.clone()))
+                .unwrap();
+            assert_ne!(old_identity, replacement.identity().unwrap());
+            let mut decoded = Doc::with_client(78);
+            decoded
+                .apply_update_from_binary_v1(doc.encode_update_v1().unwrap())
+                .unwrap();
+            let restored = decoded
+                .get_map("parent")
+                .unwrap()
+                .get("text")
+                .unwrap()
+                .to_text()
+                .unwrap();
+            assert_eq!(restored.identity().unwrap(), replacement.identity().unwrap());
         });
     }
 }

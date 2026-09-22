@@ -307,6 +307,13 @@ pub(crate) trait AsInner {
     fn as_inner(&self) -> &Self::Inner;
 }
 
+/// Stable within one document history, including across snapshot decoding.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum TypeIdentity {
+    Root(String),
+    Item(Id),
+}
+
 #[macro_export(local_inner_macros)]
 macro_rules! impl_type {
     ($name: ident) => {
@@ -318,6 +325,17 @@ macro_rules! impl_type {
         impl $name {
             pub(crate) fn new(inner: super::YTypeRef) -> Self {
                 Self(inner)
+            }
+
+            pub fn identity(&self) -> $crate::JwstCodecResult<super::TypeIdentity> {
+                let ty = self.0.ty().ok_or($crate::JwstCodecError::DocReleased)?;
+                if let Some(item) = ty.item.get() {
+                    Ok(super::TypeIdentity::Item(item.id))
+                } else if let Some(name) = &ty.root_name {
+                    Ok(super::TypeIdentity::Root(name.clone()))
+                } else {
+                    Err($crate::JwstCodecError::InvalidParent)
+                }
             }
         }
 

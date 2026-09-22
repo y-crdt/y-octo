@@ -800,8 +800,9 @@ mod tests {
             assert_decode_err(name, input, *limits, expected);
         }
 
-        // limits are enforced before the payload is touched: an unrestricted huge count
-        // reaches the truncated payload instead of a resource error
+        // limits are enforced before the payload is touched: an unrestricted
+        // huge count reaches the truncated payload instead of a
+        // resource error
         let huge_json = root_item_update(2, enc().varu(1 << 40).bytes());
         assert_decode_err(
             "huge json count unrestricted",
@@ -815,8 +816,8 @@ mod tests {
             limited(|l| l.max_collection_entries = 5),
             &ExpectedError::Resource("collection entries"),
         );
-        // a count that overflows the cumulative entry counter is a resource error even
-        // when unrestricted
+        // a count that overflows the cumulative entry counter is a resource
+        // error even when unrestricted
         assert_decode_err(
             "json count usize overflow",
             &root_item_update(2, enc().varu(u64::MAX).bytes()),

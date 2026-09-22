@@ -47,7 +47,8 @@ fuzz_target!(|crdt_params: Vec<CRDTParam>| {
     let binary = doc.encode_update_v1().unwrap();
     assert_eq!(binary, binary_from_yrs);
 
-    // reverse direction: updates re-encoded by y-octo must stay decodable by yrs
+    // reverse direction: updates re-encoded by y-octo must stay decodable by
+    // yrs
     let reverse_doc = yrs::Doc::new();
     let mut reverse_trx = reverse_doc.transact_mut();
     reverse_trx.apply_update(Update::decode_v1(&binary).unwrap()).unwrap();

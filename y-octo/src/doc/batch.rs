@@ -60,7 +60,8 @@ where
         && let Some(current_batch) = doc.batch.get()
         && Some(current_batch) == batch_cleanups[0].get()
     {
-        // Process observer calls and perform cleanup if this is the initial call
+        // Process observer calls and perform cleanup if this is the initial
+        // call
         cleanup_batches(&mut batch_cleanups);
         doc.batch.swap_take();
     }

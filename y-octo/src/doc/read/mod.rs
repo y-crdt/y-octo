@@ -883,8 +883,8 @@ mod tests {
         replica2.get_or_create_text("text").unwrap().insert(4, "Z").unwrap();
         let inc2 = replica2.encode_state_as_update_v1(&base_state).unwrap();
 
-        // insert again after seeing the other replica, origins point into struct
-        // middles
+        // insert again after seeing the other replica, origins point into
+        // struct middles
         replica1.apply_update_from_binary_v1(&inc2).unwrap();
         let state = replica1.get_state_vector();
         replica1.get_or_create_text("text").unwrap().insert(1, "!").unwrap();
@@ -904,7 +904,8 @@ mod tests {
         root_item(0, Content::String("hello world".into()), "text", None)
             .write(&mut encoder)
             .unwrap();
-        // unsorted overlapping ranges: the read side must normalize before applying
+        // unsorted overlapping ranges: the read side must normalize before
+        // applying
         encoder.write_var_u64(1).unwrap();
         encoder.write_var_u64(1).unwrap();
         encoder.write_var_u64(3).unwrap();
@@ -944,9 +945,10 @@ mod tests {
     #[test]
     #[cfg_attr(loom, ignore)]
     fn skip_structs_mark_snapshot_incomplete() {
-        // merge fills coverage holes of a client with Skip structs, so an update
-        // carrying a Skip can never resolve from an empty state: the read side
-        // rejects it while the mutable side parks the tail as pending.
+        // merge fills coverage holes of a client with Skip structs, so an
+        // update carrying a Skip can never resolve from an empty state:
+        // the read side rejects it while the mutable side parks the
+        // tail as pending.
         let doc1 = Doc::with_client(1);
         doc1.get_or_create_text("text").unwrap().insert(0, "ab").unwrap();
         let low = Update::decode_v1(doc1.encode_update_v1().unwrap()).unwrap();
@@ -969,8 +971,8 @@ mod tests {
             "incomplete snapshot: client clock gap"
         );
 
-        // filling the hole replaces the Skip with real structs and the differential
-        // holds
+        // filling the hole replaces the Skip with real structs and the
+        // differential holds
         let complete = Update::merge([gapped, middle]).encode_v1().unwrap();
         assert_read_matches_mutable(&complete, "skip gap filled");
     }
@@ -1117,7 +1119,8 @@ mod tests {
             unknown_client,
         );
 
-        // a valid incremental update is an incomplete snapshot from the empty state
+        // a valid incremental update is an incomplete snapshot from the empty
+        // state
         let incremental = {
             let doc = Doc::new();
             let mut text = doc.get_or_create_text("text").unwrap();
