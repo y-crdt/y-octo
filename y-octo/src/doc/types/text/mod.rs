@@ -881,7 +881,9 @@ mod tests {
                     .any(|(client, ranges)| *client == tail.client && ranges.contains(tail.clock)),
                 true
             );
-
+        });
+        loom_model!({
+            let doc = Doc::new();
             let mut parent = doc.get_or_create_map("parent").unwrap();
             let nested = doc.create_text().unwrap();
             parent
