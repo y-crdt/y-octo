@@ -386,7 +386,8 @@ impl Doc {
                     .iter()
                     .any(|(client, clock)| *clock < store.get_state(*client))
                 {
-                    // new update has been applied to the doc, need to re-integrate
+                    // new update has been applied to the doc, need to
+                    // re-integrate
                     retry = true;
                 }
 
@@ -397,7 +398,8 @@ impl Doc {
                 if update.is_pending_empty() {
                     update = pending_update;
                 } else {
-                    // drain all pending state to pending update for later iteration
+                    // drain all pending state to pending update for later
+                    // iteration
                     update.drain_pending_state();
                     Update::merge_into(&mut update, [pending_update]);
                 }
@@ -409,7 +411,8 @@ impl Doc {
                 if update.is_pending_empty() {
                     break;
                 } else {
-                    // need to turn all pending state into update for later iteration
+                    // need to turn all pending state into update for later
+                    // iteration
                     update.drain_pending_state();
                     retry = false;
                 };
@@ -714,10 +717,10 @@ mod tests {
     #[test]
     fn test_repeated_applied_pending_update() {
         // generate a pending update
-        // update: [1, 1, 1, 0, 39, 1, 4, 116, 101, 115, 116, 3, 109, 97, 112, 1, 0]
-        // update: [1, 1, 1, 1, 40, 0, 1, 0, 11, 115, 117, 98, 95, 109, 97, 112, 95,
-        // 107, 101, 121, 1, 119, 13, 115, 117, 98, 95, 109, 97, 112, 95, 118, 97, 108,
-        // 117, 101, 0]
+        // update: [1, 1, 1, 0, 39, 1, 4, 116, 101, 115, 116, 3, 109, 97, 112,
+        // 1, 0] update: [1, 1, 1, 1, 40, 0, 1, 0, 11, 115, 117, 98, 95,
+        // 109, 97, 112, 95, 107, 101, 121, 1, 119, 13, 115, 117, 98,
+        // 95, 109, 97, 112, 95, 118, 97, 108, 117, 101, 0]
         // {
         //     let doc1 = Doc::default();
 

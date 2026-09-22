@@ -291,7 +291,8 @@ mod tests {
             Some(2)
         );
 
-        // a conflict chain that reaches the right neighbor keeps the current left
+        // a conflict chain that reaches the right neighbor keeps the current
+        // left
         let nodes = [ConflictNode {
             id: Id::new(2, 0),
             origin_left: Some(Id::new(1, 0)),

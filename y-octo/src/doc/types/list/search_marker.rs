@@ -132,7 +132,8 @@ impl MarkerList {
             .unwrap_or_else(|| parent.start.clone());
 
         // TODO: this logic here is a bit messy
-        // i think it can be implemented with more streamlined code, and then optimized
+        // i think it can be implemented with more streamlined code, and then
+        // optimized
         {
             // iterate to the right if possible
             while let Some(item) = item_ptr.clone().get() {
@@ -155,7 +156,8 @@ impl MarkerList {
                 }
             }
 
-            // iterate to the left if necessary (might be that marker_index > index)
+            // iterate to the left if necessary (might be that marker_index >
+            // index)
             while let Some(item) = item_ptr.clone().get() {
                 if marker_index <= index {
                     break;
@@ -172,10 +174,11 @@ impl MarkerList {
                 }
             }
 
-            // we want to make sure that item_ptr can't be merged with left, because that
-            // would screw up everything in that case just return what we have
-            // (it is most likely the best marker anyway) iterate to left until
-            // item_ptr can't be merged with left
+            // we want to make sure that item_ptr can't be merged with left,
+            // because that would screw up everything in that case
+            // just return what we have (it is most likely the best
+            // marker anyway) iterate to left until item_ptr can't
+            // be merged with left
             while let Some(item) = item_ptr.clone().get() {
                 let left_ref: ItemRef = item.left.clone();
                 if let Some(left) = left_ref.get() {
