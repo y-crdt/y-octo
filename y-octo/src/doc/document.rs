@@ -327,6 +327,16 @@ impl Doc {
         self.store.read().unwrap().pending.is_some()
     }
 
+    /// Whether a root has visible sequence content, without assigning its type.
+    pub fn root_has_sequence_content(&self, name: &str) -> bool {
+        self.store
+            .read()
+            .unwrap()
+            .types
+            .get(name)
+            .is_some_and(|root| root.ty().is_some_and(|ty| ty.len > 0))
+    }
+
     // TODO:
     //   provide a better way instead of `_v1` methods
     //   when implementing `v2` binary format
@@ -675,6 +685,11 @@ mod tests {
             };
 
             let detached_doc = Doc::try_from_binary_v1(binary_detached).unwrap();
+            assert!(detached_doc.root_has_sequence_content("abc"));
+            assert!(!detached_doc.root_has_sequence_content("missing"));
+            let mut metadata = detached_doc.get_or_create_map("metadata").unwrap();
+            metadata.insert("key".into(), "value").unwrap();
+            assert!(!detached_doc.root_has_sequence_content("metadata"));
             let detached_array = detached_doc.get_or_create_array("abc").unwrap();
             let detached_sub_array = match detached_array.get(6).unwrap() {
                 Value::Array(arr) => arr,
