@@ -16,7 +16,7 @@ pub use doc::{
 pub(crate) use doc::{Content, Item};
 #[cfg(feature = "debug")]
 pub use doc::{DocMemoryLayout, memory_layout, profiling_counters, reset_profiling_counters};
-use log::{debug, warn};
+use log::warn;
 use nom::IResult;
 pub use protocol::{
     AwarenessState, AwarenessStates, DocMessage, SyncMessage, SyncMessageScanner, read_sync_message, write_sync_message,

@@ -25,7 +25,8 @@ pub(crate) struct DocStore {
     // following fields are only used in memory
     pub types: HashMap<String, YTypeRef>,
     // types created from this store but with no names,
-    // we store it here to keep the ownership inside store without being released.
+    // we store it here to keep the ownership inside store without being
+    // released.
     pub dangling_types: HashMap<usize, YTypeRef>,
     pub pending: Option<Update>,
     pub last_optimized_state: StateVector,
@@ -514,7 +515,14 @@ impl DocStore {
                         let conflict = if let Some(left) = left.get() {
                             left.right.clone()
                         } else if let Some(parent_sub) = &this.parent_sub {
-                            parent.map.get(parent_sub).cloned().unwrap_or(Somr::none())
+                            // The map stores the winning tail; conflict
+                            // scanning without a left neighbor must start at
+                            // the chain head.
+                            parent
+                                .map
+                                .get(parent_sub)
+                                .map(|item| Node::Item(item.clone()).head().as_item())
+                                .unwrap_or_else(Somr::none)
                         } else {
                             parent.start.clone()
                         };
@@ -539,6 +547,7 @@ impl DocStore {
                                 item.get()
                                     .and_then(|item| item.right.is_some().then(|| item.right.clone()))
                             },
+                            |id| self.get_node(id).map(|node| node.id()),
                         )
                         .unwrap_or_else(Somr::none);
                     }
@@ -784,7 +793,11 @@ impl DocStore {
         };
 
         if with_pending && let Some(pending) = &self.pending {
-            Update::merge_into(&mut update, [pending.clone()])
+            let mut pending = pending.clone();
+            // Pending does not mean unknown to the recipient. Apply its SV to
+            // these ranges too, while retaining deletions for missing targets.
+            pending.structs = Self::diff_structs(&pending.structs, sv)?;
+            Update::merge_into(&mut update, [pending]);
         }
 
         Ok(update)
@@ -824,9 +837,12 @@ impl DocStore {
                 let clock = items.front().unwrap().id().clock.max(clock);
                 if let Some(index) = Self::get_node_index(items, clock) {
                     let first_block = items.get(index).unwrap();
-                    let offset = first_block.clock() - clock;
+                    // The recipient clock may fall inside a compacted struct;
+                    // split a detached copy so generating a diff leaves the
+                    // store unchanged.
+                    let offset = clock - first_block.clock();
                     if offset != 0 {
-                        vec_struct_info.push_back(first_block.clone().split_at(offset)?.1);
+                        vec_struct_info.push_back(first_block.split_at(offset)?.1);
                     } else {
                         vec_struct_info.push_back(first_block.clone());
                     }

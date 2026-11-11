@@ -315,7 +315,16 @@ impl<'a> Decoder<'a> {
         let event = match tag {
             0 => AnyEvent::Undefined,
             1 => AnyEvent::Null,
-            2 => AnyEvent::Integer(self.raw.read_var_i32()?),
+            2 => {
+                let (value, negative) = self.raw.read_var_i32_with_sign()?;
+                // Preserve the same signed-zero semantics as the owned Any
+                // decoder.
+                if value == 0 && negative {
+                    AnyEvent::Float32(-0.0)
+                } else {
+                    AnyEvent::Integer(value)
+                }
+            }
             3 => AnyEvent::Float32(self.raw.read_f32_be()?),
             4 => AnyEvent::Float64(self.raw.read_f64_be()?),
             5 => AnyEvent::BigInt64(self.raw.read_i64_be()?),

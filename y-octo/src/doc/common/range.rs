@@ -206,7 +206,8 @@ impl OrderRange {
                 continue;
             }
             match merged.last_mut() {
-                // ranges are sorted by start, so continuity only depends on the end
+                // ranges are sorted by start, so continuity only depends on the
+                // end
                 Some(last) if last.end >= range.start => {
                     last.end = last.end.max(range.end);
                 }

@@ -1,7 +1,7 @@
 use std::{fmt, slice};
 
-use super::{FrozenContent, FrozenValue, ReadDoc, TypeId};
-use crate::{Any, TextAttributes, TextDeltaOp, TextInsert, YTypeKind, doc::utf16_offset_to_utf8};
+use super::{FrozenContent, ReadDoc, TypeId};
+use crate::{Any, TextAttributes, TextDeltaOp, TextInsert, YTypeKind};
 
 #[derive(Clone, Copy)]
 enum AnySource<'a> {
@@ -220,7 +220,7 @@ impl<'a> ReadArray<'a> {
 
 struct ReadArrayIter<'a> {
     doc: &'a ReadDoc,
-    values: slice::Iter<'a, FrozenValue>,
+    values: slice::Iter<'a, FrozenContent>,
     pending: Option<slice::Iter<'a, Any>>,
 }
 
@@ -236,7 +236,7 @@ impl<'a> Iterator for ReadArrayIter<'a> {
                 self.pending = None;
             }
             let value = self.values.next()?;
-            match &value.content {
+            match value {
                 FrozenContent::Any(range) => {
                     let values = &self.doc.any[range.start as usize..range.end as usize];
                     let mut iter = values.iter();
@@ -277,8 +277,9 @@ impl<'a> ReadText<'a> {
         self.doc.types[self.id as usize]
             .list
             .iter()
-            .filter_map(move |value| match &value.content {
-                FrozenContent::String(span) => Some(ReadTextRun::Text(self.doc.string_segment(*span, value))),
+            .filter_map(move |value| match value {
+                FrozenContent::String(span) => Some(ReadTextRun::Text(span.str(&self.doc.input))),
+                FrozenContent::StringOwned(id) => Some(ReadTextRun::Text(self.doc.owned_string(*id))),
                 FrozenContent::Any(range) => Some(ReadTextRun::Embed(ReadAny::slice(
                     &self.doc.any[range.start as usize..range.end as usize],
                 ))),
@@ -405,8 +406,8 @@ impl<'a> ReadValue<'a> {
 }
 
 impl ReadDoc {
-    fn value<'a>(&'a self, value: &'a FrozenValue) -> ReadValue<'a> {
-        match &value.content {
+    fn value<'a>(&'a self, value: &'a FrozenContent) -> ReadValue<'a> {
+        match value {
             FrozenContent::Any(range) => {
                 let values = &self.any[range.start as usize..range.end as usize];
                 let any = if values.len() == 1 {
@@ -417,7 +418,8 @@ impl ReadDoc {
                 ReadValue::Any(any)
             }
             FrozenContent::Binary(span) => ReadValue::Any(ReadAny::binary(span.bytes(&self.input))),
-            FrozenContent::String(span) => ReadValue::Any(ReadAny::string(self.string_segment(*span, value))),
+            FrozenContent::String(span) => ReadValue::Any(ReadAny::string(span.str(&self.input))),
+            FrozenContent::StringOwned(id) => ReadValue::Any(ReadAny::string(self.owned_string(*id))),
             FrozenContent::Format { .. } => unreachable!("format items are only exposed through ReadText::runs"),
             FrozenContent::Type(id) => {
                 let ty = &self.types[*id as usize];
@@ -440,11 +442,11 @@ impl ReadDoc {
         }
     }
 
-    fn string_segment<'a>(&'a self, span: super::Span, value: &FrozenValue) -> &'a str {
-        let text = span.str(&self.input);
-        let start = utf16_offset_to_utf8(text, value.content_offset);
-        let end = start + utf16_offset_to_utf8(&text[start..], value.len);
-        &text[start..end]
+    fn owned_string(&self, id: super::AnyId) -> &str {
+        let Any::String(value) = &self.any[id as usize] else {
+            unreachable!("frozen owned strings reference string values");
+        };
+        value
     }
 }
 

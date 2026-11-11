@@ -194,39 +194,22 @@ impl Item {
     }
 
     pub fn split_at(&self, offset: u64) -> JwstCodecResult<(Self, Self)> {
-        debug_assert!(offset > 0 && self.len() > 1 && offset < self.len());
-        let id = self.id;
-        let right_id = Id::new(id.client, id.clock + offset);
+        debug_assert!(offset > 0 && offset < self.len());
         let (left_content, right_content) = self.content.split(offset)?;
-
-        let left_item = Item::new(
-            id,
-            left_content,
-            // let caller connect left <-> node <-> right
-            Somr::none(),
-            Somr::none(),
-            self.parent.clone(),
-            self.parent_sub.clone(),
-        );
-
-        let right_item = Item::new(
-            right_id,
-            right_content,
-            // let caller connect left <-> node <-> right
-            Somr::none(),
-            Somr::none(),
-            self.parent.clone(),
-            self.parent_sub.clone(),
-        );
-
-        if left_item.deleted() {
-            left_item.flags.set_deleted();
-        }
-        if left_item.keep() {
-            left_item.flags.set_keep();
-        }
-
-        Ok((left_item, right_item))
+        // Keep flags and wire origins, but detach links for the caller to
+        // reconnect. Copying the items also keeps raw merge/SV slicing from
+        // mutating shared inputs.
+        let mut left = self.clone();
+        let mut right = self.clone();
+        left.left = Somr::none();
+        left.right = Somr::none();
+        left.replace_content_with_len(left_content, offset);
+        right.id.clock += offset;
+        right.origin_left_id = Some(Id::new(self.id.client, right.id.clock - 1));
+        right.left = Somr::none();
+        right.right = Somr::none();
+        right.replace_content_with_len(right_content, self.len() - offset);
+        Ok((left, right))
     }
 
     fn get_info(&self) -> u8 {

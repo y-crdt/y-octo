@@ -1,8 +1,8 @@
-use std::ops::Range;
+use std::{borrow::Cow, ops::Range};
 
 use super::{
-    AnyId, Builder, FrozenContent, FrozenType, FrozenValue, NodeId, RawContent, RawNode, RawNodeKind, RawParent,
-    RawType, ReadDoc, ReadError, TypeId,
+    AnyId, Builder, FrozenContent, FrozenType, NodeId, RawContent, RawNode, RawNodeKind, RawParent, RawType, ReadDoc,
+    ReadError, TypeId, utf16_slice,
 };
 use crate::{
     Any, CrdtRead, CrdtReader, Id, JwstCodecError, RawDecoder, StateVector,
@@ -218,7 +218,11 @@ impl Builder {
             let conflict = if let Some(left) = left {
                 self.nodes[left as usize].right()
             } else if let Some(key) = parent_sub {
-                self.types[parent_id as usize].map.get(&key).copied()
+                self.types[parent_id as usize]
+                    .map
+                    .get(&key)
+                    .copied()
+                    .map(|id| self.map_head(id))
             } else {
                 self.types[parent_id as usize].start
             };
@@ -230,6 +234,7 @@ impl Builder {
                 right,
                 |id| Some(self.conflict_item(*id)),
                 |id| self.nodes[*id as usize].right(),
+                |id| self.locate(id).ok().map(|(_, node_id)| self.nodes[node_id as usize].id),
             );
         }
 
@@ -237,8 +242,12 @@ impl Builder {
             right = self.nodes[left_id as usize].right();
             self.nodes[left_id as usize].set_right(Some(node_id));
             self.nodes[node_id as usize].set_left(Some(left_id));
-        } else if parent_sub.is_some() {
-            right = None;
+        } else if let Some(key) = parent_sub {
+            right = self.types[parent_id as usize]
+                .map
+                .get(&key)
+                .copied()
+                .map(|id| self.map_head(id));
             self.nodes[node_id as usize].set_left(None);
         } else {
             right = self.types[parent_id as usize].start.replace(node_id);
@@ -268,6 +277,15 @@ impl Builder {
             self.delete_node(overwritten)?;
         }
         Ok(())
+    }
+
+    // Map entries point to the winning tail, not the start of the conflict
+    // chain.
+    fn map_head(&self, mut node_id: NodeId) -> NodeId {
+        while let Some(left) = self.nodes[node_id as usize].left() {
+            node_id = left;
+        }
+        node_id
     }
 
     fn conflict_item(&self, node_id: NodeId) -> ConflictItem {
@@ -486,7 +504,7 @@ impl Builder {
         })
     }
 
-    fn freeze_value(&self, node_id: NodeId, any: &mut Vec<Any>) -> Result<Option<FrozenValue>, ReadError> {
+    fn freeze_value(&self, node_id: NodeId, any: &mut Vec<Any>) -> Result<Option<FrozenContent>, ReadError> {
         let node = &self.nodes[node_id as usize];
         let content = match &node.content {
             RawContent::None | RawContent::Deleted => return Ok(None),
@@ -504,7 +522,20 @@ impl Builder {
                 FrozenContent::Any(self.any_range(start, any.len())?)
             }
             RawContent::Binary(span) => FrozenContent::Binary(*span),
-            RawContent::String(span) => FrozenContent::String(*span),
+            RawContent::String(span) => {
+                let text = span.str(&self.input);
+                // Resolve the visible UTF-16 segment once when freezing.
+                // Deletions can split surrogate pairs, requiring owned
+                // replacement bytes rather than a span into the original
+                // update.
+                match utf16_slice(text, node.content_offset, node.len) {
+                    Cow::Borrowed(selected) => {
+                        let start = selected.as_ptr() as usize - self.input.as_ptr() as usize;
+                        FrozenContent::String(super::Span::new(start..start + selected.len())?)
+                    }
+                    Cow::Owned(selected) => FrozenContent::StringOwned(self.push_any(Any::String(selected), any)?),
+                }
+            }
             RawContent::Embed(span) => {
                 let start = any.len();
                 any.push(serde_json::from_str(span.str(&self.input)).map_err(|_| JwstCodecError::DamagedDocumentJson)?);
@@ -533,11 +564,7 @@ impl Builder {
                 options: self.push_encoded_any(*options, any)?,
             },
         };
-        Ok(Some(FrozenValue {
-            content,
-            content_offset: node.content_offset,
-            len: node.len,
-        }))
+        Ok(Some(content))
     }
 
     fn selected_parts(&self, parts: &Range<u32>, node: &RawNode) -> Result<Range<usize>, ReadError> {

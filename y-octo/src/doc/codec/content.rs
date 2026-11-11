@@ -199,7 +199,8 @@ impl Content {
         match self {
             Self::Deleted(len) => *len,
             Self::Json(strings) => strings.len() as u64,
-            // TODO: need a custom wrapper with length cached, this cost too much
+            // TODO: need a custom wrapper with length cached, this cost too
+            // much
             Self::String(string) => string.chars().map(|c| c.len_utf16()).sum::<usize>() as u64,
             Self::Any(any) => any.len() as u64,
             Self::Binary(_) | Self::Embed(_) | Self::Format { .. } | Self::Type(_) | Self::Doc { .. } => 1,
@@ -217,11 +218,10 @@ impl Content {
 
     pub fn split(&self, diff: u64) -> JwstCodecResult<(Self, Self)> {
         match self {
-            Self::String(str) => {
-                let offset = utf16_offset_to_utf8(str, diff);
-                let (left, right) = str.split_at(offset);
-                Ok((Self::String(left.to_string()), Self::String(right.to_string())))
-            }
+            Self::String(str) => Ok((
+                Self::String(utf16_slice(str, 0, diff).into_owned()),
+                Self::String(utf16_slice(str, diff, u64::MAX).into_owned()),
+            )),
             Self::Json(vec) => {
                 let (left, right) = vec.split_at(diff as usize);
                 Ok((Self::Json(left.to_owned()), Self::Json(right.to_owned())))
@@ -339,10 +339,12 @@ mod tests {
             Some(Parent::String("text".into())),
             None,
         );
-        let (left, right) = item.split_at(3).unwrap();
-        assert_eq!((item.len(), left.len(), right.len()), (4, 3, 1));
-        assert_eq!(left.content, Content::String("a😀".to_string()));
-        assert_eq!(right.content, Content::String("b".to_string()));
+        for (offset, left_text, right_text) in [(1, "a", "😀b"), (2, "a\u{fffd}", "\u{fffd}b"), (3, "a😀", "b")] {
+            let (left, right) = item.split_at(offset).unwrap();
+            assert_eq!((item.len(), left.len(), right.len()), (4, offset, 4 - offset));
+            assert_eq!(left.content, Content::String(left_text.to_string()));
+            assert_eq!(right.content, Content::String(right_text.to_string()));
+        }
 
         {
             let (left, right) = contents[1].split(1).unwrap();

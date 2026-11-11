@@ -8,7 +8,7 @@ use std::{ops::Range, sync::Arc};
 pub use limits::{ReadError, ReadLimits};
 pub use value::{ReadAny, ReadArray, ReadMap, ReadText, ReadTextRun, ReadValue};
 
-use super::{ClientMap, HashMap, Id, YTypeKind};
+use super::{ClientMap, HashMap, Id, YTypeKind, utf16_slice};
 
 type NodeId = u32;
 type TypeId = u32;
@@ -329,24 +329,20 @@ enum FrozenContent {
     Any(Range<u32>),
     Binary(Span),
     String(Span),
+    // A surrogate-half replacement cannot borrow the original UTF-8 span.
+    // Store it in the existing Any arena; normal text stays borrowed.
+    StringOwned(AnyId),
     Format { key: Span, value: AnyId },
     Type(TypeId),
     Doc { guid: Span, options: AnyId },
 }
 
 #[derive(Debug)]
-struct FrozenValue {
-    content: FrozenContent,
-    content_offset: u64,
-    len: u64,
-}
-
-#[derive(Debug)]
 struct FrozenType {
     kind: YTypeKind,
     tag: Option<Span>,
-    map: Vec<(KeyId, FrozenValue)>,
-    list: Vec<FrozenValue>,
+    map: Vec<(KeyId, FrozenContent)>,
+    list: Vec<FrozenContent>,
     len: u64,
 }
 
@@ -938,6 +934,57 @@ mod tests {
             assert_read_matches_mutable(&build(), name);
         }
 
+        for deleted_clock in [1, 2] {
+            let source = Doc::with_client(1);
+            source.get_or_create_text("text").unwrap().insert(0, "a😀b").unwrap();
+            let mut update = Update::decode_v1(source.encode_update_v1().unwrap()).unwrap();
+            update.delete_set.add(1, deleted_clock, 1);
+            let bytes = update.encode_v1().unwrap();
+            let snapshot = ReadDoc::from_full_update_v1(bytes.as_slice()).unwrap();
+            assert_eq!(snapshot.text("text").unwrap().to_string(), "a\u{FFFD}b");
+            assert_eq!(snapshot.text("text").unwrap().len(), 3);
+            assert_eq!(
+                snapshot.text("text").unwrap().to_delta(),
+                vec![TextDeltaOp::Insert {
+                    insert: TextInsert::Text("a\u{FFFD}b".into()),
+                    format: None
+                }],
+            );
+            assert_read_matches_mutable(&bytes, "raw UTF16 half deletion");
+        }
+
+        let subdoc = update_bytes(
+            vec![root_item(
+                0,
+                Content::Doc {
+                    guid: "wire-guid".into(),
+                    opts: Box::new(Any::Object(Box::new(HashMap::from_iter([("gc".into(), Any::False)])))),
+                },
+                "docs",
+                Some("sub"),
+            )],
+            DeleteSet::default(),
+        );
+        let doc = Doc::try_from_binary_v1(&subdoc).unwrap();
+        let map = doc.get_map("docs").unwrap();
+        for _ in 0..2 {
+            let Value::Doc(child) = map.get("sub").unwrap() else {
+                panic!("expected subdocument");
+            };
+            assert_eq!(child.guid(), "wire-guid");
+            assert!(!child.options().gc);
+        }
+        let encoded = Update::decode_v1(doc.encode_update_v1().unwrap()).unwrap();
+        let item = encoded.structs[&1][0].as_item();
+        let Content::Doc { guid, opts } = &item.get().unwrap().content else {
+            panic!("expected subdocument content");
+        };
+        assert_eq!(guid, "wire-guid");
+        assert_eq!(
+            opts.as_ref(),
+            &Any::Object(Box::new(HashMap::from_iter([("gc".into(), Any::False)])))
+        );
+
         let empty = ReadDoc::from_full_update_v1(Doc::new().encode_update_v1().unwrap()).unwrap();
         assert_eq!(empty.root_names().count(), 0);
     }
@@ -1248,6 +1295,103 @@ mod tests {
         for (index, fixture) in fixtures.into_iter().enumerate() {
             assert_read_matches_mutable(fixture, &format!("fixture {index}"));
         }
+
+        // Official Yjs 13.6.21 snapshots: complete map conflicts and the six
+        // anonymized compacted-origin graphs from real-world failures.
+        let conflicts: &[(&[u8], JsonValue)] = &[
+            (
+                &[
+                    5, 1, 5, 0, 161, 3, 1, 1, 1, 4, 0, 161, 2, 0, 1, 1, 3, 0, 161, 2, 0, 2, 1, 2, 0, 33, 1, 4, 109,
+                    101, 116, 97, 1, 120, 1, 1, 1, 0, 168, 4, 0, 1, 125, 42, 4, 5, 1, 0, 1, 4, 1, 0, 1, 3, 1, 0, 2, 2,
+                    1, 0, 1,
+                ],
+                serde_json::json!({"x": 42}),
+            ),
+            (
+                &[
+                    2, 2, 2, 0, 39, 1, 4, 109, 101, 116, 97, 5, 112, 97, 103, 101, 115, 0, 8, 0, 2, 0, 1, 118, 1, 2,
+                    105, 100, 119, 1, 98, 1, 1, 0, 33, 1, 4, 109, 101, 116, 97, 5, 112, 97, 103, 101, 115, 1, 1, 1, 1,
+                    0, 1,
+                ],
+                serde_json::json!({"pages": [{"id": "b"}]}),
+            ),
+            (
+                &[
+                    4, 1, 4, 0, 161, 1, 1, 2, 1, 3, 0, 33, 1, 4, 109, 101, 116, 97, 1, 120, 2, 1, 2, 0, 168, 3, 1, 1,
+                    125, 42, 1, 1, 0, 161, 3, 1, 2, 0,
+                ],
+                serde_json::json!({"x": 42}),
+            ),
+            (
+                &[
+                    6, 1, 6, 0, 161, 5, 1, 2, 1, 5, 0, 161, 3, 0, 2, 1, 4, 0, 161, 2, 1, 2, 1, 3, 0, 161, 2, 1, 1, 1,
+                    2, 0, 33, 1, 4, 109, 101, 116, 97, 1, 120, 2, 1, 1, 0, 168, 4, 1, 1, 125, 42, 0,
+                ],
+                serde_json::json!({"x": 42}),
+            ),
+            (
+                &[
+                    6, 1, 6, 0, 161, 5, 1, 2, 1, 5, 0, 161, 3, 0, 2, 1, 4, 0, 161, 1, 1, 2, 1, 3, 0, 161, 1, 1, 1, 1,
+                    2, 0, 168, 4, 1, 1, 125, 42, 1, 1, 0, 33, 1, 4, 109, 101, 116, 97, 1, 120, 2, 0,
+                ],
+                serde_json::json!({"x": 42}),
+            ),
+            (
+                &[
+                    4, 1, 4, 0, 161, 2, 1, 2, 1, 3, 0, 168, 1, 1, 1, 125, 42, 1, 2, 0, 161, 1, 1, 2, 1, 1, 0, 33, 1, 4,
+                    109, 101, 116, 97, 1, 120, 2, 0,
+                ],
+                serde_json::json!({"x": 42}),
+            ),
+            (
+                &[
+                    4, 1, 4, 0, 161, 1, 1, 1, 1, 3, 0, 33, 1, 4, 109, 101, 116, 97, 1, 120, 2, 1, 2, 0, 168, 3, 1, 1,
+                    125, 42, 1, 1, 0, 161, 3, 1, 2, 0,
+                ],
+                serde_json::json!({"x": 42}),
+            ),
+            (
+                &[
+                    4, 2, 4, 0, 161, 1, 0, 2, 161, 4, 1, 1, 1, 3, 0, 168, 2, 0, 1, 125, 42, 1, 2, 0, 33, 1, 4, 109,
+                    101, 116, 97, 1, 120, 1, 1, 1, 0, 161, 2, 0, 1, 0,
+                ],
+                serde_json::json!({"x": 42}),
+            ),
+        ];
+        for (index, (bytes, expected)) in conflicts.iter().enumerate() {
+            let snapshot = ReadDoc::from_full_update_v1(*bytes).unwrap();
+            assert_eq!(&map_json(snapshot.map("meta").unwrap()), expected, "readonly {index}");
+            assert_read_matches_mutable(bytes, &format!("map conflict {index}"));
+
+            let mut split = Update::decode_v1(bytes).unwrap();
+            let mut clients = split.structs.keys().copied().collect::<Vec<_>>();
+            clients.sort_unstable();
+            let mut parts = [Update::default(), Update::default(), Update::default()];
+            for (position, client) in clients.into_iter().enumerate() {
+                parts[position % 3]
+                    .structs
+                    .insert(client, split.structs.remove(&client).unwrap());
+            }
+            parts[0].delete_set = split.delete_set;
+            let parts = parts.map(|part| part.encode_v1().unwrap());
+            for gc in [false, true] {
+                for order in [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]] {
+                    let mut doc = DocOptions::new().auto_gc(gc).build();
+                    for part in order {
+                        doc.apply_update_from_binary_v1(&parts[part]).unwrap();
+                    }
+                    assert!(!doc.has_pending_updates(), "pending {index} gc={gc} order={order:?}");
+                    assert_eq!(
+                        &mutable_map_json(doc.get_map("meta").unwrap()),
+                        expected,
+                        "mutable {index} gc={gc} order={order:?}"
+                    );
+                    let roundtrip = doc.encode_update_v1().unwrap();
+                    let snapshot = ReadDoc::from_full_update_v1(roundtrip).unwrap();
+                    assert_eq!(&map_json(snapshot.map("meta").unwrap()), expected);
+                }
+            }
+        }
     }
 
     #[test]
@@ -1255,7 +1399,7 @@ mod tests {
         assert!(std::mem::size_of::<RawNode>() <= 128);
         assert!(std::mem::size_of::<RawContent>() <= 24);
         assert!(std::mem::size_of::<RawType>() <= 96);
-        assert!(std::mem::size_of::<FrozenValue>() <= 32);
+        assert!(std::mem::size_of::<FrozenContent>() <= 16);
     }
 
     #[test]
