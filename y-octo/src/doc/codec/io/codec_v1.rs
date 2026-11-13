@@ -99,6 +99,13 @@ impl CrdtReader for RawDecoder<'_> {
         read_with_cursor(&mut self.buffer, read_var_i32)
     }
 
+    fn read_var_i32_with_sign(&mut self) -> JwstCodecResult<(i32, bool)> {
+        // lib0 varInt stores the sign in bit 6 of the first byte, including for
+        // zero.
+        let negative = self.rest_ref().first().is_some_and(|byte| byte & 0x40 != 0);
+        Ok((self.read_var_i32()?, negative))
+    }
+
     fn read_var_string(&mut self) -> JwstCodecResult<String> {
         read_with_cursor(&mut self.buffer, read_var_string)
     }
@@ -197,6 +204,14 @@ mod tests {
 
     #[test]
     fn test_crdt_reader() {
+        for (bytes, expected) in [
+            (&[0][..], (0, false)),
+            (&[64][..], (0, true)),
+            (&[42][..], (42, false)),
+            (&[106][..], (-42, true)),
+        ] {
+            assert_eq!(RawDecoder::new(bytes).read_var_i32_with_sign().unwrap(), expected);
+        }
         {
             let mut reader = RawDecoder::new(&[0xf2, 0x5]);
             assert_eq!(reader.read_var_u64().unwrap(), 754);

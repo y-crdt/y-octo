@@ -82,9 +82,12 @@ impl From<&Content> for Value {
                 // actually unreachable
                 YTypeKind::Unknown => Value::Any(Any::Undefined),
             },
-            Content::Doc { guid: _, opts } => Value::Doc(
+            Content::Doc { guid, opts } => Value::Doc(
                 DocOptions::try_from(opts.as_ref().clone())
                     .expect("Failed to parse doc options")
+                    // The GUID lives outside opts on the wire; projecting a subdoc
+                    // must preserve its identity instead of generating a new one.
+                    .with_guid(guid.clone())
                     .build(),
             ),
             Content::Format { .. } => unimplemented!(),
@@ -145,11 +148,13 @@ impl serde::Serialize for Value {
             Self::Array(array) => array.serialize(serializer),
             Self::Map(map) => map.serialize(serializer),
             Self::Text(text) => text.serialize(serializer),
-            // Self::XMLElement(xml_element) => xml_element.serialize(serializer),
-            // Self::XMLFragment(xml_fragment) => xml_fragment.serialize(serializer),
-            // Self::XMLHook(xml_hook) => xml_hook.serialize(serializer),
-            // Self::XMLText(xml_text) => xml_text.serialize(serializer),
-            // Self::Doc(doc) => doc.serialize(serializer),
+            // Self::XMLElement(xml_element) =>
+            // xml_element.serialize(serializer),
+            // Self::XMLFragment(xml_fragment) =>
+            // xml_fragment.serialize(serializer), Self::XMLHook(xml_hook) =>
+            // xml_hook.serialize(serializer), Self::XMLText(xml_text) =>
+            // xml_text.serialize(serializer), Self::Doc(doc) =>
+            // doc.serialize(serializer),
             _ => serializer.serialize_none(),
         }
     }

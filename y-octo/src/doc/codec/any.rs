@@ -40,7 +40,16 @@ impl<R: CrdtReader> CrdtRead<R> for Any {
             0 => Ok(Any::Undefined),
             1 => Ok(Any::Null),
             // in yjs implementation, flag 2 only save 32bit integer
-            2 => Ok(Any::Integer(reader.read_var_i32()?)),       // Integer
+            2 => {
+                let (value, negative) = reader.read_var_i32_with_sign()?;
+                // Yjs can encode -0 with the integer tag; use a float to retain
+                // its sign.
+                Ok(if value == 0 && negative {
+                    Any::Float32((-0.0_f32).into())
+                } else {
+                    Any::Integer(value)
+                })
+            }
             3 => Ok(Any::Float32(reader.read_f32_be()?.into())), // Float32
             4 => Ok(Any::Float64(reader.read_f64_be()?.into())), // Float64
             5 => Ok(Any::BigInt64(reader.read_i64_be()?)),       // BigInt64
@@ -612,6 +621,31 @@ mod tests {
         let decoded = Any::read(&mut decoder).unwrap();
 
         assert_eq!(any, decoded);
+
+        for bytes in [&[125, 64][..], &[124, 128, 0, 0, 0], &[123, 128, 0, 0, 0, 0, 0, 0, 0]] {
+            let decoded = Any::read(&mut RawDecoder::new(bytes)).unwrap();
+            assert!(match &decoded {
+                Any::Float32(value) => value.0 == 0.0 && value.0.is_sign_negative(),
+                Any::Float64(value) => value.0 == 0.0 && value.0.is_sign_negative(),
+                _ => false,
+            });
+            let mut encoder = RawEncoder::default();
+            decoded.write(&mut encoder).unwrap();
+            assert_eq!(encoder.into_inner()[1], 128);
+        }
+
+        loom_model!({
+            // Yjs 13.6.21 encodes this map's -0 as an integer with the sign
+            // bit.
+            let bytes = [1, 1, 1, 0, 40, 1, 1, 114, 1, 120, 1, 125, 64, 0];
+            let update = Update::decode_v1(bytes).unwrap();
+            let update = Update::decode_v1(Update::merge([update]).encode_v1().unwrap()).unwrap();
+            let item = update.structs[&1][0].as_item();
+            let Content::Any(values) = &item.get().unwrap().content else {
+                panic!("expected ContentAny");
+            };
+            assert!(matches!(&values[0], Any::Float32(value) if value.0 == 0.0 && value.0.is_sign_negative()));
+        });
     }
 
     proptest! {

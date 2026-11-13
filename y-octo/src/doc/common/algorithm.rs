@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use super::{HashSet, Id, StateVector};
 
 pub(crate) fn find_clock_segment(
@@ -24,21 +26,59 @@ pub(crate) fn find_clock_segment(
     None
 }
 
-/// consider `offset` as a utf-16 encoded string offset
-pub(crate) fn utf16_offset_to_utf8(value: &str, offset: u64) -> usize {
-    if offset == 0 {
-        return 0;
-    }
-    let mut utf16 = 0u64;
-    let mut utf8 = 0usize;
-    for character in value.chars() {
-        utf16 += character.len_utf16() as u64;
-        utf8 += character.len_utf8();
-        if utf16 >= offset {
-            break;
+/// Slice by Yjs clocks (UTF-16 code units), not UTF-8 bytes or Unicode scalars.
+/// Like Yjs ContentString.splice, replace each retained half of a split
+/// surrogate pair with U+FFFD rather than rounding the boundary and changing
+/// its clock length.
+pub(crate) fn utf16_slice(value: &str, offset: u64, len: u64) -> Cow<'_, str> {
+    Utf16Slices::new(value).slice(offset, len)
+}
+
+pub(crate) struct Utf16Slices<'a> {
+    value: &'a str,
+    chars: std::iter::Peekable<std::str::CharIndices<'a>>,
+    clock: u64,
+}
+
+impl<'a> Utf16Slices<'a> {
+    pub(crate) fn new(value: &'a str) -> Self {
+        Self {
+            value,
+            chars: value.char_indices().peekable(),
+            clock: 0,
         }
     }
-    utf8
+
+    fn boundary(&mut self, target: u64) -> (usize, usize, bool) {
+        while let Some(&(byte, ch)) = self.chars.peek() {
+            let next = self.clock + ch.len_utf16() as u64;
+            if target < next {
+                return (byte, byte + ch.len_utf8(), target > self.clock);
+            }
+            self.clock = next;
+            self.chars.next();
+        }
+        (self.value.len(), self.value.len(), false)
+    }
+
+    // Callers supplying multiple slices must advance in UTF-16 clock order.
+    pub(crate) fn slice(&mut self, offset: u64, len: u64) -> Cow<'a, str> {
+        if len == 0 {
+            return Cow::Borrowed(&self.value[..0]);
+        }
+        let (start, after_start, start_surrogate) = self.boundary(offset);
+        let (end, _, end_surrogate) = self.boundary(offset.saturating_add(len));
+        let selected = &self.value[if start_surrogate { after_start } else { start }..end];
+        if start_surrogate || end_surrogate {
+            Cow::Owned(format!(
+                "{}{selected}{}",
+                if start_surrogate { "\u{FFFD}" } else { "" },
+                if end_surrogate { "\u{FFFD}" } else { "" },
+            ))
+        } else {
+            Cow::Borrowed(selected)
+        }
+    }
 }
 
 pub(crate) fn find_conflict_left<T: Clone + Eq>(
@@ -48,6 +88,7 @@ pub(crate) fn find_conflict_left<T: Clone + Eq>(
     right: Option<T>,
     mut item: impl FnMut(&T) -> Option<ConflictItem>,
     mut next: impl FnMut(&T) -> Option<T>,
+    mut origin_owner: impl FnMut(Id) -> Option<Id>,
 ) -> Option<T> {
     let mut conflicting = HashSet::default();
     let mut before_origin = HashSet::default();
@@ -70,7 +111,17 @@ pub(crate) fn find_conflict_left<T: Clone + Eq>(
                 break;
             }
         } else if let Some(candidate_left) = candidate.origin_left {
-            if before_origin.contains(&candidate_left) && !conflicting.contains(&candidate_left) {
+            // Origins can point inside compacted structs; the sets contain
+            // struct starts.
+            let Some(owner) = origin_owner(candidate_left) else {
+                break;
+            };
+            // Yjs stops at an origin outside the scanned prefix; continuing
+            // could choose a later conflict and delete the actual map winner.
+            if !before_origin.contains(&owner) {
+                break;
+            }
+            if !conflicting.contains(&owner) {
                 left = Some(current.clone());
                 conflicting.clear();
             }
@@ -144,25 +195,30 @@ mod tests {
 
     #[test]
     fn utf16_offsets() {
-        let cases: &[(&str, u64, usize)] = &[
-            ("", 0, 0),
-            ("abc", 0, 0),
-            ("abc", 1, 1),
-            ("abc", 3, 3),
-            ("a😀b", 1, 1),
-            // offset inside the surrogate pair rounds up to the char boundary
-            ("a😀b", 2, 5),
-            ("a😀b", 3, 5),
-            ("a😀b", 4, 6),
-            ("中文", 1, 3),
-            ("中文", 2, 6),
-        ];
-        for (value, offset, expected) in cases {
+        for (value, offset, len, expected) in [
+            ("", 0, 1, ""),
+            ("abc", 0, 3, "abc"),
+            ("abc", 1, 1, "b"),
+            ("abc", 3, 1, ""),
+            ("a😀b", 0, 2, "a\u{FFFD}"),
+            ("a😀b", 1, 1, "\u{FFFD}"),
+            ("a😀b", 2, 1, "\u{FFFD}"),
+            ("a😀b", 2, 2, "\u{FFFD}b"),
+            ("a😀b", 2, 0, ""),
+            ("a😀b", 1, 2, "😀"),
+            ("a😀b", 3, u64::MAX, "b"),
+            ("中文", 1, 1, "文"),
+        ] {
             assert_eq!(
-                utf16_offset_to_utf8(value, *offset),
-                *expected,
-                "{value:?} offset {offset}"
+                utf16_slice(value, offset, len),
+                expected,
+                "{value:?} offset={offset} len={len}"
             );
+        }
+        assert!(matches!(utf16_slice("a😀b", 1, 2), Cow::Borrowed("😀")));
+        let mut slices = Utf16Slices::new("中😀文🎉尾");
+        for (offset, len, expected) in [(0, 2, "中\u{FFFD}"), (2, 3, "\u{FFFD}文\u{FFFD}"), (5, 2, "\u{FFFD}尾")] {
+            assert_eq!(slices.slice(offset, len), expected);
         }
     }
 
@@ -194,6 +250,7 @@ mod tests {
     #[derive(Clone, PartialEq, Eq, Debug)]
     struct ConflictNode {
         id: Id,
+        len: u64,
         origin_left: Option<Id>,
         origin_right: Option<Id>,
         right: Option<usize>,
@@ -219,6 +276,14 @@ mod tests {
                 })
             },
             |&index| nodes.get(index).and_then(|node| node.right),
+            |id| {
+                nodes
+                    .iter()
+                    .find(|node| {
+                        node.id.client == id.client && node.id.clock <= id.clock && id.clock < node.id.clock + node.len
+                    })
+                    .map(|node| node.id)
+            },
         )
     }
 
@@ -236,6 +301,7 @@ mod tests {
         let concurrent = |this_client: u64, other_client: u64| {
             let nodes = [ConflictNode {
                 id: Id::new(other_client, 0),
+                len: 1,
                 origin_left: None,
                 origin_right: None,
                 right: None,
@@ -249,6 +315,7 @@ mod tests {
         // insert before the candidate
         let nodes = [ConflictNode {
             id: Id::new(2, 0),
+            len: 1,
             origin_left: Some(Id::new(1, 0)),
             origin_right: Some(Id::new(1, 5)),
             right: None,
@@ -269,19 +336,36 @@ mod tests {
         let nodes = [
             ConflictNode {
                 id: Id::new(1, 0),
+                len: 2,
                 origin_left: Some(Id::new(8, 0)),
                 origin_right: None,
                 right: Some(1),
             },
             ConflictNode {
                 id: Id::new(2, 0),
+                len: 1,
                 origin_left: Some(Id::new(8, 0)),
                 origin_right: None,
                 right: Some(2),
             },
             ConflictNode {
                 id: Id::new(3, 0),
-                origin_left: Some(Id::new(1, 0)),
+                len: 1,
+                origin_left: Some(Id::new(1, 1)),
+                origin_right: None,
+                right: Some(3),
+            },
+            ConflictNode {
+                id: Id::new(4, 0),
+                len: 1,
+                origin_left: None,
+                origin_right: None,
+                right: Some(4),
+            },
+            ConflictNode {
+                id: Id::new(5, 0),
+                len: 1,
+                origin_left: Some(Id::new(8, 0)),
                 origin_right: None,
                 right: None,
             },
@@ -295,6 +379,7 @@ mod tests {
         // left
         let nodes = [ConflictNode {
             id: Id::new(2, 0),
+            len: 1,
             origin_left: Some(Id::new(1, 0)),
             origin_right: None,
             right: Some(1),

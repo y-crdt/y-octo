@@ -1,11 +1,6 @@
-use std::ops::Range;
-
-use super::{
-    AnyId, Builder, FrozenContent, FrozenType, FrozenValue, NodeId, RawContent, RawNode, RawNodeKind, RawParent,
-    RawType, ReadDoc, ReadError, TypeId,
-};
+use super::{Builder, NodeId, RawContent, RawNodeKind, RawParent, RawType, ReadDoc, ReadError, TypeId};
 use crate::{
-    Any, CrdtRead, CrdtReader, Id, JwstCodecError, RawDecoder, StateVector,
+    Id, JwstCodecError, StateVector,
     doc::{
         ClientMap, ConflictItem, HashMap, OrderRange, find_clock_segment, find_conflict_left, find_missing_dependency,
     },
@@ -102,6 +97,17 @@ impl Builder {
             let node = &self.nodes[node_id as usize];
             (node.origin_left(), node.origin_right(), node.wire_parent())
         };
+
+        // Same-client scheduling assumes earlier clocks; reject before locating
+        // predecoded nodes.
+        let item_id = self.nodes[node_id as usize].id;
+        for origin in [origin_left, origin_right].into_iter().flatten() {
+            if origin.client == item_id.client && origin.clock >= item_id.clock {
+                return Err(ReadError::InvalidUpdate(JwstCodecError::IncompleteDocument(
+                    "same-client origin must precede item".into(),
+                )));
+            }
+        }
 
         if let Some(id) = origin_left {
             let left = self.split_left(id)?;
@@ -218,7 +224,11 @@ impl Builder {
             let conflict = if let Some(left) = left {
                 self.nodes[left as usize].right()
             } else if let Some(key) = parent_sub {
-                self.types[parent_id as usize].map.get(&key).copied()
+                self.types[parent_id as usize]
+                    .map
+                    .get(&key)
+                    .copied()
+                    .map(|id| self.map_head(id))
             } else {
                 self.types[parent_id as usize].start
             };
@@ -230,6 +240,7 @@ impl Builder {
                 right,
                 |id| Some(self.conflict_item(*id)),
                 |id| self.nodes[*id as usize].right(),
+                |id| self.locate(id).ok().map(|(_, node_id)| self.nodes[node_id as usize].id),
             );
         }
 
@@ -237,8 +248,12 @@ impl Builder {
             right = self.nodes[left_id as usize].right();
             self.nodes[left_id as usize].set_right(Some(node_id));
             self.nodes[node_id as usize].set_left(Some(left_id));
-        } else if parent_sub.is_some() {
-            right = None;
+        } else if let Some(key) = parent_sub {
+            right = self.types[parent_id as usize]
+                .map
+                .get(&key)
+                .copied()
+                .map(|id| self.map_head(id));
             self.nodes[node_id as usize].set_left(None);
         } else {
             right = self.types[parent_id as usize].start.replace(node_id);
@@ -268,6 +283,15 @@ impl Builder {
             self.delete_node(overwritten)?;
         }
         Ok(())
+    }
+
+    // Map entries point to the winning tail, not the start of the conflict
+    // chain.
+    fn map_head(&self, mut node_id: NodeId) -> NodeId {
+        while let Some(left) = self.nodes[node_id as usize].left() {
+            node_id = left;
+        }
+        node_id
     }
 
     fn conflict_item(&self, node_id: NodeId) -> ConflictItem {
@@ -428,159 +452,6 @@ impl Builder {
             pending.extend(self.types[ty as usize].map.values().copied());
         }
         Ok(())
-    }
-
-    fn freeze(self) -> Result<ReadDoc, ReadError> {
-        let mut any = Vec::new();
-        let mut types = Vec::with_capacity(self.types.len());
-        for type_id in 0..self.types.len() {
-            let raw = &self.types[type_id];
-            let mut map = Vec::with_capacity(raw.map.len());
-            for (key, node_id) in &raw.map {
-                let node = &self.nodes[*node_id as usize];
-                if !node.deleted()
-                    && let Some(value) = self.freeze_value(*node_id, &mut any)?
-                {
-                    map.push((*key, value));
-                }
-            }
-            map.sort_unstable_by_key(|(key, _)| *key);
-
-            let mut list = Vec::new();
-            let mut len = 0u64;
-            let mut cursor = raw.start;
-            let mut remaining = self.nodes.len();
-            while let Some(node_id) = cursor {
-                let node = &self.nodes[node_id as usize];
-                if !node.deleted()
-                    && let Some(value) = self.freeze_value(node_id, &mut any)?
-                {
-                    if node.countable() {
-                        len = len
-                            .checked_add(node.len)
-                            .ok_or(ReadError::ResourceLimit("visible type length"))?;
-                    }
-                    list.push(value);
-                }
-                cursor = node.right();
-                if remaining == 0 {
-                    return Err(ReadError::InvalidUpdate(JwstCodecError::InvalidParent));
-                }
-                remaining -= 1;
-            }
-            types.push(FrozenType {
-                kind: raw.kind,
-                tag: raw.tag,
-                map,
-                list,
-                len,
-            });
-        }
-
-        Ok(ReadDoc {
-            input: self.input,
-            roots: self.roots,
-            keys: self.keys,
-            any,
-            types,
-        })
-    }
-
-    fn freeze_value(&self, node_id: NodeId, any: &mut Vec<Any>) -> Result<Option<FrozenValue>, ReadError> {
-        let node = &self.nodes[node_id as usize];
-        let content = match &node.content {
-            RawContent::None | RawContent::Deleted => return Ok(None),
-            RawContent::Json(parts) => {
-                let range = self.selected_parts(parts, node)?;
-                let start = any.len();
-                for span in &self.parts[range] {
-                    let value = span.str(&self.input);
-                    any.push(if value == "undefined" {
-                        Any::Undefined
-                    } else {
-                        Any::String(value.to_string())
-                    });
-                }
-                FrozenContent::Any(self.any_range(start, any.len())?)
-            }
-            RawContent::Binary(span) => FrozenContent::Binary(*span),
-            RawContent::String(span) => FrozenContent::String(*span),
-            RawContent::Embed(span) => {
-                let start = any.len();
-                any.push(serde_json::from_str(span.str(&self.input)).map_err(|_| JwstCodecError::DamagedDocumentJson)?);
-                FrozenContent::Any(self.any_range(start, any.len())?)
-            }
-            RawContent::Format { key, value } => {
-                let value = self.push_json_any(*value, any)?;
-                FrozenContent::Format { key: *key, value }
-            }
-            RawContent::Type(ty) => FrozenContent::Type(*ty),
-            RawContent::Any(parts) => {
-                let range = self.selected_parts(parts, node)?;
-                let start = any.len();
-                for span in &self.parts[range] {
-                    let mut decoder = RawDecoder::new(span.bytes(&self.input));
-                    let value = Any::read(&mut decoder)?;
-                    if !decoder.is_empty() {
-                        return Err(JwstCodecError::UpdateNotFullyConsumed(decoder.len() as usize).into());
-                    }
-                    any.push(value);
-                }
-                FrozenContent::Any(self.any_range(start, any.len())?)
-            }
-            RawContent::Doc { guid, options } => FrozenContent::Doc {
-                guid: *guid,
-                options: self.push_encoded_any(*options, any)?,
-            },
-        };
-        Ok(Some(FrozenValue {
-            content,
-            content_offset: node.content_offset,
-            len: node.len,
-        }))
-    }
-
-    fn selected_parts(&self, parts: &Range<u32>, node: &RawNode) -> Result<Range<usize>, ReadError> {
-        let start = parts.start as usize + node.content_offset as usize;
-        let end = start
-            .checked_add(node.len as usize)
-            .ok_or(ReadError::ResourceLimit("content entries"))?;
-        if end > parts.end as usize {
-            return Err(ReadError::InvalidUpdate(JwstCodecError::IndexOutOfBound(node.len)));
-        }
-        Ok(start..end)
-    }
-
-    fn push_encoded_any(&self, span: super::Span, any: &mut Vec<Any>) -> Result<AnyId, ReadError> {
-        let mut decoder = RawDecoder::new(span.bytes(&self.input));
-        let value = Any::read(&mut decoder)?;
-        if !decoder.is_empty() {
-            return Err(JwstCodecError::UpdateNotFullyConsumed(decoder.len() as usize).into());
-        }
-        self.push_any(value, any)
-    }
-
-    fn push_json_any(&self, span: super::Span, any: &mut Vec<Any>) -> Result<AnyId, ReadError> {
-        let value = serde_json::from_str(span.str(&self.input)).map_err(|_| JwstCodecError::DamagedDocumentJson)?;
-        self.push_any(value, any)
-    }
-
-    fn push_any(&self, value: Any, any: &mut Vec<Any>) -> Result<AnyId, ReadError> {
-        let id = any
-            .len()
-            .try_into()
-            .map_err(|_| ReadError::ResourceLimit("visible Any values"))?;
-        any.push(value);
-        Ok(id)
-    }
-
-    fn any_range(&self, start: usize, end: usize) -> Result<Range<u32>, ReadError> {
-        Ok(start
-            .try_into()
-            .map_err(|_| ReadError::ResourceLimit("visible Any values"))?
-            ..end
-                .try_into()
-                .map_err(|_| ReadError::ResourceLimit("visible Any values"))?)
     }
 }
 

@@ -11,7 +11,7 @@ use std::{
 };
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
-use y_octo::{Any, Doc, ReadDoc, Update};
+use y_octo::{Any, Doc, ReadDoc, Update, write_var_u64};
 
 struct CountingAllocator;
 
@@ -201,6 +201,36 @@ fn memory_report(name: &str, input: &Arc<[u8]>) {
 }
 
 fn readonly(c: &mut Criterion) {
+    let mut fragmented = c.benchmark_group("readonly-fragmented-text");
+    fragmented.sample_size(10).measurement_time(Duration::from_secs(1));
+    for count in [8192, 32768, 65536] {
+        let doc = Doc::with_client(1);
+        doc.get_or_create_text("text")
+            .unwrap()
+            .insert(0, "x".repeat(count))
+            .unwrap();
+        let mut deletes = vec![0, 1, 1]; // No structs; one DeleteSet client, ID 1.
+        write_var_u64(&mut deletes, (count / 2) as u64).unwrap();
+        for clock in (1..count).step_by(2) {
+            write_var_u64(&mut deletes, clock as u64).unwrap();
+            write_var_u64(&mut deletes, 1).unwrap();
+        }
+        let input: Arc<[u8]> = Update::merge([
+            Update::decode_v1(doc.encode_update_v1().unwrap()).unwrap(),
+            Update::decode_v1(deletes).unwrap(),
+        ])
+        .encode_v1()
+        .unwrap()
+        .into();
+        let decoded = ReadDoc::from_full_update_v1(input.clone()).unwrap();
+        assert_eq!(decoded.text("text").unwrap().len(), (count / 2) as u64);
+        fragmented.throughput(Throughput::Elements(count as u64));
+        fragmented.bench_with_input(BenchmarkId::from_parameter(count), &input, |b, input| {
+            b.iter(|| ReadDoc::from_full_update_v1(black_box(input.clone())).unwrap());
+        });
+    }
+    fragmented.finish();
+
     let mut inputs = fixture_inputs();
     inputs.extend(generated_inputs());
     if std::env::var_os("YOCTO_READONLY_REPORT").is_some() {

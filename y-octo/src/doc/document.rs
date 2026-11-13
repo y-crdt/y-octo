@@ -404,6 +404,11 @@ impl Doc {
                 for (client, range) in pending_update.delete_set_iter(store.get_state_vector()) {
                     store.delete_range(client, range)?;
                 }
+                // The iterator moves unavailable deletion tails into
+                // pending_delete_set. Carry them into the next merge even if
+                // this update was unrelated; their target structs may arrive in
+                // a later batch.
+                pending_update.delete_set = std::mem::take(&mut pending_update.pending_delete_set);
 
                 if update.is_pending_empty() {
                     update = pending_update;
@@ -597,6 +602,154 @@ mod tests {
             doc_new.apply_update_from_binary_v1(diff_update_reverse).unwrap();
 
             assert_eq!(doc.encode_update_v1().unwrap(), doc_new.encode_update_v1().unwrap());
+        });
+
+        for (value, prefixes, tails) in [
+            ("abcd", ["", "a", "ab", "abc", "abcd"], ["abcd", "bcd", "cd", "d", ""]),
+            (
+                "a😀b",
+                ["", "a", "a\u{FFFD}", "a😀", "a😀b"],
+                ["a😀b", "😀b", "\u{FFFD}b", "b", ""],
+            ),
+        ] {
+            for clock in 0..=5 {
+                loom_model!({
+                    let source = Doc::with_client(1);
+                    source.get_or_create_text("text").unwrap().insert(0, value).unwrap();
+                    let original = source.encode_update_v1().unwrap();
+                    let bytes = source
+                        .encode_state_as_update_v1(&StateVector::from([(1, clock)]))
+                        .unwrap();
+                    assert_eq!(source.encode_update_v1().unwrap(), original);
+                    let diff = Update::decode_v1(&bytes).unwrap();
+                    if clock < 4 {
+                        let node = &diff.structs[&1][0];
+                        assert_eq!(node.clock(), clock);
+                        assert_eq!(node.len(), 4 - clock);
+                        let item = node.as_item();
+                        let item = item.get().unwrap();
+                        assert_eq!(item.origin_left_id, clock.checked_sub(1).map(|clock| Id::new(1, clock)));
+                        assert_eq!(item.content, Content::String(tails[clock as usize].into()));
+                    } else {
+                        assert!(diff.structs.is_empty());
+                    }
+                    let mut target = Doc::with_client(1);
+                    let prefix = prefixes[clock.min(4) as usize];
+                    target.get_or_create_text("text").unwrap().insert(0, prefix).unwrap();
+                    target.apply_update_from_binary_v1(&bytes).unwrap();
+                    assert_eq!(
+                        target.get_or_create_text("text").unwrap().to_string(),
+                        format!("{prefix}{}", tails[clock.min(4) as usize])
+                    );
+                    assert_eq!(target.get_state_vector(), source.get_state_vector());
+                });
+            }
+        }
+
+        loom_model!({
+            let source = Doc::with_client(1);
+            source
+                .get_or_create_text("text")
+                .unwrap()
+                .insert(0, "abcdefghij")
+                .unwrap();
+            let mut pending = Doc::with_client(2);
+            pending
+                .apply_update_from_binary_v1(source.encode_state_as_update_v1(&StateVector::from([(1, 6)])).unwrap())
+                .unwrap();
+            let mut deletion = Update::default();
+            deletion.delete_set.add(1, 8, 2);
+            pending.apply_update(deletion).unwrap();
+            for clock in [0, 4, 6, 7, 10, 11] {
+                let diff = Update::decode_v1(
+                    pending
+                        .encode_state_as_update_v1(&StateVector::from([(1, clock)]))
+                        .unwrap(),
+                )
+                .unwrap();
+                if clock < 10 {
+                    let node = &diff.structs[&1][0];
+                    assert_eq!(node.clock(), clock.max(6));
+                    assert_eq!(node.len(), 10 - clock.max(6));
+                } else {
+                    assert!(diff.structs.is_empty());
+                }
+                assert_eq!(diff.delete_set.get(&1), Some(&OrderRange::from(8..10)));
+            }
+
+            let prefix = Doc::with_client(1);
+            prefix.get_or_create_text("text").unwrap().insert(0, "abcd").unwrap();
+            pending
+                .apply_update_from_binary_v1(prefix.encode_state_as_update_v1(&StateVector::from([(1, 2)])).unwrap())
+                .unwrap();
+            let diff =
+                Update::decode_v1(pending.encode_state_as_update_v1(&StateVector::from([(1, 5)])).unwrap()).unwrap();
+            assert_eq!(diff.structs[&1][0].clock(), 6);
+            assert_eq!(diff.structs[&1][0].len(), 4);
+            assert_eq!(diff.delete_set.get(&1), Some(&OrderRange::from(8..10)));
+        });
+
+        loom_model!({
+            let source = Doc::with_client(1);
+            source
+                .get_or_create_text("text")
+                .unwrap()
+                .insert(0, "abcdefgh")
+                .unwrap();
+            let mut delete_only = Doc::with_client(2);
+            let mut deletion = Update::default();
+            deletion.delete_set.add(1, 5, 3);
+            delete_only.apply_update(deletion).unwrap();
+            assert!(delete_only.has_pending_updates());
+            let unrelated = Doc::with_client(3);
+            unrelated
+                .get_or_create_map("map")
+                .unwrap()
+                .insert("value".into(), 42)
+                .unwrap();
+            delete_only
+                .apply_update_from_binary_v1(unrelated.encode_update_v1().unwrap())
+                .unwrap();
+            assert!(delete_only.has_pending_updates());
+            let saved = delete_only
+                .encode_state_as_update_v1(&StateVector::from([(3, 1)]))
+                .unwrap();
+            let mut restored = Doc::try_from_binary_v1(saved).unwrap();
+            restored
+                .apply_update_from_binary_v1(source.encode_update_v1().unwrap())
+                .unwrap();
+            assert!(!restored.has_pending_updates());
+            assert_eq!(restored.get_or_create_text("text").unwrap().to_string(), "abcde");
+        });
+
+        loom_model!({
+            let source = Doc::with_client(1);
+            source
+                .get_or_create_text("text")
+                .unwrap()
+                .insert(0, "abcdefgh")
+                .unwrap();
+            let mut partial = Doc::with_client(2);
+            partial.get_or_create_text("local").unwrap().insert(0, "abcd").unwrap();
+            partial
+                .apply_update_from_binary_v1(source.encode_state_as_update_v1(&StateVector::from([(1, 6)])).unwrap())
+                .unwrap();
+            let mut deletion = Update::default();
+            deletion.delete_set.add(1, 5, 3);
+            partial.apply_update(deletion).unwrap();
+            assert!(partial.has_pending_updates());
+
+            let diff = partial.encode_state_as_update_v1(&StateVector::from([(2, 2)])).unwrap();
+            let mut restored = Doc::with_client(2);
+            restored.get_or_create_text("local").unwrap().insert(0, "ab").unwrap();
+            restored.apply_update_from_binary_v1(diff).unwrap();
+            assert!(restored.has_pending_updates());
+            restored
+                .apply_update_from_binary_v1(source.encode_update_v1().unwrap())
+                .unwrap();
+            assert!(!restored.has_pending_updates());
+            assert_eq!(restored.get_or_create_text("local").unwrap().to_string(), "abcd");
+            assert_eq!(restored.get_or_create_text("text").unwrap().to_string(), "abcde");
         });
     }
 
