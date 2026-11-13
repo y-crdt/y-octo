@@ -31,37 +31,53 @@ pub(crate) fn find_clock_segment(
 /// surrogate pair with U+FFFD rather than rounding the boundary and changing
 /// its clock length.
 pub(crate) fn utf16_slice(value: &str, offset: u64, len: u64) -> Cow<'_, str> {
-    if len == 0 {
-        return Cow::Borrowed(&value[..0]);
-    }
-    let end = offset.saturating_add(len);
-    let mut clock = 0;
-    let mut start_byte = value.len();
-    let mut end_byte = value.len();
-    let mut start_surrogate = false;
-    let mut end_surrogate = false;
-    for (byte, ch) in value.char_indices() {
-        let next = clock + ch.len_utf16() as u64;
-        if clock <= offset && offset < next {
-            start_surrogate = offset > clock;
-            start_byte = byte + if start_surrogate { ch.len_utf8() } else { 0 };
+    Utf16Slices::new(value).slice(offset, len)
+}
+
+pub(crate) struct Utf16Slices<'a> {
+    value: &'a str,
+    chars: std::iter::Peekable<std::str::CharIndices<'a>>,
+    clock: u64,
+}
+
+impl<'a> Utf16Slices<'a> {
+    pub(crate) fn new(value: &'a str) -> Self {
+        Self {
+            value,
+            chars: value.char_indices().peekable(),
+            clock: 0,
         }
-        if clock < end && end <= next {
-            end_surrogate = end < next;
-            end_byte = byte + if end_surrogate { 0 } else { ch.len_utf8() };
-            break;
-        }
-        clock = next;
     }
-    let selected = &value[start_byte..end_byte];
-    if start_surrogate || end_surrogate {
-        Cow::Owned(format!(
-            "{}{selected}{}",
-            if start_surrogate { "\u{FFFD}" } else { "" },
-            if end_surrogate { "\u{FFFD}" } else { "" },
-        ))
-    } else {
-        Cow::Borrowed(selected)
+
+    fn boundary(&mut self, target: u64) -> (usize, usize, bool) {
+        while let Some(&(byte, ch)) = self.chars.peek() {
+            let next = self.clock + ch.len_utf16() as u64;
+            if target < next {
+                return (byte, byte + ch.len_utf8(), target > self.clock);
+            }
+            self.clock = next;
+            self.chars.next();
+        }
+        (self.value.len(), self.value.len(), false)
+    }
+
+    // Callers supplying multiple slices must advance in UTF-16 clock order.
+    pub(crate) fn slice(&mut self, offset: u64, len: u64) -> Cow<'a, str> {
+        if len == 0 {
+            return Cow::Borrowed(&self.value[..0]);
+        }
+        let (start, after_start, start_surrogate) = self.boundary(offset);
+        let (end, _, end_surrogate) = self.boundary(offset.saturating_add(len));
+        let selected = &self.value[if start_surrogate { after_start } else { start }..end];
+        if start_surrogate || end_surrogate {
+            Cow::Owned(format!(
+                "{}{selected}{}",
+                if start_surrogate { "\u{FFFD}" } else { "" },
+                if end_surrogate { "\u{FFFD}" } else { "" },
+            ))
+        } else {
+            Cow::Borrowed(selected)
+        }
     }
 }
 
@@ -200,6 +216,10 @@ mod tests {
             );
         }
         assert!(matches!(utf16_slice("a😀b", 1, 2), Cow::Borrowed("😀")));
+        let mut slices = Utf16Slices::new("中😀文🎉尾");
+        for (offset, len, expected) in [(0, 2, "中\u{FFFD}"), (2, 3, "\u{FFFD}文\u{FFFD}"), (5, 2, "\u{FFFD}尾")] {
+            assert_eq!(slices.slice(offset, len), expected);
+        }
     }
 
     #[test]

@@ -2,9 +2,10 @@ mod utils;
 
 use std::time::Duration;
 
-use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
+use criterion::{BatchSize, BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use path_ext::PathExt;
 use utils::Files;
+use y_octo::{Doc, ReadDoc, StateVector, Update};
 
 fn update(c: &mut Criterion) {
     let files = Files::load();
@@ -28,6 +29,27 @@ fn update(c: &mut Criterion) {
     }
 
     group.finish();
+
+    let mut merge = c.benchmark_group("update-merge-sources");
+    for count in [512, 2048, 8192] {
+        let doc = Doc::with_client(1);
+        let mut text = doc.get_or_create_text("text").unwrap();
+        let updates = (0..count)
+            .map(|clock| {
+                text.insert(clock, "x").unwrap();
+                let bytes = doc.encode_state_as_update_v1(&StateVector::from([(1, clock)])).unwrap();
+                Update::decode_v1(bytes).unwrap()
+            })
+            .collect::<Vec<_>>();
+        let bytes = Update::merge(updates.clone()).encode_v1().unwrap();
+        let merged = ReadDoc::from_full_update_v1(bytes).unwrap();
+        assert_eq!(merged.text("text").unwrap().len(), count);
+        merge.throughput(Throughput::Elements(count));
+        merge.bench_with_input(BenchmarkId::from_parameter(count), &updates, |b, updates| {
+            b.iter_batched(|| updates.clone(), Update::merge, BatchSize::PerIteration);
+        });
+    }
+    merge.finish();
 }
 
 criterion_group!(benches, update);

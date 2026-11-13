@@ -1,4 +1,8 @@
-use std::{collections::VecDeque, ops::Range};
+use std::{
+    cmp::Reverse,
+    collections::{BTreeMap, VecDeque},
+    ops::Range,
+};
 
 use super::*;
 use crate::doc::{StateVector, codec::decoder::v1 as decoder, find_missing_dependency};
@@ -368,7 +372,8 @@ impl Update {
             std::mem::take(&mut target.structs),
             std::mem::take(&mut target.pending_structs),
         ];
-        let mut sources = target_structs
+        let mut sources: BTreeMap<_, VecDeque<_>> = BTreeMap::new();
+        for source in target_structs
             .into_iter()
             .chain(updates.into_iter().flat_map(|update| {
                 target.delete_set.merge(&update.delete_set);
@@ -387,64 +392,72 @@ impl Update {
                     .filter(|node| !node.is_skip() && node.len() > 0)
                     .collect::<VecDeque<_>>()
             })
-            .collect::<Vec<_>>();
+        {
+            if let Some(head) = source.front() {
+                sources
+                    .entry((Reverse(head.client()), head.clock()))
+                    .or_default()
+                    .push_back(source);
+            }
+        }
 
-        'merge: loop {
-            sources.retain(|source| !source.is_empty());
-            // Equal-clock snapshots can have different segmentation or GC
-            // representations; neither length nor GC status is a version
-            // priority. Keep source ties stable instead.
-            sources.sort_by(|left, right| {
-                let left = left.front().unwrap();
-                let right = right.front().unwrap();
-                right
-                    .client()
-                    .cmp(&left.client())
-                    .then_with(|| left.clock().cmp(&right.clock()))
-            });
-            let Some(source) = sources.first_mut() else {
-                break;
-            };
-            let mut node = source.pop_front().unwrap();
-            let client = node.client();
-            let merged = target.structs.entry(client).or_default();
-            if let Some(last) = merged.back() {
-                let end = last.clock() + last.len();
-                let mut covered = false;
-                while node.clock() + node.len() <= end {
-                    covered = true;
-                    let Some(next) = source.pop_front() else {
-                        continue 'merge;
-                    };
-                    node = next;
-                    if node.client() != client {
+        while let Some(mut entry) = sources.first_entry() {
+            let mut source = entry.get_mut().pop_front().unwrap();
+            if entry.get().is_empty() {
+                entry.remove();
+            }
+            'source: {
+                let mut node = source.pop_front().unwrap();
+                let client = node.client();
+                let merged = target.structs.entry(client).or_default();
+                if let Some(last) = merged.back() {
+                    let end = last.clock() + last.len();
+                    let mut covered = false;
+                    while node.clock() + node.len() <= end {
+                        covered = true;
+                        let Some(next) = source.pop_front() else {
+                            break 'source;
+                        };
+                        node = next;
+                        if node.client() != client {
+                            source.push_front(node);
+                            break 'source;
+                        }
+                    }
+                    // After consuming covered nodes, another source may fill
+                    // this gap. Compare source heads again before emitting a
+                    // Skip.
+                    if covered && node.clock() > end {
                         source.push_front(node);
-                        continue 'merge;
+                        break 'source;
+                    }
+                    if node.clock() > end {
+                        merged.push_back(Node::new_skip(Id::new(client, end), node.clock() - end));
+                    } else if node.clock() < end {
+                        // V1 infers subsequent clocks from lengths: emit only
+                        // the uncovered tail, or overlap would allocate extra
+                        // clocks.
+                        let offset = end - node.clock();
+                        node = node.split_at(offset).unwrap().1;
                     }
                 }
-                // After consuming covered nodes, another source may fill this
-                // gap. Compare source heads again before emitting a Skip.
-                if covered && node.clock() > end {
-                    source.push_front(node);
-                    continue;
-                }
-                if node.clock() > end {
-                    merged.push_back(Node::new_skip(Id::new(client, end), node.clock() - end));
-                } else if node.clock() < end {
-                    // V1 infers subsequent clocks from lengths: emit only the
-                    // uncovered tail, or overlap would allocate extra clocks.
-                    let offset = end - node.clock();
-                    node = node.split_at(offset).unwrap().1;
+                merged.push_back(node);
+                // Match Yjs's lazy reader: emit a source's contiguous run
+                // before comparing its next head with the other sources again.
+                while source.front().is_some_and(|next| {
+                    let last = merged.back().unwrap();
+                    next.client() == client && next.clock() == last.clock() + last.len()
+                }) {
+                    merged.push_back(source.pop_front().unwrap());
                 }
             }
-            merged.push_back(node);
-            // Match Yjs's lazy reader: emit a source's contiguous run before
-            // comparing its next head with the other sources again.
-            while source.front().is_some_and(|next| {
-                let last = merged.back().unwrap();
-                next.client() == client && next.clock() == last.clock() + last.len()
-            }) {
-                merged.push_back(source.pop_front().unwrap());
+            // The selected source preceded every remaining source in the last
+            // stable ordering, including sources matching its new head.
+            if let Some(head) = source.front() {
+                sources
+                    .entry((Reverse(head.client()), head.clock()))
+                    .or_default()
+                    .push_front(source);
             }
         }
     }
@@ -868,6 +881,47 @@ mod tests {
 
     #[test]
     fn test_merge_updates() {
+        for case in 0..3 {
+            loom_model!({
+                let (sources, expected) = match case {
+                    0 => (
+                        [
+                            vec![Node::new_gc((0, 5).into(), 1)],
+                            vec![struct_item((0, 0), 1), struct_item((0, 5), 1)],
+                        ],
+                        vec![
+                            struct_item((0, 0), 1),
+                            Node::new_skip((0, 1).into(), 4),
+                            struct_item((0, 5), 1),
+                        ],
+                    ),
+                    1 => (
+                        [
+                            vec![Node::new_gc((0, 0).into(), 3), Node::new_gc((0, 5).into(), 1)],
+                            vec![struct_item((0, 0), 1), struct_item((0, 5), 1)],
+                        ],
+                        vec![
+                            Node::new_gc((0, 0).into(), 3),
+                            Node::new_skip((0, 3).into(), 2),
+                            struct_item((0, 5), 1),
+                        ],
+                    ),
+                    _ => (
+                        [
+                            vec![Node::new_gc((0, 1).into(), 1)],
+                            vec![struct_item((0, 0), 1), struct_item((0, 1), 1)],
+                        ],
+                        vec![struct_item((0, 0), 1), struct_item((0, 1), 1)],
+                    ),
+                };
+                let merged = Update::merge(sources.map(|nodes| Update {
+                    structs: ClientMap::from_iter([(0, nodes.into())]),
+                    ..Default::default()
+                }));
+                assert_eq!(merged.structs[&0], VecDeque::from(expected));
+            });
+        }
+
         loom_model!({
             let update = Update {
                 structs: ClientMap::from_iter([(
