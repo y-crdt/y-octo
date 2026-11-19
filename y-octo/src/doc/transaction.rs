@@ -1120,6 +1120,15 @@ impl MapWrite<'_, '_> {
             Ok(())
         });
     }
+
+    /// Deletes every key.
+    pub fn clear(&mut self) {
+        let parent = self.parent;
+        let _ = self.tx.with_type(parent, |store, ty| {
+            map::map_clear(store, ty);
+            Ok(())
+        });
+    }
 }
 
 /// Reads of an [Array] inside a transaction.

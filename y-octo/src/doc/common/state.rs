@@ -47,6 +47,25 @@ impl StateVector {
             self.set_min(*client, *clock);
         }
     }
+
+    /// Encodes the state vector in the Yjs V1 format (clients in descending
+    /// order, as Yjs `writeStateVector` writes them).
+    pub fn encode_v1(&self) -> JwstCodecResult<Vec<u8>> {
+        let mut encoder = crate::doc::RawEncoder::default();
+        self.write(&mut encoder)?;
+        Ok(encoder.into_inner())
+    }
+
+    /// Decodes a Yjs V1 state vector that takes the whole `buffer`.
+    pub fn decode_v1<T: AsRef<[u8]>>(buffer: T) -> JwstCodecResult<Self> {
+        let mut decoder = crate::doc::RawDecoder::new(buffer.as_ref());
+        let state = Self::read(&mut decoder)?;
+        let remaining = decoder.rest_ref().len();
+        if remaining != 0 {
+            return Err(JwstCodecError::UpdateNotFullyConsumed(remaining));
+        }
+        Ok(state)
+    }
 }
 
 impl Deref for StateVector {
@@ -106,9 +125,13 @@ impl<W: CrdtWriter> CrdtWrite<W> for StateVector {
     fn write(&self, encoder: &mut W) -> JwstCodecResult {
         encoder.write_var_u64(self.len() as u64)?;
 
-        for (client, clock) in self.iter() {
-            encoder.write_var_u64(*client)?;
-            encoder.write_var_u64(*clock)?;
+        // clients in descending order like Yjs, `Update::write` and
+        // `DeleteSet::write`, so equal states encode to equal bytes
+        let mut entries = self.iter().map(|(client, clock)| (*client, *clock)).collect::<Vec<_>>();
+        entries.sort_by_key(|entry| std::cmp::Reverse(entry.0));
+        for (client, clock) in entries {
+            encoder.write_var_u64(client)?;
+            encoder.write_var_u64(clock)?;
         }
 
         Ok(())
@@ -164,6 +187,21 @@ mod tests {
         assert_eq!(
             StateVector::read(&mut RawDecoder::new(&encoder.into_inner())).unwrap(),
             state
+        );
+    }
+
+    #[test]
+    fn test_state_vector_v1_codec() {
+        let state = StateVector::from([(1, 2), (7, 4)]);
+        let encoded = state.encode_v1().unwrap();
+        assert_eq!(encoded, vec![2, 7, 4, 1, 2]);
+        assert_eq!(StateVector::decode_v1(&encoded).unwrap(), state);
+
+        let mut trailing = encoded;
+        trailing.push(0);
+        assert_eq!(
+            StateVector::decode_v1(&trailing),
+            Err(JwstCodecError::UpdateNotFullyConsumed(1))
         );
     }
 }

@@ -39,6 +39,13 @@ pub(crate) trait MapType: AsInner<Inner = YTypeRef> {
         }
     }
 
+    fn _clear(&mut self) -> JwstCodecResult {
+        self.as_inner().write(|store, ty| {
+            map_clear(store, ty);
+            Ok(())
+        })
+    }
+
     fn _len(&self) -> u64 {
         or_released(self.as_inner().read(|_, ty| map_entries(ty).count() as u64))
     }
@@ -99,6 +106,21 @@ pub(crate) fn map_remove(store: &mut DocStore, ty: &mut YType, key: &str) {
     }
 }
 
+/// Deletes every key of a map type. The caller holds the store write lock.
+pub(crate) fn map_clear(store: &mut DocStore, ty: &mut YType) {
+    let items = ty
+        .map
+        .values()
+        .filter(|item| item.get().is_some_and(|item| !item.deleted()))
+        .cloned()
+        .collect::<Vec<_>>();
+    for item in items {
+        if let Some(item) = item.get() {
+            store.delete_item(item, Some(ty));
+        }
+    }
+}
+
 /// The current, not deleted value item of `key`. The caller holds the store
 /// lock.
 pub(crate) fn map_value<'a>(ty: &'a YType, key: &str) -> Option<&'a Item> {
@@ -150,6 +172,12 @@ impl Map {
     #[inline(always)]
     pub fn remove(&mut self, key: &str) {
         self._remove(key)
+    }
+
+    /// Deletes every key in one transaction.
+    #[inline(always)]
+    pub fn clear(&mut self) -> JwstCodecResult {
+        self._clear()
     }
 
     #[inline(always)]
@@ -359,5 +387,130 @@ mod tests {
             assert!(c.is_empty());
             assert!(b.is_empty());
         });
+    }
+
+    #[cfg(not(loom))]
+    fn sorted_keys(map: &Map) -> Vec<String> {
+        let mut keys = map.keys().collect::<Vec<_>>();
+        keys.sort();
+        keys
+    }
+
+    #[cfg(not(loom))]
+    #[test]
+    fn test_map_clear_commits_once_and_undoes_in_one_step() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+
+        use crate::{UndoManager, UndoOptions};
+
+        let doc = Doc::with_client(1);
+        let mut map = doc.get_or_create_map("map").unwrap();
+        map.insert("a".into(), 1).unwrap();
+        map.insert("b".into(), "two").unwrap();
+        let mut list = doc.create_array().unwrap();
+        map.insert("c".into(), list.clone()).unwrap();
+        list.push(3).unwrap();
+
+        let history = UndoManager::<()>::new(&doc, [(&map).into()], UndoOptions::default()).unwrap();
+        let commits = Arc::new(AtomicUsize::new(0));
+        let counter = commits.clone();
+        let _subscription = doc.subscribe(move |_| {
+            counter.fetch_add(1, Ordering::SeqCst);
+        });
+
+        map.clear().unwrap();
+        assert_eq!(commits.load(Ordering::SeqCst), 1);
+        assert!(map.is_empty());
+
+        // clearing an empty map changes nothing and commits nothing
+        map.clear().unwrap();
+        assert_eq!(commits.load(Ordering::SeqCst), 1);
+
+        let mut peer = Doc::with_client(2);
+        peer.apply_update_from_binary_v1(doc.encode_update_v1().unwrap())
+            .unwrap();
+        let peer_map = peer.get_or_create_map("map").unwrap();
+        assert!(peer_map.is_empty());
+        assert_eq!(peer.get_state_vector(), doc.get_state_vector());
+        // the undo manager keeps the deleted items from GC here, so compare
+        // the peer by content instead of by store
+        let sync = |peer: &mut Doc| {
+            let diff = doc.encode_state_as_update_v1(&peer.get_state_vector()).unwrap();
+            peer.apply_update_from_binary_v1(diff).unwrap();
+            assert_eq!(peer.get_state_vector(), doc.get_state_vector());
+        };
+
+        assert!(history.undo().unwrap().is_some());
+        assert_eq!(sorted_keys(&map), ["a", "b", "c"]);
+        assert_eq!(map.get("a").unwrap(), Value::Any(Any::Integer(1)));
+        assert_eq!(map.get("b").unwrap(), Value::Any(Any::String("two".into())));
+        assert!(!history.can_undo());
+        sync(&mut peer);
+        assert_eq!(sorted_keys(&peer_map), ["a", "b", "c"]);
+        assert_eq!(peer_map.get("b").unwrap(), Value::Any(Any::String("two".into())));
+
+        assert!(history.redo().unwrap().is_some());
+        assert!(map.is_empty());
+        assert!(!history.can_redo());
+        sync(&mut peer);
+        assert!(peer_map.is_empty());
+    }
+
+    #[cfg(not(loom))]
+    #[test]
+    fn test_preliminary_map_clear_publishes_only_later_entries() {
+        use crate::StateVector;
+
+        let doc = Doc::with_client(1);
+        let mut root = doc.get_or_create_map("root").unwrap();
+        let mut draft = doc.create_map().unwrap();
+        draft.insert("a".into(), 1).unwrap();
+        draft.insert("b".into(), 2).unwrap();
+        let mut list = doc.create_array().unwrap();
+        list.push(1).unwrap();
+        draft.insert("list".into(), list).unwrap();
+
+        draft.clear().unwrap();
+        assert!(draft.is_empty());
+        draft.insert("c".into(), 3).unwrap();
+        root.insert("draft".into(), draft.clone()).unwrap();
+
+        // the root entry and "c" are all that is published
+        assert_eq!(doc.get_state_vector(), StateVector::from([(1, 2)]));
+        let Some(Value::Map(mounted)) = root.get("draft") else {
+            panic!("draft is not mounted");
+        };
+        assert_eq!(sorted_keys(&mounted), ["c"]);
+
+        let peer = Doc::try_from_binary_v1(doc.encode_update_v1().unwrap()).unwrap();
+        let Some(Value::Map(copy)) = peer.get_or_create_map("root").unwrap().get("draft") else {
+            panic!("draft is not synchronized");
+        };
+        assert_eq!(sorted_keys(&copy), ["c"]);
+        assert_eq!(copy.get("c").unwrap(), Value::Any(Any::Integer(3)));
+    }
+
+    #[cfg(not(loom))]
+    #[test]
+    fn test_map_clear_in_transaction() {
+        let doc = Doc::with_client(1);
+        let mut map = doc.get_or_create_map("map").unwrap();
+        map.insert("a".into(), 1).unwrap();
+        map.insert("b".into(), 2).unwrap();
+
+        doc.transact_mut(None, |tx| {
+            let mut map = tx.map(&map)?;
+            map.clear();
+            assert!(map.is_empty());
+            map.insert("c".into(), 3)
+        })
+        .unwrap();
+        assert_eq!(sorted_keys(&map), ["c"]);
+
+        let peer = Doc::try_from_binary_v1(doc.encode_update_v1().unwrap()).unwrap();
+        assert_eq!(sorted_keys(&peer.get_or_create_map("map").unwrap()), ["c"]);
     }
 }

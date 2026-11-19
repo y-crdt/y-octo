@@ -830,6 +830,71 @@ impl Doc {
         Update::decode_v1_with_max_any_depth(self.encode_state_as_update_v1(sv)?, Any::MAX_CONFIGURABLE_DEPTH)
     }
 
+    /// The `y-protocols/sync` step 1 message: this document's state vector.
+    pub fn sync_step1(&self) -> JwstCodecResult<DocMessage> {
+        Ok(DocMessage::Step1(self.get_state_vector().encode_v1()?))
+    }
+
+    /// The `y-protocols/sync` step 2 message answering a peer's state
+    /// vector: everything this document has beyond `sv`, including all its
+    /// deletions.
+    pub fn sync_step2(&self, sv: &StateVector) -> JwstCodecResult<DocMessage> {
+        Ok(DocMessage::Step2(self.encode_state_as_update_v1(sv)?))
+    }
+
+    /// Handles a `y-protocols/sync` message from a peer as a remote update
+    /// without origin, see [Doc::handle_doc_message_with_origin].
+    pub fn handle_doc_message(&mut self, msg: &DocMessage) -> JwstCodecResult<Option<DocMessage>> {
+        self.handle_doc_message_with_origin(msg, None)
+    }
+
+    /// Handles a `y-protocols/sync` message from a peer: step 1 is answered
+    /// with the step 2 message to send back, step 2 and updates are applied
+    /// as a remote update with `origin` and answered with nothing.
+    ///
+    /// ```
+    /// use y_octo::{DocMessage, DocOptions};
+    ///
+    /// let mut local = DocOptions::from_identity(1, "doc".into()).build();
+    /// let mut remote = DocOptions::from_identity(2, "doc".into()).build();
+    /// local.get_or_create_text("text")?.insert(0, "hello")?;
+    ///
+    /// // the remote peer asks for what it misses, the local one answers
+    /// let reply = local.handle_doc_message(&remote.sync_step1()?)?;
+    /// let Some(step2 @ DocMessage::Step2(_)) = reply else { unreachable!() };
+    /// assert_eq!(remote.handle_doc_message(&step2)?, None);
+    /// assert_eq!(remote.get_or_create_text("text")?.to_string(), "hello");
+    /// # Ok::<(), y_octo::JwstCodecError>(())
+    /// ```
+    pub fn handle_doc_message_with_origin(
+        &self,
+        msg: &DocMessage,
+        origin: impl Into<Option<Origin>>,
+    ) -> JwstCodecResult<Option<DocMessage>> {
+        let origin = origin.into();
+        match msg {
+            DocMessage::Step1(sv) => {
+                let result = StateVector::decode_v1(sv).and_then(|sv| self.sync_step2(&sv)).map(Some);
+                if let Some(origin) = origin {
+                    after_unlock(move || drop(origin));
+                }
+                result
+            }
+            DocMessage::Step2(binary) | DocMessage::Update(binary) => match Update::decode_v1(binary) {
+                Ok(update) => {
+                    self.apply_update_with_origin(update, origin)?;
+                    Ok(None)
+                }
+                Err(err) => {
+                    if let Some(origin) = origin {
+                        after_unlock(move || drop(origin));
+                    }
+                    Err(err)
+                }
+            },
+        }
+    }
+
     pub fn get_state_vector(&self) -> StateVector {
         or_released(read_store(&self.store).map(|store| store.get_state_vector()))
     }

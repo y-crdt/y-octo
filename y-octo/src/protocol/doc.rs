@@ -25,17 +25,14 @@ pub fn read_doc_message(input: &[u8]) -> IResult<&[u8], DocMessage> {
     match step {
         DOC_MESSAGE_STEP1 => {
             let (tail, sv) = read_var_buffer(tail)?;
-            // TODO: decode state vector
             Ok((tail, DocMessage::Step1(sv.into())))
         }
         DOC_MESSAGE_STEP2 => {
             let (tail, update) = read_var_buffer(tail)?;
-            // TODO: decode update
             Ok((tail, DocMessage::Step2(update.into())))
         }
         DOC_MESSAGE_UPDATE => {
             let (tail, update) = read_var_buffer(tail)?;
-            // TODO: decode update
             Ok((tail, DocMessage::Update(update.into())))
         }
         _ => Err(nom::Err::Error(Error::new(input, ErrorKind::Tag))),
