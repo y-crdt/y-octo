@@ -1,11 +1,4 @@
-#[cfg(feature = "events")]
-use publisher::DocPublisher;
-
-use super::{
-    history::StoreHistory,
-    store::{ChangedTypeRefs, StoreRef},
-    *,
-};
+use super::{history::StoreHistory, store::StoreRef, *};
 use crate::sync::{Arc, RwLock};
 
 #[cfg(feature = "debug")]
@@ -182,9 +175,6 @@ pub struct Doc {
     opts: DocOptions,
 
     pub(crate) store: StoreRef,
-    #[cfg(feature = "events")]
-    pub publisher: Arc<DocPublisher>,
-    pub(crate) batch: Somr<Batch>,
 }
 
 unsafe impl Send for Doc {}
@@ -209,16 +199,8 @@ impl Doc {
 
     pub fn with_options(options: DocOptions) -> Self {
         let store = Arc::new(RwLock::new(DocStore::with_client(options.client_id)));
-        #[cfg(feature = "events")]
-        let publisher = Arc::new(DocPublisher::new(store.clone()));
 
-        Self {
-            opts: options,
-            store,
-            #[cfg(feature = "events")]
-            publisher,
-            batch: Somr::none(),
-        }
+        Self { opts: options, store }
     }
 
     pub fn with_client(client_id: u64) -> Self {
@@ -300,10 +282,6 @@ impl Doc {
     #[cfg(feature = "debug")]
     pub fn clear_change_tracking(&self) {
         self.store.write().unwrap().changed.clear();
-    }
-
-    pub(crate) fn get_changed(&self) -> ChangedTypeRefs {
-        self.store.write().unwrap().get_changed()
     }
 
     pub fn store_compare(&self, other: &Doc) -> bool {
@@ -520,26 +498,6 @@ impl Doc {
 
     pub fn get_delete_sets(&self) -> DeleteSet {
         self.store.read().unwrap().get_delete_sets()
-    }
-
-    #[cfg(feature = "events")]
-    pub fn subscribe(&self, cb: impl Fn(&[u8], &[History]) + Sync + Send + 'static) {
-        self.publisher.subscribe(cb);
-    }
-
-    #[cfg(feature = "events")]
-    pub fn unsubscribe_all(&self) {
-        self.publisher.unsubscribe_all();
-    }
-
-    #[cfg(feature = "events")]
-    pub fn subscribe_count(&self) -> usize {
-        self.publisher.count()
-    }
-
-    #[cfg(feature = "events")]
-    pub fn subscriber_count(&self) -> usize {
-        Arc::<DocPublisher>::strong_count(&self.publisher)
     }
 
     pub fn gc(&self) -> JwstCodecResult<()> {
@@ -978,60 +936,12 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "events")]
-    #[ignore = "inaccurate timing on ci, need for more accurate timing testing"]
-    fn test_subscribe() {
-        use crate::sync::{AtomicU8, Ordering};
-
-        loom_model!({
-            let doc = Doc::default();
-            let doc_clone = doc.clone();
-
-            let count = Arc::new(AtomicU8::new(0));
-            let count_clone1 = count.clone();
-            let count_clone2 = count.clone();
-            doc.subscribe(move |_, _| {
-                count_clone1.fetch_add(1, Ordering::SeqCst);
-            });
-
-            doc_clone.subscribe(move |_, _| {
-                count_clone2.fetch_add(1, Ordering::SeqCst);
-            });
-
-            doc_clone.get_or_create_array("abc").unwrap().insert(0, 42).unwrap();
-
-            // wait observer, cycle once every 100mm
-            std::thread::sleep(std::time::Duration::from_millis(200));
-
-            assert_eq!(count.load(Ordering::SeqCst), 2);
-        });
-    }
-
-    #[test]
     fn test_repeated_applied_pending_update() {
         // generate a pending update
         // update: [1, 1, 1, 0, 39, 1, 4, 116, 101, 115, 116, 3, 109, 97, 112,
         // 1, 0] update: [1, 1, 1, 1, 40, 0, 1, 0, 11, 115, 117, 98, 95,
         // 109, 97, 112, 95, 107, 101, 121, 1, 119, 13, 115, 117, 98,
         // 95, 109, 97, 112, 95, 118, 97, 108, 117, 101, 0]
-        // {
-        //     let doc1 = Doc::default();
-
-        //     doc1.subscribe(|update| {
-        //         println!("update: {:?}", update);
-        //     });
-
-        //     let mut map = doc1.get_or_create_map("test").unwrap();
-        //     std::thread::sleep(std::time::Duration::from_millis(500));
-
-        //     let mut sub_map = doc1.create_map().unwrap();
-        //     map.insert("map", sub_map.clone()).unwrap();
-        //     std::thread::sleep(std::time::Duration::from_millis(500));
-
-        //     sub_map.insert("sub_map_key", "sub_map_value").unwrap();
-        //     std::thread::sleep(std::time::Duration::from_millis(500));
-        // }
-
         loom_model!({
             let mut doc = Doc::default();
 

@@ -35,10 +35,8 @@ thiserror     = { workspace = true }
 bench      = []
 debug      = []
 default    = []
-events     = []
 large_refs = []
 serde_json = []
-subscribe  = []
 
 [target.'cfg(fuzzing)'.dependencies]
 arbitrary     = { workspace = true }

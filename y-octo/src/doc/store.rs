@@ -822,6 +822,7 @@ impl DocStore {
         }
     }
 
+    #[cfg(test)]
     pub fn get_changed(&mut self) -> ChangedTypeRefs {
         mem::replace(&mut self.changed, HashMap::new())
     }

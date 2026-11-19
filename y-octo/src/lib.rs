@@ -6,11 +6,11 @@ mod sync;
 
 pub use codec::*;
 pub use doc::{
-    Any, Awareness, AwarenessEvent, Batch, Client, ClientMap, Clock, CrdtRead, CrdtReader, CrdtWrite, CrdtWriter, Doc,
+    Any, Awareness, AwarenessEvent, Client, ClientMap, Clock, CrdtRead, CrdtReader, CrdtWrite, CrdtWriter, Doc,
     DocOptions, HashMap as AHashMap, HashMapExt, History, HistoryOptions, Id, RawDecoder, RawEncoder, ReadAny,
     ReadArray, ReadDoc, ReadError, ReadLimits, ReadMap, ReadText, ReadTextRun, ReadValue, StateVector, StoreHistory,
     TextAttributes, TextDelta, TextDeltaOp, TextIdentityRun, TextInsert, TypeIdentity, Update, Value, YTypeKind,
-    batch_commit, encode_awareness_as_message, encode_update_as_message, merge_updates_v1,
+    encode_awareness_as_message, encode_update_as_message, merge_updates_v1,
     types::{array::Array, map::Map, text::Text},
 };
 pub(crate) use doc::{Content, Item};
