@@ -5,10 +5,8 @@ use super::*;
 #[cfg_attr(test, derive(proptest_derive::Arbitrary))]
 pub enum DocMessage {
     // state vector
-    // TODO: temporarily skipped in the test, because yrs decoding needs to
-    // ensure that the update in step1 is the correct state vector binary
-    // and any data can be included in our implementation (we will ensure the
-    // correctness of encoding and decoding in the subsequent decoding process)
+    // Step1 contains an encoded state vector, not arbitrary bytes. Valid
+    // messages are covered by the pinned Yjs sync fixtures.
     #[cfg_attr(test, proptest(skip))]
     Step1(Vec<u8>),
     // update
@@ -27,17 +25,14 @@ pub fn read_doc_message(input: &[u8]) -> IResult<&[u8], DocMessage> {
     match step {
         DOC_MESSAGE_STEP1 => {
             let (tail, sv) = read_var_buffer(tail)?;
-            // TODO: decode state vector
             Ok((tail, DocMessage::Step1(sv.into())))
         }
         DOC_MESSAGE_STEP2 => {
             let (tail, update) = read_var_buffer(tail)?;
-            // TODO: decode update
             Ok((tail, DocMessage::Step2(update.into())))
         }
         DOC_MESSAGE_UPDATE => {
             let (tail, update) = read_var_buffer(tail)?;
-            // TODO: decode update
             Ok((tail, DocMessage::Update(update.into())))
         }
         _ => Err(nom::Err::Error(Error::new(input, ErrorKind::Tag))),

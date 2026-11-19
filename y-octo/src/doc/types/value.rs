@@ -82,15 +82,10 @@ impl From<&Content> for Value {
                 // actually unreachable
                 YTypeKind::Unknown => Value::Any(Any::Undefined),
             },
-            Content::Doc { guid, opts } => Value::Doc(
-                DocOptions::try_from(opts.as_ref().clone())
-                    .expect("Failed to parse doc options")
-                    // The GUID lives outside opts on the wire; projecting a subdoc
-                    // must preserve its identity instead of generating a new one.
-                    .with_guid(guid.clone())
-                    .build(),
-            ),
-            Content::Format { .. } => unimplemented!(),
+            Content::Doc { guid, opts } => Value::Doc(subdocument(guid, opts)),
+            // Yjs `ContentFormat.getContent()` is empty, so a format item that
+            // ended up as a map value reads as undefined.
+            Content::Format { .. } => Value::Any(Any::Undefined),
             // actually unreachable
             Content::Deleted(_) => Value::Any(Any::Undefined),
         }

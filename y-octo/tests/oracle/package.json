@@ -1,0 +1,19 @@
+{
+  "name": "y-octo-yjs-oracle",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "generate": "node generate.mjs && node concurrent.mjs && node undo.mjs && node local.mjs && node regressions.mjs && node legacy.mjs",
+    "check": "node generate.mjs --check && node concurrent.mjs --check && node undo.mjs --check && node local.mjs --check && node regressions.mjs --check && node legacy.mjs --check",
+    "generate:upstream": "node upstream.mjs",
+    "check:upstream": "node upstream.mjs --check",
+    "bench": "node bench.mjs",
+    "check:budget": "node budget.mjs"
+  },
+  "dependencies": {
+    "fflate": "0.8.3",
+    "y-protocols": "1.0.6",
+    "yjs-13-6-21": "npm:yjs@13.6.21",
+    "yjs-13-6-33": "npm:yjs@13.6.33"
+  }
+}

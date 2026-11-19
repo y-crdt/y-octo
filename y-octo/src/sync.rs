@@ -3,14 +3,16 @@ pub use std::sync::{Arc, Weak};
 #[cfg(not(loom))]
 pub(crate) use std::sync::{
     Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard,
-    atomic::{AtomicBool, AtomicU8, AtomicU16, AtomicU32, Ordering},
+    atomic::{AtomicBool, AtomicU8, AtomicU16, AtomicU32, AtomicUsize, Ordering},
 };
+#[cfg(not(loom))]
+pub(crate) use std::thread_local;
 #[cfg(all(test, not(loom)))]
-pub(crate) use std::{
-    sync::{MutexGuard, atomic::AtomicUsize},
-    thread,
-};
+pub(crate) use std::{sync::MutexGuard, thread};
 
+#[cfg(loom)]
+pub(crate) use loom::thread_local;
+#[allow(unused)]
 #[cfg(loom)]
 pub(crate) use loom::{
     sync::{

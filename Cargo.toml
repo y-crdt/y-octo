@@ -1,34 +1,26 @@
 [workspace]
 
-members = [
-  "y-octo",
-  "y-octo-node",
-  "y-octo-utils",
-  "y-octo-utils/yrs-is-unsafe",
-]
+members  = ["y-octo", "y-octo-utils"]
 resolver = "2"
 
   [workspace.dependencies]
-  ahash = "0.8"
+  ahash = { version = "0.8", default-features = false }
   arbitrary = { version = "1.4", features = ["derive"] }
   assert-json-diff = "2.0"
   async-lock = { version = "3.4", features = ["loom"] }
   byteorder = "1.5"
   clap = { version = "4.6", features = ["derive"] }
   criterion = { version = "0.8", features = ["html_reports"] }
-  lib0 = { version = "0.16", features = ["lib0-serde"] }
   log = "0.4"
   loom = { version = "0.7", features = ["checkpoint"] }
   nanoid = "0.5"
   nom = "8"
   ordered-float = "5"
   path-ext = "0.1.2"
-  phf = { version = "0.14", features = ["macros"] }
   proptest = "1.11"
   proptest-derive = "0.8"
   rand = "0.10"
   rand_chacha = "0.10"
-  rand_distr = "0.6"
   regex = "1.13"
   reqwest = { version = "0.13", default-features = false, features = [
     "blocking",
@@ -40,8 +32,6 @@ resolver = "2"
   smol_str = "0.3"
   thiserror = "2"
   y-octo = { path = "./y-octo" }
-  y-octo-utils = { path = "./y-octo-utils" }
-  yrs = "0.23.0"
 
 [profile.release]
 codegen-units = 1
@@ -59,7 +49,3 @@ inherits = "fast-release"
 
 # [profile.release.package.y-octo-fuzz]
 # debug = 1
-
-[patch.crates-io]
-lib0 = { git = "https://github.com/toeverything/y-crdt", rev = "a700f09" }
-yrs  = { git = "https://github.com/toeverything/y-crdt", rev = "a700f09" }

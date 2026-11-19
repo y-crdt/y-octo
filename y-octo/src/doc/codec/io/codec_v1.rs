@@ -99,6 +99,10 @@ impl CrdtReader for RawDecoder<'_> {
         read_with_cursor(&mut self.buffer, read_var_i32)
     }
 
+    fn read_var_i64(&mut self) -> JwstCodecResult<i64> {
+        read_with_cursor(&mut self.buffer, read_var_i64)
+    }
+
     fn read_var_i32_with_sign(&mut self) -> JwstCodecResult<(i32, bool)> {
         // lib0 varInt stores the sign in bit 6 of the first byte, including for
         // zero.
@@ -163,6 +167,9 @@ impl CrdtWriter for RawEncoder {
     }
     fn write_var_i32(&mut self, num: i32) -> JwstCodecResult {
         write_var_i32(&mut self.buffer, num).map_err(writer::map_write_error)
+    }
+    fn write_var_i64(&mut self, num: i64) -> JwstCodecResult {
+        write_var_i64(&mut self.buffer, num).map_err(writer::map_write_error)
     }
     fn write_var_string<S: AsRef<str>>(&mut self, s: S) -> JwstCodecResult {
         write_var_string(&mut self.buffer, s).map_err(writer::map_write_error)

@@ -1,0 +1,21 @@
+# A wasm32-unknown-unknown module exercising the document core without the
+# `random` feature: the host passes the client ID, GUID and time. run.mjs
+# instantiates it with no imports and reads its update back with Yjs.
+[package]
+edition = "2024"
+name    = "y-octo-wasm-smoke"
+publish = false
+version = "0.0.0"
+
+[lib]
+crate-type = ["cdylib"]
+path       = "lib.rs"
+
+[dependencies]
+y-octo = { path = "../..", default-features = false }
+
+[profile.release]
+debug = false
+
+# not a member of the repository workspace
+[workspace]

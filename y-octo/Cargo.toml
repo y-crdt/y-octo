@@ -19,14 +19,15 @@ version = "0.1.4"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-ahash         = { workspace = true }
+# runtime-rng (getrandom) only with the `random` feature; keys from the
+# build otherwise
+ahash         = { workspace = true, features = ["std", "compile-time-rng"] }
 byteorder     = { workspace = true }
 log           = { workspace = true }
-nanoid        = { workspace = true }
+nanoid        = { workspace = true, optional = true }
 nom           = { workspace = true }
 ordered-float = { workspace = true }
-rand          = { workspace = true }
-rand_distr    = { workspace = true }
+rand          = { workspace = true, optional = true }
 serde         = { workspace = true, features = ["derive"] }
 serde_json    = { workspace = true }
 smol_str      = { workspace = true }
@@ -35,17 +36,21 @@ thiserror     = { workspace = true }
 [features]
 bench      = []
 debug      = []
-default    = []
-events     = []
+default    = ["random"]
 large_refs = []
+# Random default client IDs and GUIDs (`DocOptions::default`, `Doc::new`) and
+# runtime hash keys, through getrandom. Without it (for example on
+# wasm32-unknown-unknown) the host passes both with
+# `DocOptions::from_identity` and no JS randomness backend is needed.
+random     = ["dep:rand", "dep:nanoid", "ahash/runtime-rng"]
 serde_json = []
-subscribe  = []
 
 [target.'cfg(fuzzing)'.dependencies]
 arbitrary     = { workspace = true }
 ordered-float = { workspace = true, features = ["arbitrary"] }
 
 [target.'cfg(loom)'.dependencies]
+indexmap = "2"
 loom = { workspace = true }
 # override the dev-dependencies feature
 async-lock = { workspace = true }
@@ -53,13 +58,14 @@ async-lock = { workspace = true }
 [dev-dependencies]
 assert-json-diff = { workspace = true }
 criterion        = { workspace = true }
-lib0             = { workspace = true }
+flate2           = "1"
 ordered-float    = { workspace = true, features = ["proptest"] }
 path-ext         = { workspace = true }
 proptest         = { workspace = true }
 proptest-derive  = { workspace = true }
+rand             = { workspace = true }
 rand_chacha      = { workspace = true }
-yrs              = { workspace = true }
+sha2             = "0.10"
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = [
@@ -87,6 +93,10 @@ name    = "text_ops_benchmarks"
 [[bench]]
 harness = false
 name    = "apply_benchmarks"
+
+[[bench]]
+harness = false
+name    = "apply_scaling_benchmarks"
 
 [[bench]]
 harness = false

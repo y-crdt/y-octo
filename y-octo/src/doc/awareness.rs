@@ -5,18 +5,35 @@ use crate::sync::Arc;
 
 pub type AwarenessCallback = Arc<dyn Fn(&Awareness, AwarenessEvent) + Send + Sync + 'static>;
 
+/// Presence states of the peers of one document, exchanged like the
+/// `y-protocols` awareness protocol.
+///
+/// The local identity is authoritative, which deliberately differs from
+/// `y-protocols`: its `Awareness` starts with a `{}` local state and its
+/// `applyAwarenessUpdate` only refuses remote `null` removals of the local
+/// client, so a remote update with a higher clock can still replace the local
+/// state. Here the local state starts unset (`None`), and remote updates for
+/// `local_id` never create or replace it, before or after the first
+/// [Awareness::set_local_state]; they only raise the clock the local state is
+/// broadcast with, so the local state wins on every peer. With distinct client
+/// IDs per replica, as Yjs requires, both behave the same.
 pub struct Awareness {
     awareness: AwarenessStates,
     callback: Option<AwarenessCallback>,
     local_id: u64,
+    /// Highest clock remote peers claimed for `local_id` before a local state
+    /// existed; the first local state starts above it so peers accept it.
+    local_clock_floor: u64,
 }
 
 impl Awareness {
+    /// Creates an awareness for `local_id` without a local state.
     pub fn new(local_id: u64) -> Self {
         Self {
             awareness: AwarenessStates::new(),
             callback: None,
             local_id,
+            local_clock_floor: 0,
         }
     }
 
@@ -37,7 +54,10 @@ impl Awareness {
     }
 
     fn mut_local_state(&mut self) -> &mut AwarenessState {
-        self.awareness.entry(self.local_id).or_default()
+        let floor = self.local_clock_floor;
+        self.awareness
+            .entry(self.local_id)
+            .or_insert_with(|| AwarenessState::new(floor, "null".to_string()))
     }
 
     pub fn set_local_state(&mut self, content: String) {
@@ -54,6 +74,11 @@ impl Awareness {
         }
     }
 
+    /// Applies remote states, keeping each one newer than the known state.
+    ///
+    /// States for `local_id` are never stored, unlike `y-protocols`
+    /// `applyAwarenessUpdate`: they only raise the clock of the local state
+    /// so its next broadcast supersedes them.
     pub fn apply_update(&mut self, update: AwarenessStates) {
         let mut event = AwarenessEventBuilder::new();
 
@@ -64,7 +89,7 @@ impl Awareness {
                     if client_id == self.local_id {
                         // ignore remote update about local client and
                         // add clock to overwrite remote data
-                        prev_state.set_clock(max(prev_state.clock, state.clock) + 1);
+                        prev_state.set_clock(max(prev_state.clock, state.clock).saturating_add(1));
                         event.update(client_id);
                         continue;
                     }
@@ -78,6 +103,12 @@ impl Awareness {
                             event.update(client_id);
                         }
                     }
+                }
+                Entry::Vacant(_) if client_id == self.local_id => {
+                    // Remote peers may not author the local state, even before
+                    // it is set; only keep its clock so the first local state
+                    // overrides theirs.
+                    self.local_clock_floor = max(self.local_clock_floor, state.clock);
                 }
                 Entry::Vacant(entry) => {
                     entry.insert(state);
@@ -236,5 +267,30 @@ mod tests {
                 assert_eq!(event.removed, [0]);
             }
         });
+    }
+
+    #[test]
+    fn test_awareness_rejects_remote_local_state() {
+        let mut awareness = Awareness::new(7);
+
+        // a peer claims the local client before it set any state
+        let mut states = AwarenessStates::new();
+        states.insert(7, AwarenessState::new(u64::MAX - 1, "forged".to_string()));
+        awareness.apply_update(states);
+        assert_eq!(awareness.get_local_state(), None);
+
+        // the first local state outranks the forged clock
+        awareness.set_local_state("mine".to_string());
+        assert_eq!(awareness.get_local_state(), Some("mine".to_string()));
+        assert_eq!(awareness.get_states().get(&7).unwrap().clock(), u64::MAX);
+
+        // clocks saturate instead of overflowing
+        let mut states = AwarenessStates::new();
+        states.insert(7, AwarenessState::new(u64::MAX, "forged".to_string()));
+        awareness.apply_update(states);
+        awareness.set_local_state("still mine".to_string());
+        let local = awareness.get_states().get(&7).unwrap();
+        assert_eq!(local.clock(), u64::MAX);
+        assert_eq!(local.content(), "still mine");
     }
 }

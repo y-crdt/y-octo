@@ -14,7 +14,7 @@ pub(super) fn scan(input: Arc<[u8]>, limits: ReadLimits) -> Result<Builder, Read
         max_structs: limits.max_structs,
         max_clients: limits.max_clients,
         max_collection_entries: limits.max_collection_entries,
-        max_any_depth: limits.max_any_depth,
+        max_any_depth: limits.max_any_depth.min(crate::Any::MAX_CONFIGURABLE_DEPTH),
         max_content_bytes: limits.max_content_bytes,
     };
     let sink = ReadOnlySink {

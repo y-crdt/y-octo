@@ -13,6 +13,22 @@ Y-Octo is a tiny, ultra-fast CRDT collaboration library built for all major plat
 
 Y-Octo also has interoperability and binary compatibility with [yjs]. Developers can use [yjs] to develop local-first web applications and collaborate with Y-Octo in native apps alongside web apps.
 
+## Editor integration
+
+- Group one editor action in `Doc::transact_mut` and edit through the transaction's text, array or map view. Returning an error preserves changes already made. Replace polling with `Doc::subscribe` and keep the returned subscription alive. Callbacks receive commits in order after the document unlocks.
+- Store a selection as relative positions. Text offsets count UTF-16 code units. A negative association anchors to the preceding content. Resolve after synchronization and handle a missing or deleted target. Enable redo following for a local selection that should track recreated content.
+- Use `Doc::apply_local_update` for the bytes from one trusted renderer transaction with its own client ID. Apply peer updates and accumulated sync diffs as remote updates so peer deletions stay out of local undo. On `MissingDependencies`, synchronize the missing clocks before retrying.
+- Share one scoped `UndoManager` per document. Register the renderer origin and reuse clones of that instance. Call `stop_capturing` between gestures. Undo history and origins are local to the document.
+- With default features disabled, initialize each replica with `DocOptions::from_identity`. Use a distinct JavaScript-safe client ID and supply a fresh one if `client_required()` becomes true.
+
+Run the API examples with `cargo test -p y-octo --doc`. The Rust crate exchanges Yjs Update V1 with other clients. Applications that used the removed Node binding need an adapter.
+
+### Compatibility limits
+
+The default decoder accepts `Any` nesting up to 128 levels. For trusted inputs, set the limit with `Update::decode_v1_with_max_any_depth`, `ReadLimits::max_any_depth` or `Any::read_with_max_depth`. The maximum is 1,024.
+
+`Awareness` starts without a local state. A remote update for the local client ID can advance the clock used for the next broadcast, but only the local client can set its state.
+
 ## Who are using
 
 <a href="https://affine.pro"><img src="./assets/affine.svg" /></a>
@@ -37,7 +53,6 @@ Y-Octo also has interoperability and binary compatibility with [yjs]. Developers
 The parallel workload applies the full Automerge trace to two replicas in random batches of 1–1000 local edits, synchronizes after each pair of batches, and verifies replica convergence.
 
 Ref: https://github.com/darkskygit/crdt-bench-native
-
 
 ## Features
 
@@ -80,9 +95,9 @@ Put everything to the test! We've established various test suites, but we're con
   - [Miri](https://github.com/rust-lang/miri) undefined behavior tests
   - [Address Sanitizer](https://doc.rust-lang.org/beta/unstable-book/compiler-flags/sanitizer.html) memory error detections
   - [Fuzzing](https://github.com/rust-fuzz/cargo-fuzz) fuzzing tests
-- Node Tests
+- [Yjs interoperability tests](y-octo/tests/oracle/README.md) and a WebAssembly smoke test run by Node.js
 - Smoke Tests
-- Eslint, Clippy
+- Formatting and Clippy
 
 ## Related projects
 
@@ -94,10 +109,6 @@ Put everything to the test! We've established various test suites, but we're con
 - [DarkSky](https://github.com/darkskygit)
 - [liuyi](https://github.com/forehalo)
 - [LongYinan](https://github.com/Brooooooklyn)
-
-## Why not [yrs](https://github.com/y-crdt/y-crdt/)
-
-See [Why we're not using yrs](./y-octo-utils/yrs-is-unsafe/README.md)
 
 ## License
 

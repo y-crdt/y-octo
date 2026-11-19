@@ -1,17 +1,14 @@
 #![no_main]
-
 use libfuzzer_sys::fuzz_target;
-use y_octo::write_var_i32;
-
+use y_octo::{CrdtReader, CrdtWriter, RawDecoder, RawEncoder, read_var_i32, write_var_i32};
 fuzz_target!(|data: Vec<i32>| {
-    use lib0::encoding::Write;
-
-    for i in data {
-        let mut buf1 = Vec::new();
-        write_var_i32(&mut buf1, i).unwrap();
-        let mut buf2 = Vec::new();
-        buf2.write_var(i);
-
-        assert_eq!(buf1, buf2);
+    for value in data {
+        let mut bytes = Vec::new();
+        write_var_i32(&mut bytes, value).unwrap();
+        assert_eq!(read_var_i32(&bytes).unwrap(), (&[][..], value));
+        let mut encoder = RawEncoder::default();
+        encoder.write_var_i32(value).unwrap();
+        assert_eq!(encoder.into_inner(), bytes);
+        assert_eq!(RawDecoder::new(&bytes).read_var_i32().unwrap(), value);
     }
 });

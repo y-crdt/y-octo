@@ -7,7 +7,7 @@ use std::{
 use super::*;
 use crate::doc::{StateVector, codec::decoder::v1 as decoder, find_missing_dependency};
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default)]
 pub struct Update {
     pub(crate) structs: ClientMap<VecDeque<Node>>,
     pub(crate) delete_set: DeleteSet,
@@ -22,19 +22,46 @@ pub struct Update {
     pub(crate) pending_delete_set: DeleteSet,
 }
 
+/// Cloning copies every struct: the structs of an update become part of a
+/// document when it is applied, so a clone must not share them.
+impl Clone for Update {
+    fn clone(&self) -> Self {
+        fn copy(structs: &ClientMap<VecDeque<Node>>) -> ClientMap<VecDeque<Node>> {
+            structs
+                .iter()
+                .map(|(client, nodes)| (*client, nodes.iter().map(Node::detached_clone).collect()))
+                .collect()
+        }
+
+        Self {
+            structs: copy(&self.structs),
+            delete_set: self.delete_set.clone(),
+            pending_structs: copy(&self.pending_structs),
+            missing_state: self.missing_state.clone(),
+            pending_delete_set: self.pending_delete_set.clone(),
+        }
+    }
+}
+
 impl<'a> CrdtRead<RawDecoder<'a>> for Update {
+    /// Reads the rest of `decoder` with `Any` values nested at most
+    /// [Any::DEFAULT_MAX_DEPTH] levels.
     fn read(decoder: &mut RawDecoder<'a>) -> JwstCodecResult<Self> {
-        let update = decoder::decode(
-            decoder.rest_ref(),
-            OwnedUpdateSink::default(),
-            decoder::DecodeLimits::UNRESTRICTED,
-        )
-        .map_err(|error| match error {
-            decoder::Error::Codec(error) => error,
-            decoder::Error::Resource(name) => {
-                JwstCodecError::IncompleteDocument(format!("{name} exceeds platform size"))
-            }
-        })?;
+        Self::read_with_max_any_depth(decoder, Any::DEFAULT_MAX_DEPTH)
+    }
+}
+
+impl Update {
+    fn read_with_max_any_depth(decoder: &mut RawDecoder<'_>, max_any_depth: usize) -> JwstCodecResult<Self> {
+        let limits = decoder::DecodeLimits {
+            max_any_depth: max_any_depth.min(Any::MAX_CONFIGURABLE_DEPTH),
+            ..decoder::DecodeLimits::UPDATE
+        };
+        let update =
+            decoder::decode(decoder.rest_ref(), OwnedUpdateSink::default(), limits).map_err(|error| match error {
+                decoder::Error::Codec(error) => error,
+                decoder::Error::Resource(name) => JwstCodecError::IncompleteDocument(format!("{name} exceeds limit")),
+            })?;
         decoder.consume_rest();
         Ok(update)
     }
@@ -132,8 +159,9 @@ impl<'a> decoder::Sink<'a> for OwnedUpdateSink {
         if matches!(item.get().unwrap().content, Content::Deleted(_)) {
             item.get().unwrap().flags.set_deleted();
         }
+        // SAFETY: the decoded type is detached and owned by this update.
         if let Content::Type(ty) = &item.get().unwrap().content
-            && let Some(mut ty) = ty.ty_mut()
+            && let Some(mut ty) = unsafe { ty.ty_mut() }
         {
             ty.item = item.clone();
         }
@@ -326,9 +354,48 @@ impl<W: CrdtWriter> CrdtWrite<W> for Update {
 }
 
 impl Update {
-    // decode from ydoc v1
+    /// Decodes a Yjs Update V1, rejecting `Any` values nested deeper than
+    /// [Any::DEFAULT_MAX_DEPTH] with [JwstCodecError::IncompleteDocument].
+    ///
+    /// Yjs puts no limit on `Any` nesting; the default limit keeps untrusted
+    /// input from building values whose recursive clone, comparison and drop
+    /// use unbounded stack. Use [Update::decode_v1_with_max_any_depth] for
+    /// trusted updates nested deeper.
     pub fn decode_v1<T: AsRef<[u8]>>(buffer: T) -> JwstCodecResult<Update> {
-        Update::read(&mut RawDecoder::new(buffer.as_ref()))
+        Self::decode_v1_with_max_any_depth(buffer, Any::DEFAULT_MAX_DEPTH)
+    }
+
+    /// Decodes a Yjs Update V1 whose `Any` values nest at most
+    /// `max_any_depth` levels, where a limit above
+    /// [Any::MAX_CONFIGURABLE_DEPTH] acts as that limit and 0 accepts scalars
+    /// and empty containers only. Deeper values fail with
+    /// [JwstCodecError::IncompleteDocument].
+    ///
+    /// Apply the result with [crate::Doc::apply_update] or
+    /// [crate::Doc::apply_update_with_origin] to accept trusted updates nested
+    /// deeper than [crate::Doc::apply_update_from_binary_v1] allows.
+    ///
+    /// ```
+    /// use y_octo::{Any, DocOptions, Update};
+    ///
+    /// let mut deep = Any::Null;
+    /// for _ in 0..200 {
+    ///     deep = Any::Array(vec![deep]);
+    /// }
+    /// let source = DocOptions::from_identity(1, "deep".into()).build();
+    /// let mut map = source.get_or_create_map("root").unwrap();
+    /// // the entry's `ContentAny` holds the single value `deep`
+    /// map.insert("deep".into(), Any::Array(vec![deep.clone()])).unwrap();
+    /// let bytes = source.encode_update_v1().unwrap();
+    ///
+    /// let mut doc = DocOptions::from_identity(2, "deep".into()).build();
+    /// assert!(doc.apply_update_from_binary_v1(&bytes).is_err());
+    /// doc.apply_update(Update::decode_v1_with_max_any_depth(&bytes, 256).unwrap()).unwrap();
+    /// let root = doc.get_or_create_map("root").unwrap();
+    /// assert_eq!(root.get("deep").unwrap().to_any(), Some(deep));
+    /// ```
+    pub fn decode_v1_with_max_any_depth<T: AsRef<[u8]>>(buffer: T, max_any_depth: usize) -> JwstCodecResult<Update> {
+        Self::read_with_max_any_depth(&mut RawDecoder::new(buffer.as_ref()), max_any_depth)
     }
 
     pub fn encode_v1(&self) -> JwstCodecResult<Vec<u8>> {
@@ -553,7 +620,7 @@ impl<'a> UpdateIterator<'a> {
     /// tell if current update's dependencies(left, right, parent) has already
     /// been consumed and recorded and return the client of them if not.
     fn get_missing_dep(&self, struct_info: &Node) -> Option<Client> {
-        let owner = struct_info.as_item();
+        let Node::Item(owner) = struct_info else { return None };
         let item = owner.get()?;
         let parent = match &item.parent {
             Some(Parent::Id(parent_id)) => Some(*parent_id),
@@ -695,6 +762,7 @@ impl Iterator for DeleteSetIterator<'_> {
 }
 
 #[cfg(test)]
+#[allow(clippy::single_range_in_vec_init, clippy::type_complexity)]
 mod tests {
     use std::{num::ParseIntError, path::PathBuf};
 
@@ -1057,7 +1125,7 @@ mod tests {
 
                     let partial = Update::merge([
                         Update::decode_v1(tail).unwrap(),
-                        Update::decode_v1(&[0, 1, 1, 1, 0, 3]).unwrap(),
+                        Update::decode_v1([0, 1, 1, 1, 0, 3]).unwrap(),
                     ]);
                     let bytes = partial.encode_v1().unwrap();
                     let partial = Update::decode_v1(&bytes).unwrap();

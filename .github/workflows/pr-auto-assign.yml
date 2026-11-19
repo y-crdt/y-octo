@@ -5,6 +5,12 @@ on:
   pull_request_target:
     types: [opened, ready_for_review]
 
+# pull_request_target runs with a write token; grant only what assigning
+# reviewers needs.
+permissions:
+  contents: read
+  pull-requests: write
+
 jobs:
   add-reviews:
     runs-on: ubuntu-latest

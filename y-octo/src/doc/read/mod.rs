@@ -357,16 +357,33 @@ pub struct ReadDoc {
     types: Vec<FrozenType>,
 }
 
-#[derive(Debug, Default)]
+// Map keys come from the update; a fixed hash would let an attacker precompute
+// colliding keys and make interning quadratic, so each table seeds its own.
+#[cfg(not(loom))]
+type KeyHasherState = ahash::RandomState;
+#[cfg(loom)]
+type KeyHasherState = std::hash::BuildHasherDefault<ahash::AHasher>;
+
+#[derive(Default)]
 struct KeyTable {
     spans: Vec<Span>,
     buckets: HashMap<u64, Vec<KeyId>>,
+    hasher: KeyHasherState,
+}
+
+impl std::fmt::Debug for KeyTable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("KeyTable")
+            .field("spans", &self.spans)
+            .field("buckets", &self.buckets)
+            .finish_non_exhaustive()
+    }
 }
 
 impl KeyTable {
     fn intern(&mut self, input: &[u8], span: Span) -> Result<KeyId, ReadError> {
         let bytes = span.bytes(input);
-        let hash = hash_key(bytes);
+        let hash = self.hash_key(bytes);
         if let Some(ids) = self.buckets.get(&hash) {
             for id in ids {
                 if self.spans[*id as usize].bytes(input) == bytes {
@@ -385,7 +402,7 @@ impl KeyTable {
     }
 
     fn find(&self, input: &[u8], key: &str) -> Option<KeyId> {
-        self.buckets.get(&hash_key(key.as_bytes())).and_then(|ids| {
+        self.buckets.get(&self.hash_key(key.as_bytes())).and_then(|ids| {
             ids.iter()
                 .copied()
                 .find(|id| self.spans[*id as usize].bytes(input) == key.as_bytes())
@@ -397,10 +414,10 @@ impl KeyTable {
     }
 }
 
-fn hash_key(bytes: &[u8]) -> u64 {
-    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
-        (hash ^ u64::from(*byte)).wrapping_mul(0x100_0000_01b3)
-    })
+impl KeyTable {
+    fn hash_key(&self, bytes: &[u8]) -> u64 {
+        std::hash::BuildHasher::hash_one(&self.hasher, bytes)
+    }
 }
 
 impl ReadDoc {
@@ -409,7 +426,12 @@ impl ReadDoc {
     /// `Vec<u8>` transfers its bytes and `Arc<[u8]>` shares them. Converting a
     /// borrowed slice to `Arc<[u8]>` copies the input. The update must resolve
     /// from an empty state; a valid incremental update can return
-    /// [`ReadError::IncompleteSnapshot`].
+    /// [`ReadError::IncompleteSnapshot`]. `Any` values nested deeper than
+    /// [`Any::DEFAULT_MAX_DEPTH`](crate::Any::DEFAULT_MAX_DEPTH) fail with
+    /// `ReadError::ResourceLimit("Any nesting depth")`; raise
+    /// [`ReadLimits::max_any_depth`] with
+    /// [`ReadDoc::from_full_update_v1_with_limits`] for trusted documents
+    /// nested deeper.
     pub fn from_full_update_v1(input: impl Into<Arc<[u8]>>) -> Result<Self, ReadError> {
         Self::from_full_update_v1_with_limits(input, ReadLimits::default())
     }
@@ -524,7 +546,7 @@ mod tests {
     }
 
     fn mutable_map_json(map: Map) -> JsonValue {
-        mutable_type_map_json(&map.0.ty().unwrap())
+        mutable_type_map_json(map.0.ty().unwrap())
     }
 
     fn mutable_type_map_json(ty: &YType) -> JsonValue {
@@ -553,7 +575,7 @@ mod tests {
         serde_json::json!({
             "kind": ty.kind().as_str(),
             "tag": ty.name.as_deref(),
-            "map": mutable_type_map_json(&ty),
+            "map": mutable_type_map_json(ty),
             "list": list,
         })
     }
@@ -1062,7 +1084,10 @@ mod tests {
             doc
         });
 
-        for _ in 0..50 {
+        // Keep a short history under Miri; native tests cover the full semantic
+        // sample.
+        let steps = if cfg!(miri) { 10 } else { 50 };
+        for _ in 0..steps {
             let index = rng.random_range(0..replicas.len());
             let doc = &mut replicas[index];
             match rng.random_range(0..5) {
@@ -1188,8 +1213,9 @@ mod tests {
         dependent.origin_left_id = Some(Id::new(99, 0));
         let missing_dependency = update_bytes(vec![Node::from(dependent)], DeleteSet::default());
 
-        // wire-legal but the types nest in a cycle: the failure surfaces in
-        // resolve's type_is_ancestor walk, not during decode
+        // wire-legal types nesting in a cycle: the first names a parent at or
+        // after itself in its own client, which counts as missing (as in
+        // DocStore), so both become GC instead of forming the cycle
         let cyclic = update_bytes(
             vec![
                 item(
@@ -1234,7 +1260,6 @@ mod tests {
         };
 
         let cases = [
-            ("cyclic type parent", cyclic, "invalid update: Invalid parent"),
             (
                 "missing struct dependency",
                 missing_dependency,
@@ -1260,6 +1285,14 @@ mod tests {
             let error = ReadDoc::from_full_update_v1(update).unwrap_err();
             assert_eq!(error.to_string(), expected, "{name}");
         }
+
+        let read = ReadDoc::from_full_update_v1(cyclic.clone()).unwrap();
+        assert_eq!(read.root_names().count(), 0);
+        let doc = Doc::try_from_binary_v1(&cyclic).unwrap();
+        assert_eq!(doc.get_state_vector().get(&1), 2);
+        let store = doc.store.read().unwrap();
+        assert!(store.get_node(Id::new(1, 0)).unwrap().is_gc());
+        assert!(store.get_node(Id::new(1, 1)).unwrap().is_gc());
     }
 
     #[test]

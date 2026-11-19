@@ -12,6 +12,8 @@ pub trait CrdtReader {
     fn len(&self) -> u64;
     fn read_var_u64(&mut self) -> JwstCodecResult<u64>;
     fn read_var_i32(&mut self) -> JwstCodecResult<i32>;
+    /// Read a signed varInt in JavaScript's safe integer range.
+    fn read_var_i64(&mut self) -> JwstCodecResult<i64>;
     /// Return the sign separately because an i32 cannot distinguish wire -0
     /// from 0. The default keeps existing readers compatible; wire readers that
     /// support signed zero must override it before the sign is lost in integer

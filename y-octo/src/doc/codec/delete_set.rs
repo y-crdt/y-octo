@@ -18,14 +18,16 @@ impl<W: CrdtWriter> CrdtWrite<W> for OrderRange {
     fn write(&self, encoder: &mut W) -> JwstCodecResult {
         // canonicalize like yjs' sortAndMergeDeleteSet so the wire format is
         // stable no matter how the ranges were inserted or decoded
-        let ranges = self.canonical_ranges();
-        encoder.write_var_u64(ranges.len() as u64)?;
-        for range in ranges {
-            range.write(encoder)?;
-        }
-
-        Ok(())
+        write_ranges(&self.canonical_ranges(), encoder)
     }
+}
+
+fn write_ranges<W: CrdtWriter>(ranges: &[Range<u64>], encoder: &mut W) -> JwstCodecResult {
+    encoder.write_var_u64(ranges.len() as u64)?;
+    for range in ranges {
+        range.write(encoder)?;
+    }
+    Ok(())
 }
 
 #[derive(Debug, Default, Clone, PartialEq)]
@@ -103,23 +105,22 @@ impl DeleteSet {
 
 impl<W: CrdtWriter> CrdtWrite<W> for DeleteSet {
     fn write(&self, encoder: &mut W) -> JwstCodecResult {
-        let mut clients = self.keys().copied().collect::<Vec<_>>();
-
-        // Descending
-        clients.sort_by(|a, b| b.cmp(a));
-
         // skip clients whose ranges canonicalize to nothing (e.g. only
         // zero-length ranges), keeping the wire format minimal and stable
-        let clients = clients
-            .into_iter()
-            .filter(|client| !self.get(client).unwrap().canonical_ranges().is_empty())
+        let mut clients = self
+            .iter()
+            .filter_map(|(&client, ranges)| {
+                let ranges = ranges.canonical_ranges();
+                (!ranges.is_empty()).then_some((client, ranges))
+            })
             .collect::<Vec<_>>();
+        clients.sort_unstable_by_key(|entry| std::cmp::Reverse(entry.0));
 
         encoder.write_var_u64(clients.len() as u64)?;
 
-        for client in clients {
+        for (client, ranges) in clients {
             encoder.write_var_u64(client)?;
-            self.get(&client).unwrap().write(encoder)?;
+            write_ranges(&ranges, encoder)?;
         }
 
         Ok(())

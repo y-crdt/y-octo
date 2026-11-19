@@ -4,51 +4,30 @@ impl_type!(Array);
 
 impl ListType for Array {}
 
-pub struct ArrayIter<'a> {
-    iter: ListIterator<'a>,
-    pending: Option<PendingArrayValues>,
-}
-
-enum PendingArrayValues {
-    Any { values: Vec<Any>, index: usize },
-}
-
-impl Iterator for ArrayIter<'_> {
-    type Item = Value;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        loop {
-            if let Some(PendingArrayValues::Any { values, index }) = &mut self.pending {
-                if *index < values.len() {
-                    let value = values[*index].clone();
-                    *index += 1;
-                    return Some(Value::Any(value));
-                }
-                self.pending = None;
-            }
-
-            let item = self.iter.next()?;
-            if let Some(item) = item.get() {
-                if !item.countable() {
-                    continue;
-                }
-
-                match &item.content {
-                    Content::Any(values) if !values.is_empty() => {
-                        if values.len() > 1 {
-                            self.pending = Some(PendingArrayValues::Any {
-                                values: values.clone(),
-                                index: 1,
-                            });
-                        }
-
-                        return Some(Value::Any(values[0].clone()));
-                    }
-                    _ => return Some(Value::from(&item.content)),
-                }
-            }
+/// The value at `index` of the array type `parent` (data `ty`). The caller
+/// holds the store lock.
+pub(crate) fn array_get(parent: &YTypeRef, ty: &YType, index: u64) -> Option<Value> {
+    let (item, offset) = item_at(parent, ty, index)?;
+    item.get().and_then(|item| {
+        // TODO: rewrite to content.read(&mut [Any])
+        match &item.content {
+            Content::Any(any) => any.get(offset as usize).map(|any| Value::Any(any.clone())),
+            _ => Some(Value::from(&item.content)),
         }
-    }
+    })
+}
+
+/// The values of an array type. The caller holds the store lock while
+/// iterating.
+pub(crate) fn array_values(ty: &YType) -> impl Iterator<Item = Value> + '_ {
+    ListIterator::new(ty)
+        .filter(|item| item.countable())
+        .flat_map(|item| -> Box<dyn Iterator<Item = Value> + '_> {
+            match &item.content {
+                Content::Any(any) if !any.is_empty() => Box::new(any.iter().cloned().map(Value::Any)),
+                content => Box::new(std::iter::once(Value::from(content))),
+            }
+        })
 }
 
 impl Array {
@@ -68,26 +47,22 @@ impl Array {
     }
 
     pub fn get(&self, index: u64) -> Option<Value> {
-        let (item, offset) = self.get_item_at(index)?;
-
-        item.get().and_then(|item| {
-            // TODO: rewrite to content.read(&mut [Any])
-            match &item.content {
-                Content::Any(any) => any.get(offset as usize).map(|any| Value::Any(any.clone())),
-                _ => Some(Value::from(&item.content)),
-            }
-        })
+        let parent = self.as_inner();
+        or_released(parent.read(|_, ty| array_get(parent, ty, index)))
     }
 
-    pub fn iter(&self) -> ArrayIter<'_> {
-        ArrayIter {
-            iter: self.iter_item(),
-            pending: None,
-        }
+    /// A snapshot of the values, taken under one store read lock.
+    pub fn iter(&self) -> std::vec::IntoIter<Value> {
+        or_released(self.as_inner().read(|_, ty| array_values(ty).collect::<Vec<_>>())).into_iter()
     }
 
     pub fn push<V: Into<Value>>(&mut self, val: V) -> JwstCodecResult {
-        self.insert(self.len(), val)
+        let parent = self.as_inner();
+        let content: Content = val.into().into();
+        parent.write(|store, ty| {
+            let len = ty.len;
+            list_insert(parent, store, ty, len, content)
+        })
     }
 
     pub fn insert<V: Into<Value>>(&mut self, idx: u64, val: V) -> JwstCodecResult {
@@ -106,9 +81,10 @@ impl serde::Serialize for Array {
     {
         use serde::ser::SerializeSeq;
 
-        let mut seq = serializer.serialize_seq(Some(self.len() as usize))?;
+        let values = self.iter();
+        let mut seq = serializer.serialize_seq(Some(values.len()))?;
 
-        for item in self.iter() {
+        for item in values {
             seq.serialize_element(&item)?;
         }
         seq.end()
@@ -155,93 +131,63 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore)]
-    fn test_ytext_equal() {
-        use yrs::{Options, Text, Transact};
-        let options = DocOptions::default();
-        let yrs_options = Options::default();
-
-        loom_model!({
-            let doc = yrs::Doc::with_options(yrs_options.clone());
-            let array = doc.get_or_insert_text("abc");
-
-            let mut trx = doc.transact_mut();
-            array.insert(&mut trx, 0, " ");
-            array.insert(&mut trx, 0, "Hello");
-            array.insert(&mut trx, 6, "World");
-            array.insert(&mut trx, 11, "!");
-            let buffer = trx.encode_update_v1();
-
-            let mut decoder = RawDecoder::new(&buffer);
-            let update = Update::read(&mut decoder).unwrap();
-
-            let mut doc = Doc::with_options(options.clone());
-            doc.apply_update(update).unwrap();
-            let array = doc.get_or_create_array("abc").unwrap();
-
-            assert_eq!(array.get(0).unwrap(), Value::Any(Any::String("Hello".into())));
-            assert_eq!(array.get(5).unwrap(), Value::Any(Any::String(" ".into())));
-            assert_eq!(array.get(6).unwrap(), Value::Any(Any::String("World".into())));
-            assert_eq!(array.get(11).unwrap(), Value::Any(Any::String("!".into())));
-        });
-
-        let options = DocOptions::default();
-        let yrs_options = Options::default();
-
-        loom_model!({
-            let doc = yrs::Doc::with_options(yrs_options.clone());
-            let array = doc.get_or_insert_text("abc");
-
-            let mut trx = doc.transact_mut();
-            array.insert(&mut trx, 0, "Hello");
-            array.insert(&mut trx, 5, " ");
-            array.insert(&mut trx, 6, "World");
-            array.insert(&mut trx, 11, "!");
-            let buffer = trx.encode_update_v1();
-
-            let mut decoder = RawDecoder::new(&buffer);
-            let update = Update::read(&mut decoder).unwrap();
-
-            let mut doc = Doc::with_options(options.clone());
-            doc.apply_update(update).unwrap();
-            let array = doc.get_or_create_array("abc").unwrap();
-
-            assert_eq!(array.get(0).unwrap(), Value::Any(Any::String("Hello".into())));
-            assert_eq!(array.get(5).unwrap(), Value::Any(Any::String(" ".into())));
-            assert_eq!(array.get(6).unwrap(), Value::Any(Any::String("World".into())));
-            assert_eq!(array.get(11).unwrap(), Value::Any(Any::String("!".into())));
-        });
+    fn test_yjs_text_as_sequence() {
+        for fixture in ["text-split", "text-append"] {
+            let update = crate::doc::yjs_fixture(fixture);
+            loom_model!({
+                let doc = Doc::try_from_binary_v1(&update).unwrap();
+                let array = doc.get_or_create_array("abc").unwrap();
+                let text = array
+                    .iter()
+                    .map(|v| match v {
+                        Value::Any(Any::String(s)) => s,
+                        _ => panic!("text sequence contains non-string"),
+                    })
+                    .collect::<String>();
+                assert_eq!(text, "Hello World!");
+                assert_eq!(array.len(), 12);
+            });
+        }
     }
 
     #[test]
-    #[cfg_attr(miri, ignore)]
-    fn test_yrs_array_decode() {
-        use yrs::{Array, Transact};
-
+    fn test_yjs_array_decode() {
+        let update = crate::doc::yjs_fixture("array-words");
         loom_model!({
-            let update = {
-                let doc = yrs::Doc::new();
-                let array = doc.get_or_insert_array("abc");
-                let mut trx = doc.transact_mut();
-
-                array.insert(&mut trx, 0, "hello");
-                array.insert(&mut trx, 1, "world");
-                array.insert(&mut trx, 1, " ");
-
-                trx.encode_update_v1()
-            };
-            let doc = Doc::try_from_binary_v1_with_options(
-                update.clone(),
-                DocOptions {
-                    guid: String::from("1"),
-                    client_id: 1,
-                    gc: true,
-                },
-            )
-            .unwrap();
+            let doc = Doc::try_from_binary_v1(&update).unwrap();
             let arr = doc.get_or_create_array("abc").unwrap();
+            assert_eq!(arr.get(2).unwrap(), Value::Any(Any::String("world".to_string())));
+            assert_eq!(arr.len(), 3);
+        });
+    }
 
-            assert_eq!(arr.get(2).unwrap(), Value::Any(Any::String("world".to_string())))
+    /// A type is inserted at most once: a second insert would rewrite its item
+    /// while the first container still holds it, and the ancestor walk could
+    /// then miss a cycle (a contains b, b moved under c, b takes a), which the
+    /// recursive delete of `a` would walk with aliased `&mut` types.
+    #[test]
+    fn test_type_is_inserted_at_most_once() {
+        loom_model!({
+            let doc = Doc::with_client(1);
+            let mut a = doc.create_array().unwrap();
+            let mut b = doc.create_array().unwrap();
+            let mut c = doc.get_or_create_array("c").unwrap();
+
+            a.push(b.clone()).unwrap();
+            assert_eq!(c.push(b.clone()), Err(JwstCodecError::TypeAlreadyInserted));
+            assert_eq!(b.push(a.clone()), Err(JwstCodecError::InvalidParent));
+            a.remove(0, 1).unwrap();
+
+            // deleted and collected types stay inserted
+            assert_eq!(a.push(b.clone()), Err(JwstCodecError::TypeAlreadyInserted));
+            doc.gc().unwrap();
+            assert_eq!(c.insert(0, b.clone()), Err(JwstCodecError::TypeAlreadyInserted));
+            // so do root types
+            assert_eq!(a.push(c.clone()), Err(JwstCodecError::TypeAlreadyInserted));
+
+            assert!(a.is_empty());
+            assert!(c.is_empty());
+            assert!(b.is_empty());
         });
     }
 }

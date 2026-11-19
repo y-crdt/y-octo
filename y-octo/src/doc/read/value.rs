@@ -3,6 +3,8 @@ use std::{fmt, slice};
 use super::{FrozenContent, ReadDoc, TypeId};
 use crate::{Any, TextAttributes, TextDeltaOp, TextInsert, YTypeKind};
 
+static UNDEFINED: Any = Any::Undefined;
+
 #[derive(Clone, Copy)]
 enum AnySource<'a> {
     Value(&'a Any),
@@ -420,7 +422,9 @@ impl ReadDoc {
             FrozenContent::Binary(span) => ReadValue::Any(ReadAny::binary(span.bytes(&self.input))),
             FrozenContent::String(span) => ReadValue::Any(ReadAny::string(span.str(&self.input))),
             FrozenContent::StringOwned(id) => ReadValue::Any(ReadAny::string(self.owned_string(*id))),
-            FrozenContent::Format { .. } => unreachable!("format items are only exposed through ReadText::runs"),
+            // Only text runs expose format items. A format item an update put
+            // into a map reads as undefined, like Yjs `typeMapGet`.
+            FrozenContent::Format { .. } => ReadValue::Any(ReadAny::value(&UNDEFINED)),
             FrozenContent::Type(id) => {
                 let ty = &self.types[*id as usize];
                 match ty.kind {

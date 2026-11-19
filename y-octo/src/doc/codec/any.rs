@@ -12,6 +12,14 @@ const MAX_JS_INT: i64 = 0x001F_FFFF_FFFF_FFFF;
 const MIN_JS_INT: i64 = -MAX_JS_INT;
 pub const JS_INT_RANGE: RangeInclusive<i64> = MIN_JS_INT..=MAX_JS_INT;
 
+/// A JSON-like value stored in Yjs `ContentAny`, map entries, formats and
+/// subdocument options, encoded like `lib0` `writeAny`.
+///
+/// Containers own their entries, so a value is a tree whose derived `Clone`,
+/// `PartialEq` and `Debug`, drop and serde recurse once per nesting level.
+/// Decoding therefore accepts at most [Any::DEFAULT_MAX_DEPTH] levels unless a
+/// trusted caller raises the limit, up to [Any::MAX_CONFIGURABLE_DEPTH]; Yjs
+/// itself puts no limit on the wire.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(fuzzing, derive(arbitrary::Arbitrary))]
 #[cfg_attr(test, derive(proptest_derive::Arbitrary))]
@@ -34,53 +42,249 @@ pub enum Any {
 }
 
 impl<R: CrdtReader> CrdtRead<R> for Any {
+    /// Reads one value nested at most [Any::DEFAULT_MAX_DEPTH] levels.
     fn read(reader: &mut R) -> JwstCodecResult<Self> {
+        Self::read_with_max_depth(reader, Self::DEFAULT_MAX_DEPTH)
+    }
+}
+
+/// What one tag starts: a complete value, or a container of `len` entries.
+enum AnyHead {
+    Value(Any),
+    Array(usize),
+    Object(usize),
+}
+
+/// A container being read: its entries so far and how many are left.
+enum AnyFrame {
+    Array(Vec<Any>, usize),
+    /// entries, key of the value being read, entries left after it
+    Object(HashMap<String, Any>, String, usize),
+}
+
+impl Any {
+    /// Default nesting limit of every decoding entry point: [Any::read],
+    /// [crate::Update::decode_v1], [crate::Doc::apply_update_from_binary_v1]
+    /// and [crate::ReadLimits::default].
+    ///
+    /// The root value has depth 0 and each array element or object value is
+    /// one deeper than its container. Yjs and `lib0` `readAny` put no limit on
+    /// the wire; y-octo rejects deeper values from untrusted input because
+    /// [Any] is an owned tree whose derived `Clone`, `PartialEq` and `Debug`,
+    /// drop and serde use stack in proportion to its depth.
+    pub const DEFAULT_MAX_DEPTH: usize = 128;
+
+    /// Largest nesting limit the decoding entry points accept. Trusted callers
+    /// can set a limit in `0..=MAX_CONFIGURABLE_DEPTH` with
+    /// [Any::read_with_max_depth],
+    /// [crate::Update::decode_v1_with_max_any_depth]
+    /// or [crate::ReadLimits::max_any_depth]; larger limits act as this one.
+    /// `Any` values nested deeper are not supported.
+    pub const MAX_CONFIGURABLE_DEPTH: usize = 1_024;
+
+    /// Reads one value nested at most `max_depth` levels, where `max_depth`
+    /// above [Any::MAX_CONFIGURABLE_DEPTH] acts as that limit. A limit of 0
+    /// accepts scalars and empty containers only. Deeper values fail with
+    /// [JwstCodecError::IncompleteDocument]. Reading uses an explicit stack
+    /// rather than recursion.
+    ///
+    /// ```
+    /// use y_octo::{Any, CrdtRead, CrdtWrite, RawDecoder, RawEncoder};
+    ///
+    /// // 200 arrays nested around a null: deeper than the default limit
+    /// let mut deep = Any::Null;
+    /// for _ in 0..200 {
+    ///     deep = Any::Array(vec![deep]);
+    /// }
+    /// let mut encoder = RawEncoder::default();
+    /// deep.write(&mut encoder).unwrap();
+    /// let bytes = encoder.into_inner();
+    ///
+    /// assert!(Any::read(&mut RawDecoder::new(&bytes)).is_err());
+    /// let decoded = Any::read_with_max_depth(&mut RawDecoder::new(&bytes), 200).unwrap();
+    /// assert_eq!(decoded, deep);
+    /// ```
+    pub fn read_with_max_depth<R: CrdtReader>(reader: &mut R, max_depth: usize) -> JwstCodecResult<Self> {
+        let max_depth = max_depth.min(Self::MAX_CONFIGURABLE_DEPTH);
+        let mut head = Self::read_head(reader)?;
+        // open containers, outermost first; the next value is one deeper
+        let mut stack: Vec<AnyFrame> = Vec::new();
+        loop {
+            let mut value = match head {
+                AnyHead::Value(value) => value,
+                AnyHead::Array(0) => Any::Array(Vec::new()),
+                AnyHead::Object(0) => Any::Object(Box::default()),
+                AnyHead::Array(len) => {
+                    stack.push(AnyFrame::Array(Vec::with_capacity(len.min(HASHMAP_SAFE_CAPACITY)), len));
+                    head = Self::read_nested_head(reader, stack.len(), max_depth)?;
+                    continue;
+                }
+                AnyHead::Object(len) => {
+                    let key = reader.read_var_string()?;
+                    let entries = HashMap::with_capacity(len.min(HASHMAP_SAFE_CAPACITY));
+                    stack.push(AnyFrame::Object(entries, key, len));
+                    head = Self::read_nested_head(reader, stack.len(), max_depth)?;
+                    continue;
+                }
+            };
+            // store the finished value, closing every container it completes
+            loop {
+                let Some(frame) = stack.last_mut() else {
+                    return Ok(value);
+                };
+                let done = match frame {
+                    AnyFrame::Array(values, left) => {
+                        values.push(value);
+                        *left -= 1;
+                        *left == 0
+                    }
+                    AnyFrame::Object(entries, key, left) => {
+                        entries.insert(std::mem::take(key), value);
+                        *left -= 1;
+                        if *left > 0 {
+                            *key = reader.read_var_string()?;
+                        }
+                        *left == 0
+                    }
+                };
+                if !done {
+                    break;
+                }
+                value = match stack.pop() {
+                    Some(AnyFrame::Array(values, _)) => Any::Array(values),
+                    Some(AnyFrame::Object(entries, ..)) => Any::Object(Box::new(entries)),
+                    None => unreachable!("a frame was just inspected"),
+                };
+            }
+            head = Self::read_nested_head(reader, stack.len(), max_depth)?;
+        }
+    }
+
+    fn read_nested_head<R: CrdtReader>(reader: &mut R, depth: usize, max_depth: usize) -> JwstCodecResult<AnyHead> {
+        if depth > max_depth {
+            return Err(JwstCodecError::IncompleteDocument(format!(
+                "Any nesting deeper than {max_depth}"
+            )));
+        }
+        Self::read_head(reader)
+    }
+
+    fn read_head<R: CrdtReader>(reader: &mut R) -> JwstCodecResult<AnyHead> {
         let index = reader.read_u8()?;
-        match 127u8.overflowing_sub(index).0 {
-            0 => Ok(Any::Undefined),
-            1 => Ok(Any::Null),
+        let value = match 127u8.overflowing_sub(index).0 {
+            0 => Any::Undefined,
+            1 => Any::Null,
             // in yjs implementation, flag 2 only save 32bit integer
             2 => {
                 let (value, negative) = reader.read_var_i32_with_sign()?;
                 // Yjs can encode -0 with the integer tag; use a float to retain
                 // its sign.
-                Ok(if value == 0 && negative {
+                if value == 0 && negative {
                     Any::Float32((-0.0_f32).into())
                 } else {
                     Any::Integer(value)
-                })
+                }
             }
-            3 => Ok(Any::Float32(reader.read_f32_be()?.into())), // Float32
-            4 => Ok(Any::Float64(reader.read_f64_be()?.into())), // Float64
-            5 => Ok(Any::BigInt64(reader.read_i64_be()?)),       // BigInt64
-            6 => Ok(Any::False),
-            7 => Ok(Any::True),
-            8 => Ok(Any::String(reader.read_var_string()?)), // String
-            9 => {
-                let len = reader.read_var_u64()?;
-                let object = (0..len)
-                    .map(|_| Self::read_key_value(reader))
-                    .collect::<Result<Vec<_>, _>>()?;
+            3 => Any::Float32(reader.read_f32_be()?.into()), // Float32
+            4 => Any::Float64(reader.read_f64_be()?.into()), // Float64
+            5 => Any::BigInt64(reader.read_i64_be()?),       // BigInt64
+            6 => Any::False,
+            7 => Any::True,
+            8 => Any::String(reader.read_var_string()?), // String
+            // each object entry takes at least a key length and a value tag
+            9 => return Ok(AnyHead::Object(Self::read_len(reader, 2)?)),
+            // each array element takes at least its tag
+            10 => return Ok(AnyHead::Array(Self::read_len(reader, 1)?)),
+            11 => Any::Binary(reader.read_var_buffer()?.to_vec()), // Binary
+            // lib0 `readAny` fails on unknown tags too
+            tag => return Err(JwstCodecError::IncompleteDocument(format!("unknown Any tag: {tag}"))),
+        };
+        Ok(AnyHead::Value(value))
+    }
 
-                Ok(Any::Object(Box::new(object.into_iter().collect())))
-            } // Object
-            10 => {
-                let len = reader.read_var_u64()?;
-                let any = (0..len).map(|_| Self::read(reader)).collect::<Result<Vec<_>, _>>()?;
-
-                Ok(Any::Array(any))
-            } // Array
-            11 => {
-                let binary = reader.read_var_buffer()?;
-                Ok(Any::Binary(binary.to_vec()))
-            } // Binary
-            _ => Ok(Any::Undefined),
+    /// Reads a container length the rest of the input can hold when every
+    /// entry takes at least `min_bytes`.
+    fn read_len<R: CrdtReader>(reader: &mut R, min_bytes: u64) -> JwstCodecResult<usize> {
+        let len = reader.read_var_u64()?;
+        if len > reader.len() / min_bytes {
+            return Err(JwstCodecError::IncompleteDocument(format!(
+                "Any container declares {len} entries beyond the input"
+            )));
         }
+        usize::try_from(len).map_err(|_| JwstCodecError::IncompleteDocument("Any container too large".into()))
     }
 }
 
 impl<W: CrdtWriter> CrdtWrite<W> for Any {
+    /// Writes the value like `lib0` `writeAny`. Nested containers are written
+    /// with an explicit stack rather than recursion.
     fn write(&self, writer: &mut W) -> JwstCodecResult {
+        self.write_head(writer)?;
+        match self {
+            Any::Array(values) if !values.iter().any(Any::is_container) => {
+                values.iter().try_for_each(|value| value.write_head(writer))
+            }
+            Any::Object(entries) if !entries.values().any(Any::is_container) => {
+                entries.iter().try_for_each(|(key, value)| {
+                    writer.write_var_string(key)?;
+                    value.write_head(writer)
+                })
+            }
+            Any::Array(_) | Any::Object(_) => self.write_nested(writer),
+            _ => Ok(()),
+        }
+    }
+}
+
+/// Entries of a container still to be written.
+enum WriteFrame<'a> {
+    Array(std::slice::Iter<'a, Any>),
+    Object(std::collections::hash_map::Iter<'a, String, Any>),
+}
+
+impl Any {
+    fn is_container(&self) -> bool {
+        matches!(self, Any::Array(_) | Any::Object(_))
+    }
+
+    /// Writes the entries of a container whose head is already written.
+    fn write_nested<W: CrdtWriter>(&self, writer: &mut W) -> JwstCodecResult {
+        let mut stack = Vec::new();
+        Self::push_entries(self, &mut stack);
+        while let Some(frame) = stack.last_mut() {
+            let next = match frame {
+                WriteFrame::Array(values) => values.next(),
+                WriteFrame::Object(entries) => match entries.next() {
+                    Some((key, value)) => {
+                        writer.write_var_string(key)?;
+                        Some(value)
+                    }
+                    None => None,
+                },
+            };
+            match next {
+                Some(value) => {
+                    value.write_head(writer)?;
+                    Self::push_entries(value, &mut stack);
+                }
+                None => {
+                    stack.pop();
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn push_entries<'a>(value: &'a Any, stack: &mut Vec<WriteFrame<'a>>) {
+        match value {
+            Any::Array(values) => stack.push(WriteFrame::Array(values.iter())),
+            Any::Object(entries) => stack.push(WriteFrame::Object(entries.iter())),
+            _ => {}
+        }
+    }
+
+    /// Writes a scalar completely, or the tag and length of a container.
+    fn write_head<W: CrdtWriter>(&self, writer: &mut W) -> JwstCodecResult {
         match self {
             Any::Undefined => writer.write_u8(127)?,
             Any::Null => writer.write_u8(127 - 1)?,
@@ -106,41 +310,19 @@ impl<W: CrdtWriter> CrdtWrite<W> for Any {
                 writer.write_u8(127 - 8)?;
                 writer.write_var_string(value)?;
             }
-            Any::Object(value) => {
+            Any::Object(entries) => {
                 writer.write_u8(127 - 9)?;
-                writer.write_var_u64(value.len() as u64)?;
-                for (key, value) in value.iter() {
-                    Self::write_key_value(writer, key, value)?;
-                }
+                writer.write_var_u64(entries.len() as u64)?;
             }
             Any::Array(values) => {
                 writer.write_u8(127 - 10)?;
                 writer.write_var_u64(values.len() as u64)?;
-                for value in values {
-                    value.write(writer)?;
-                }
             }
             Any::Binary(value) => {
                 writer.write_u8(127 - 11)?;
                 writer.write_var_buffer(value)?;
             }
         }
-
-        Ok(())
-    }
-}
-
-impl Any {
-    fn read_key_value<R: CrdtReader>(reader: &mut R) -> JwstCodecResult<(String, Any)> {
-        let key = reader.read_var_string()?;
-        let value = Self::read(reader)?;
-
-        Ok((key, value))
-    }
-
-    fn write_key_value<W: CrdtWriter>(writer: &mut W, key: &str, value: &Any) -> JwstCodecResult {
-        writer.write_var_string(key)?;
-        value.write(writer)?;
 
         Ok(())
     }
@@ -719,5 +901,50 @@ mod tests {
 
         let any: Any = 10u64.into();
         assert_eq!([any].iter().collect::<Any>(), Any::Array(vec![Any::Integer(10)]));
+    }
+
+    /// `depth` arrays nested around a single null.
+    fn nested_arrays(depth: usize) -> Vec<u8> {
+        let mut bytes = [117u8, 1].repeat(depth);
+        bytes.push(126);
+        bytes
+    }
+
+    #[test]
+    fn test_any_read_rejects_malformed() {
+        // nesting at the limit decodes, one more level does not
+        let decoded = Any::read(&mut RawDecoder::new(&nested_arrays(Any::DEFAULT_MAX_DEPTH))).unwrap();
+        let mut encoder = RawEncoder::default();
+        decoded.write(&mut encoder).unwrap();
+        assert_eq!(encoder.into_inner(), nested_arrays(Any::DEFAULT_MAX_DEPTH));
+        assert!(matches!(
+            Any::read(&mut RawDecoder::new(&nested_arrays(Any::DEFAULT_MAX_DEPTH + 1))),
+            Err(JwstCodecError::IncompleteDocument(_))
+        ));
+        // explicit limits still apply, in both directions
+        assert!(Any::read_with_max_depth(&mut RawDecoder::new(&nested_arrays(3)), 2).is_err());
+        assert!(Any::read_with_max_depth(&mut RawDecoder::new(&nested_arrays(200)), 200).is_ok());
+        // raised limits stop at the configurable maximum
+        let max = Any::MAX_CONFIGURABLE_DEPTH;
+        assert!(Any::read_with_max_depth(&mut RawDecoder::new(&nested_arrays(max)), usize::MAX).is_ok());
+        assert!(matches!(
+            Any::read_with_max_depth(&mut RawDecoder::new(&nested_arrays(max + 1)), usize::MAX),
+            Err(JwstCodecError::IncompleteDocument(message)) if message == "Any nesting deeper than 1024"
+        ));
+
+        // unknown tags fail like lib0 instead of decoding as undefined
+        assert!(matches!(
+            Any::read(&mut RawDecoder::new(&[100])),
+            Err(JwstCodecError::IncompleteDocument(message)) if message == "unknown Any tag: 27"
+        ));
+
+        // lengths beyond the input fail before anything is allocated for them
+        for tag in [117u8, 118] {
+            let bytes = [tag, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x01];
+            assert!(matches!(
+                Any::read(&mut RawDecoder::new(&bytes)),
+                Err(JwstCodecError::IncompleteDocument(_))
+            ));
+        }
     }
 }

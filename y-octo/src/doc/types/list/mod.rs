@@ -1,8 +1,6 @@
-mod iterator;
 mod search_marker;
 
-pub(crate) use iterator::ListIterator;
-pub(crate) use search_marker::MarkerList;
+pub(crate) use search_marker::{MarkerList, SearchMarker};
 
 use super::*;
 
@@ -55,198 +53,296 @@ impl ItemPosition {
     }
 }
 
-pub(crate) trait ListType: AsInner<Inner = YTypeRef> {
-    #[inline(always)]
-    fn _id(&self) -> Option<Id> {
-        self.as_inner().ty().and_then(|ty| ty.item.get().map(|item| item.id))
+/// Read-only walk over the visible (not deleted) items of a list type. It
+/// borrows the [YType], so it can only live while the store lock is held.
+pub(crate) struct ListIterator<'a> {
+    cur: Option<&'a Item>,
+}
+
+impl<'a> ListIterator<'a> {
+    pub fn new(ty: &'a YType) -> Self {
+        Self { cur: ty.start.get() }
     }
+}
 
-    #[inline(always)]
-    fn content_len(&self) -> u64 {
-        self.as_inner().ty().unwrap().len
-    }
+impl<'a> Iterator for ListIterator<'a> {
+    type Item = &'a Item;
 
-    fn iter_item(&self) -> ListIterator<'_> {
-        let inner = self.as_inner().ty().unwrap();
-        ListIterator {
-            cur: inner.start.clone(),
-            _lock: inner,
-        }
-    }
-
-    fn find_pos(&self, inner: &YType, index: u64) -> Option<ItemPosition> {
-        let mut remaining = index;
-        let start = inner.start.clone();
-
-        let mut pos = ItemPosition {
-            parent: self.as_inner().clone(),
-            left: Somr::none(),
-            right: start,
-            index: 0,
-            offset: 0,
-        };
-
-        if pos.right.is_none() {
-            return Some(pos);
-        }
-
-        if let Some(markers) = &inner.markers
-            && let Some(marker) = markers.find_marker(inner, index)
-        {
-            if marker.index > remaining {
-                remaining = 0
-            } else {
-                remaining -= marker.index;
-            }
-            pos.index = marker.index;
-            pos.left = marker.ptr.get().map(|ptr| ptr.left.clone()).unwrap_or_default();
-            pos.right = marker.ptr;
-        };
-
-        // avoid the first item of the list being deleted
-        while let Some(item) = pos.right.get() {
-            if item.deleted() {
-                pos.left = pos.right.clone();
-                pos.right = item.right.clone();
-                continue;
-            } else {
-                break;
-            }
-        }
-
-        while remaining > 0 {
-            let item = pos.right.get()?;
-            if item.indexable() {
-                let content_len = item.len();
-                if remaining < content_len {
-                    pos.offset = remaining;
-                    remaining = 0;
-                } else {
-                    pos.index += content_len;
-                    remaining -= content_len;
-                }
-            }
-
-            pos.left = pos.right.clone();
-            pos.right = item.right.clone();
-        }
-
-        Some(pos)
-    }
-
-    fn insert_at(&mut self, index: u64, content: Content) -> JwstCodecResult {
-        if index > self.content_len() {
-            return Err(JwstCodecError::IndexOutOfBound(index));
-        }
-
-        if let Some((mut store, mut ty)) = self.as_inner().write() {
-            if let Some(mut pos) = self.find_pos(&ty, index) {
-                pos.normalize(&mut store)?;
-                Self::insert_after(&mut ty, &mut store, pos, content)?;
-            }
-        } else {
-            return Err(JwstCodecError::DocReleased);
-        }
-
-        Ok(())
-    }
-
-    fn insert_after(ty: &mut YType, store: &mut DocStore, pos: ItemPosition, content: Content) -> JwstCodecResult {
-        if let Some(markers) = &ty.markers
-            && content.countable()
-        {
-            markers.update_marker_changes(pos.index, content.clock_len() as i64);
-        }
-
-        let item = store.create_item(
-            content,
-            pos.left.clone(),
-            pos.right.clone(),
-            Some(Parent::Type(pos.parent)),
-            None,
-        );
-
-        store.integrate(Node::Item(item), 0, Some(ty))?;
-
-        Ok(())
-    }
-
-    fn get_item_at(&self, index: u64) -> Option<(Somr<Item>, u64)> {
-        if index >= self.content_len() {
-            return None;
-        }
-
-        let ty = self.as_inner().ty().unwrap();
-
-        if let Some(pos) = self.find_pos(&ty, index) {
-            if pos.offset == 0 {
-                return Some((pos.right, 0));
-            } else {
-                return Some((pos.left, pos.offset));
+    fn next(&mut self) -> Option<Self::Item> {
+        while let Some(item) = self.cur {
+            self.cur = item.right.get();
+            if !item.deleted() {
+                return Some(item);
             }
         }
 
         None
     }
+}
+
+/// Finds the position of `index` for a reader holding the store read lock:
+/// search markers are used but not updated.
+pub(crate) fn find_pos(parent: &YTypeRef, ty: &YType, index: u64) -> Option<ItemPosition> {
+    let marker = ty.markers.as_ref().and_then(|m| m.find_readonly(&ty.start, index));
+    find_pos_from(parent, ty, index, marker)
+}
+
+/// Finds the position of `index` for a writer holding the store write lock,
+/// updating the search markers on the way.
+pub(crate) fn find_pos_mut(parent: &YTypeRef, ty: &mut YType, index: u64) -> Option<ItemPosition> {
+    let (start, len) = (ty.start.clone(), ty.len);
+    let marker = ty.markers.as_mut().and_then(|m| m.find_marker(&start, len, index));
+    find_pos_from(parent, ty, index, marker)
+}
+
+fn find_pos_from(parent: &YTypeRef, ty: &YType, index: u64, marker: Option<SearchMarker>) -> Option<ItemPosition> {
+    let mut remaining = index;
+
+    let mut pos = ItemPosition {
+        parent: parent.clone(),
+        left: Somr::none(),
+        right: ty.start.clone(),
+        index: 0,
+        offset: 0,
+    };
+
+    if pos.right.is_none() {
+        return Some(pos);
+    }
+
+    if let Some(marker) = marker {
+        if marker.index > remaining {
+            remaining = 0
+        } else {
+            remaining -= marker.index;
+        }
+        pos.index = marker.index;
+        pos.left = marker.ptr.get().map(|ptr| ptr.left.clone()).unwrap_or_default();
+        pos.right = marker.ptr;
+    };
+
+    // avoid the first item of the list being deleted
+    while let Some(item) = pos.right.get() {
+        if item.deleted() {
+            pos.left = pos.right.clone();
+            pos.right = item.right.clone();
+            continue;
+        } else {
+            break;
+        }
+    }
+
+    while remaining > 0 {
+        let item = pos.right.get()?;
+        if item.indexable() {
+            let content_len = item.len();
+            if remaining < content_len {
+                pos.offset = remaining;
+                remaining = 0;
+            } else {
+                pos.index += content_len;
+                remaining -= content_len;
+            }
+        }
+
+        pos.left = pos.right.clone();
+        pos.right = item.right.clone();
+    }
+
+    Some(pos)
+}
+
+/// The item covering `index` and the offset of `index` inside it. The caller
+/// holds the store lock while it uses the returned item.
+pub(crate) fn item_at(parent: &YTypeRef, ty: &YType, index: u64) -> Option<(ItemRef, u64)> {
+    if index >= ty.len {
+        return None;
+    }
+
+    let pos = find_pos(parent, ty, index)?;
+    if pos.offset != 0 {
+        return Some((pos.left, pos.offset));
+    }
+
+    // An insertion cursor can stop at a tombstone. A read needs the next
+    // visible value.
+    let mut item = pos.right;
+    while let Some(candidate) = item.get() {
+        if candidate.indexable() {
+            return Some((item, 0));
+        }
+        item = candidate.right.clone();
+    }
+    None
+}
+
+pub(crate) trait ListType: AsInner<Inner = YTypeRef> {
+    #[inline(always)]
+    fn _id(&self) -> Option<Id> {
+        or_released(self.as_inner().read(|_, ty| ty.id()))
+    }
+
+    #[inline(always)]
+    fn content_len(&self) -> u64 {
+        or_released(self.as_inner().read(|_, ty| ty.len))
+    }
+
+    fn insert_at(&mut self, index: u64, content: Content) -> JwstCodecResult {
+        let parent = self.as_inner();
+        parent.write(|store, ty| list_insert(parent, store, ty, index, content))
+    }
 
     fn remove_at(&mut self, idx: u64, len: u64) -> JwstCodecResult {
-        if len == 0 {
-            return Ok(());
-        }
-
-        let content_len = self.content_len();
-        if content_len == 0 {
-            return Ok(());
-        }
-
-        if idx >= content_len {
-            return Err(JwstCodecError::IndexOutOfBound(idx));
-        }
-
-        if let Some((mut store, mut ty)) = self.as_inner().write() {
-            if let Some(pos) = self.find_pos(&ty, idx) {
-                Self::remove_after(&mut ty, &mut store, pos, len)?;
-            }
-        } else {
-            return Err(JwstCodecError::DocReleased);
-        }
-
-        Ok(())
+        let parent = self.as_inner();
+        parent.write(|store, ty| list_remove(parent, store, ty, idx, len))
     }
+}
 
-    fn remove_after(ty: &mut YType, store: &mut DocStore, mut pos: ItemPosition, len: u64) -> JwstCodecResult {
+/// Inserts `content` at `index` of the list type `parent` (data `ty`). The
+/// caller holds the store write lock.
+pub(crate) fn list_insert(
+    parent: &YTypeRef,
+    store: &mut DocStore,
+    ty: &mut YType,
+    index: u64,
+    content: Content,
+) -> JwstCodecResult {
+    if index > ty.len {
+        return Err(JwstCodecError::IndexOutOfBound(index));
+    }
+    if matches!(&content, Content::String(text) if text.is_empty()) {
+        return Ok(());
+    }
+    check_insertable(parent, ty, &content)?;
+
+    if let Some(mut pos) = find_pos_mut(parent, ty, index) {
         pos.normalize(store)?;
+        insert_after(ty, store, pos, content)?;
+    }
 
-        let mut remaining = len;
+    Ok(())
+}
 
-        while remaining > 0 {
-            let item_ref = pos.right.clone();
-            let Some((indexable, content_len, item_id)) =
-                item_ref.get().map(|item| (item.indexable(), item.len(), item.id))
-            else {
-                break;
-            };
+fn insert_after(ty: &mut YType, store: &mut DocStore, pos: ItemPosition, content: Content) -> JwstCodecResult {
+    if let Some(markers) = &mut ty.markers
+        && content.countable()
+    {
+        markers.update_marker_changes(pos.index, content.clock_len() as i64);
+    }
 
-            if indexable {
-                if remaining < content_len {
-                    store.split_node(item_id, remaining)?;
-                    remaining = 0;
-                } else {
-                    remaining -= content_len;
-                }
+    let item = store.create_item(
+        content,
+        pos.left.clone(),
+        pos.right.clone(),
+        Some(Parent::Type(pos.parent)),
+        None,
+    );
 
-                if let Some(item) = item_ref.get() {
-                    store.delete_item(item, Some(ty));
-                }
+    store.integrate(Node::Item(item), 0, Some(ty))?;
+
+    Ok(())
+}
+
+/// Removes `len` elements from `idx` of the list type `parent` (data `ty`).
+/// The caller holds the store write lock.
+pub(crate) fn list_remove(
+    parent: &YTypeRef,
+    store: &mut DocStore,
+    ty: &mut YType,
+    idx: u64,
+    len: u64,
+) -> JwstCodecResult {
+    if len == 0 || ty.len == 0 {
+        return Ok(());
+    }
+
+    if idx >= ty.len {
+        return Err(JwstCodecError::IndexOutOfBound(idx));
+    }
+
+    if let Some(pos) = find_pos_mut(parent, ty, idx) {
+        remove_after(ty, store, pos, len)?;
+    }
+
+    Ok(())
+}
+
+fn remove_after(ty: &mut YType, store: &mut DocStore, mut pos: ItemPosition, len: u64) -> JwstCodecResult {
+    pos.normalize(store)?;
+
+    let mut remaining = len;
+
+    while remaining > 0 {
+        let item_ref = pos.right.clone();
+        let Some((indexable, content_len, item_id)) =
+            item_ref.get().map(|item| (item.indexable(), item.len(), item.id))
+        else {
+            break;
+        };
+
+        if indexable {
+            if remaining < content_len {
+                store.split_node(item_id, remaining)?;
+                remaining = 0;
+            } else {
+                remaining -= content_len;
             }
 
-            pos.forward();
+            if let Some(item) = item_ref.get() {
+                store.delete_item(item, Some(ty));
+            }
         }
 
-        if let Some(markers) = &ty.markers {
-            markers.update_marker_changes(pos.index, -((len - remaining) as i64));
-        }
-
-        Ok(())
+        pos.forward();
     }
+
+    if let Some(markers) = &mut ty.markers {
+        markers.update_marker_changes(pos.index, -((len - remaining) as i64));
+    }
+
+    Ok(())
+}
+
+/// Checks a value inserted under `parent` (whose data is `ty`): a type can only
+/// be inserted into the document it was created in (its data is guarded by
+/// that document's store lock), only once in its life, and never into itself
+/// or its descendants.
+///
+/// Inserting a type at most once (as in Yjs) keeps its `item`, and so its
+/// ancestor chain, fixed; with that, the ancestor walk below rejects every
+/// cycle, and the type tree stays acyclic, which `DocStore::create_item` and
+/// `DocStore::delete_item_inner` rely on.
+/// The caller holds the store write lock.
+pub(crate) fn check_insertable(parent: &YTypeRef, ty: &YType, content: &Content) -> JwstCodecResult {
+    let Content::Type(value) = content else {
+        return Ok(());
+    };
+
+    if !value.store.ptr_eq(&parent.store) {
+        return Err(JwstCodecError::ForeignType);
+    }
+
+    // before reading `value`: the caller holds `parent`'s data mutably
+    if value == parent {
+        return Err(JwstCodecError::InvalidParent);
+    }
+
+    // A root type, or one inserted before (its item may since have been
+    // deleted or collected, but is never unset again).
+    if value
+        .ty()
+        .is_none_or(|value| !value.item.is_unset() || value.root_name.is_some())
+    {
+        return Err(JwstCodecError::TypeAlreadyInserted);
+    }
+
+    let mut item = ty.item.clone();
+    while let Some(Parent::Type(ancestor)) = item.get().and_then(|i| i.parent.as_ref()) {
+        if ancestor == value {
+            return Err(JwstCodecError::InvalidParent);
+        }
+        item = ancestor.ty().map(|t| t.item.clone()).unwrap_or_default();
+    }
+
+    Ok(())
 }

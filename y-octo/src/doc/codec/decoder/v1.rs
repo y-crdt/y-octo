@@ -14,14 +14,41 @@ pub(crate) struct DecodeLimits {
 }
 
 impl DecodeLimits {
-    pub(crate) const UNRESTRICTED: Self = Self {
+    /// Limits of [crate::Update] decoding: sizes are bounded by the input,
+    /// but nested `Any` values are owned trees whose clone, drop and
+    /// comparison recurse, so their depth is capped like [crate::Any] reads.
+    /// Callers raising `max_any_depth` clamp it with
+    /// [crate::Any::MAX_CONFIGURABLE_DEPTH] first.
+    pub(crate) const UPDATE: Self = Self {
         max_structs: usize::MAX,
         max_clients: usize::MAX,
         max_collection_entries: usize::MAX,
-        max_any_depth: usize::MAX,
+        max_any_depth: crate::Any::DEFAULT_MAX_DEPTH,
         max_content_bytes: usize::MAX,
     };
+
+    #[cfg(test)]
+    pub(crate) const UNRESTRICTED: Self = Self {
+        max_any_depth: usize::MAX,
+        ..Self::UPDATE
+    };
 }
+
+// Smallest wire size of each declared entry. Counts are checked against the
+// remaining input before anything is reserved for them, so a few bytes cannot
+// make a sink allocate for millions of entries.
+/// client block: struct count, client and clock
+const MIN_CLIENT_BYTES: u64 = 3;
+/// struct: info byte plus at least one more byte (length, parent or origin)
+const MIN_STRUCT_BYTES: u64 = 2;
+/// delete set client: client and range count
+const MIN_DELETE_CLIENT_BYTES: u64 = 2;
+/// delete range: start and length
+const MIN_DELETE_RANGE_BYTES: u64 = 2;
+/// JSON or Any content entry, or Any array element
+const MIN_ENTRY_BYTES: u64 = 1;
+/// Any object entry: key and value
+const MIN_OBJECT_ENTRY_BYTES: u64 = 2;
 
 #[derive(Debug)]
 pub(crate) enum Error {
@@ -142,11 +169,22 @@ impl<'a> Decoder<'a> {
         if clients > self.limits.max_clients {
             return Err(Error::Resource("clients"));
         }
+        self.check_fits(clients, MIN_CLIENT_BYTES, "clients")?;
+        // Yjs writes each client once. Sinks key structs by client, so a
+        // repeated block would silently replace the structs of the first one
+        // (and leave them orphaned in a ReadDoc).
+        let mut seen_clients = crate::doc::HashSet::default();
         for _ in 0..clients {
             let count = Self::usize(self.raw.read_var_u64()?, "structs")?;
             self.add_structs(count)?;
             self.add_entries(count)?;
+            self.check_fits(count, MIN_STRUCT_BYTES, "structs")?;
             let client = self.raw.read_var_u64()?;
+            if !seen_clients.insert(client) {
+                return Err(
+                    JwstCodecError::IncompleteDocument(format!("duplicate struct block for client {client}")).into(),
+                );
+            }
             let mut clock = self.raw.read_var_u64()?;
             sink.begin_client(client, count)?;
             for _ in 0..count {
@@ -166,10 +204,12 @@ impl<'a> Decoder<'a> {
         if delete_clients > self.limits.max_clients {
             return Err(Error::Resource("delete clients"));
         }
+        self.check_fits(delete_clients, MIN_DELETE_CLIENT_BYTES, "delete clients")?;
         for _ in 0..delete_clients {
             let client = self.raw.read_var_u64()?;
             let count = Self::usize(self.raw.read_var_u64()?, "delete ranges")?;
             self.add_entries(count)?;
+            self.check_fits(count, MIN_DELETE_RANGE_BYTES, "delete ranges")?;
             for _ in 0..count {
                 let start = self.raw.read_var_u64()?;
                 let len = self.raw.read_var_u64()?;
@@ -251,6 +291,7 @@ impl<'a> Decoder<'a> {
                 let len = self.raw.read_var_u64()?;
                 let count = Self::usize(len, "content entries")?;
                 self.add_entries(count)?;
+                self.check_fits(count, MIN_ENTRY_BYTES, "content entries")?;
                 sink.json_start(count)?;
                 for _ in 0..count {
                     sink.json_value(self.read_str()?)?;
@@ -284,6 +325,7 @@ impl<'a> Decoder<'a> {
                 let len = self.raw.read_var_u64()?;
                 let count = Self::usize(len, "content entries")?;
                 self.add_entries(count)?;
+                self.check_fits(count, MIN_ENTRY_BYTES, "content entries")?;
                 sink.any_content_start(count)?;
                 for _ in 0..count {
                     let value = self.read_any(sink)?;
@@ -303,59 +345,78 @@ impl<'a> Decoder<'a> {
     fn read_any<S: Sink<'a>>(&mut self, sink: &mut S) -> Result<S::Any> {
         let start = self.raw.position();
         sink.any_start()?;
-        self.read_any_value(sink, 0)?;
+        self.read_any_value(sink)?;
         sink.any_finish(start..self.raw.position())
     }
 
-    fn read_any_value<S: Sink<'a>>(&mut self, sink: &mut S, depth: usize) -> Result<()> {
-        if depth > self.limits.max_any_depth {
-            return Err(Error::Resource("Any nesting depth"));
+    /// Reads one `Any` value with an explicit stack, so the nesting depth is
+    /// bounded only by `max_any_depth` and never by the thread stack.
+    fn read_any_value<S: Sink<'a>>(&mut self, sink: &mut S) -> Result<()> {
+        // entries left in each open container, and whether it is an object
+        let mut open: Vec<(usize, bool)> = Vec::new();
+        loop {
+            if let Some((remaining, is_object)) = open.last_mut() {
+                if *remaining == 0 {
+                    open.pop();
+                    sink.any_event(AnyEvent::EndContainer)?;
+                    if open.is_empty() {
+                        return Ok(());
+                    }
+                    continue;
+                }
+                *remaining -= 1;
+                if *is_object {
+                    let key = self.read_str()?;
+                    sink.any_event(AnyEvent::ObjectKey(key))?;
+                }
+            }
+            if open.len() > self.limits.max_any_depth {
+                return Err(Error::Resource("Any nesting depth"));
+            }
+            let tag = 127u8.wrapping_sub(self.raw.read_u8()?);
+            let event = match tag {
+                0 => AnyEvent::Undefined,
+                1 => AnyEvent::Null,
+                2 => {
+                    let (value, negative) = self.raw.read_var_i32_with_sign()?;
+                    // Preserve the same signed-zero semantics as the owned Any
+                    // decoder.
+                    if value == 0 && negative {
+                        AnyEvent::Float32(-0.0)
+                    } else {
+                        AnyEvent::Integer(value)
+                    }
+                }
+                3 => AnyEvent::Float32(self.raw.read_f32_be()?),
+                4 => AnyEvent::Float64(self.raw.read_f64_be()?),
+                5 => AnyEvent::BigInt64(self.raw.read_i64_be()?),
+                6 => AnyEvent::False,
+                7 => AnyEvent::True,
+                8 => AnyEvent::String(self.read_str()?),
+                9 => {
+                    let count = Self::usize(self.raw.read_var_u64()?, "Any object entries")?;
+                    self.add_entries(count)?;
+                    self.check_fits(count, MIN_OBJECT_ENTRY_BYTES, "Any object entries")?;
+                    sink.any_event(AnyEvent::BeginObject(count))?;
+                    open.push((count, true));
+                    continue;
+                }
+                10 => {
+                    let count = Self::usize(self.raw.read_var_u64()?, "Any array entries")?;
+                    self.add_entries(count)?;
+                    self.check_fits(count, MIN_ENTRY_BYTES, "Any array entries")?;
+                    sink.any_event(AnyEvent::BeginArray(count))?;
+                    open.push((count, false));
+                    continue;
+                }
+                11 => AnyEvent::Binary(self.read_bytes()?),
+                _ => return Err(JwstCodecError::IncompleteDocument(format!("unknown Any tag: {tag}")).into()),
+            };
+            sink.any_event(event)?;
+            if open.is_empty() {
+                return Ok(());
+            }
         }
-        let tag = 127u8.wrapping_sub(self.raw.read_u8()?);
-        let event = match tag {
-            0 => AnyEvent::Undefined,
-            1 => AnyEvent::Null,
-            2 => {
-                let (value, negative) = self.raw.read_var_i32_with_sign()?;
-                // Preserve the same signed-zero semantics as the owned Any
-                // decoder.
-                if value == 0 && negative {
-                    AnyEvent::Float32(-0.0)
-                } else {
-                    AnyEvent::Integer(value)
-                }
-            }
-            3 => AnyEvent::Float32(self.raw.read_f32_be()?),
-            4 => AnyEvent::Float64(self.raw.read_f64_be()?),
-            5 => AnyEvent::BigInt64(self.raw.read_i64_be()?),
-            6 => AnyEvent::False,
-            7 => AnyEvent::True,
-            8 => AnyEvent::String(self.read_str()?),
-            9 => {
-                let count = Self::usize(self.raw.read_var_u64()?, "Any object entries")?;
-                self.add_entries(count)?;
-                sink.any_event(AnyEvent::BeginObject(count))?;
-                for _ in 0..count {
-                    sink.any_event(AnyEvent::ObjectKey(self.read_str()?))?;
-                    self.read_any_value(sink, depth + 1)?;
-                }
-                sink.any_event(AnyEvent::EndContainer)?;
-                return Ok(());
-            }
-            10 => {
-                let count = Self::usize(self.raw.read_var_u64()?, "Any array entries")?;
-                self.add_entries(count)?;
-                sink.any_event(AnyEvent::BeginArray(count))?;
-                for _ in 0..count {
-                    self.read_any_value(sink, depth + 1)?;
-                }
-                sink.any_event(AnyEvent::EndContainer)?;
-                return Ok(());
-            }
-            11 => AnyEvent::Binary(self.read_bytes()?),
-            _ => return Err(JwstCodecError::IncompleteDocument(format!("unknown Any tag: {tag}")).into()),
-        };
-        sink.any_event(event)
     }
 
     fn read_id(&mut self) -> JwstCodecResult<Id> {
@@ -393,6 +454,20 @@ impl<'a> Decoder<'a> {
 
     fn usize(value: u64, name: &'static str) -> Result<usize> {
         value.try_into().map_err(|_| Error::Resource(name))
+    }
+
+    /// Rejects a declared entry count that the rest of the input cannot hold
+    /// when every entry takes at least `min_bytes`, before a sink reserves
+    /// memory for it.
+    fn check_fits(&self, count: usize, min_bytes: u64, name: &'static str) -> Result<()> {
+        let available = self.raw.len() / min_bytes;
+        if count as u64 > available {
+            return Err(JwstCodecError::IncompleteDocument(format!(
+                "{name}: {count} declared, at most {available} fit in the rest of the update"
+            ))
+            .into());
+        }
+        Ok(())
     }
 
     fn add_structs(&mut self, count: usize) -> Result<()> {
@@ -817,7 +892,9 @@ mod tests {
             "huge json count unrestricted",
             &huge_json,
             DecodeLimits::UNRESTRICTED,
-            &ExpectedError::TruncatedRead,
+            &ExpectedError::Codec(JwstCodecError::IncompleteDocument(
+                "content entries: 1099511627776 declared, at most 1 fit in the rest of the update".to_owned(),
+            )),
         );
         assert_decode_err(
             "huge json count restricted",
@@ -832,6 +909,75 @@ mod tests {
             &root_item_update(2, enc().varu(u64::MAX).bytes()),
             DecodeLimits::UNRESTRICTED,
             &ExpectedError::Resource("collection entries"),
+        );
+    }
+
+    #[test]
+    fn test_counts_must_fit_in_input() {
+        // every declared count is checked against the bytes left before a
+        // sink can reserve memory for it
+        let cases: [(&str, Vec<u8>); 7] = [
+            ("clients", enc().varu(1 << 30).bytes()),
+            ("structs", enc().varu(1).varu(1 << 30).varu(0).varu(0).bytes()),
+            ("delete clients", enc().varu(0).varu(1 << 30).bytes()),
+            ("delete ranges", enc().varu(0).varu(1).varu(0).varu(1 << 30).bytes()),
+            ("content entries", root_item_update(8, enc().varu(1 << 30).bytes())),
+            (
+                "Any array entries",
+                root_item_update(8, enc().varu(1).byte(117).varu(1 << 30).bytes()),
+            ),
+            (
+                "Any object entries",
+                root_item_update(8, enc().varu(1).byte(118).varu(1 << 30).bytes()),
+            ),
+        ];
+        for (name, input) in &cases {
+            let err = decode(input, ProbeSink::default(), DecodeLimits::UNRESTRICTED).expect_err(name);
+            assert!(
+                matches!(&err, Error::Codec(JwstCodecError::IncompleteDocument(message)) if message.starts_with(name)),
+                "{name}: {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_duplicate_client_block_rejected() {
+        let block = |clock: u64| enc().varu(1).varu(9).varu(clock).byte(0).varu(1).bytes();
+        let input = enc().varu(2).raw(&block(0)).raw(&block(1)).varu(0).bytes();
+        assert_decode_err(
+            "duplicate client",
+            &input,
+            DecodeLimits::UNRESTRICTED,
+            &ExpectedError::Codec(JwstCodecError::IncompleteDocument(
+                "duplicate struct block for client 9".to_owned(),
+            )),
+        );
+
+        let distinct = enc()
+            .varu(2)
+            .raw(&block(0))
+            .raw(&enc().varu(1).varu(8).varu(0).byte(0).varu(1).bytes())
+            .varu(0)
+            .bytes();
+        assert!(decode(&distinct, ProbeSink::default(), DecodeLimits::UNRESTRICTED).is_ok());
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn test_deep_any_does_not_recurse() {
+        // far deeper than any thread stack could recurse
+        let depth = 200_000;
+        // built directly: `nested_arrays` copies the buffer once per level
+        let mut nested = [117u8, 1].repeat(depth);
+        nested.push(126);
+        let input = root_item_update(8, enc().varu(1).raw(&nested).bytes());
+        assert!(decode(&input, ProbeSink::default(), DecodeLimits::UNRESTRICTED).is_ok());
+        assert!(decode(&input, ProbeSink::default(), limited(|l| l.max_any_depth = depth)).is_ok());
+        assert_decode_err(
+            "deep any",
+            &input,
+            DecodeLimits::UPDATE,
+            &ExpectedError::Resource("Any nesting depth"),
         );
     }
 }

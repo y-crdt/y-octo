@@ -10,6 +10,8 @@ pub fn map_write_error(e: Error) -> JwstCodecError {
 pub trait CrdtWriter {
     fn write_var_u64(&mut self, num: u64) -> JwstCodecResult;
     fn write_var_i32(&mut self, num: i32) -> JwstCodecResult;
+    /// Write a signed varInt in JavaScript's safe integer range.
+    fn write_var_i64(&mut self, num: i64) -> JwstCodecResult;
     fn write_var_string<S: AsRef<str>>(&mut self, s: S) -> JwstCodecResult;
     fn write_var_buffer(&mut self, buf: &[u8]) -> JwstCodecResult;
     fn write_u8(&mut self, num: u8) -> JwstCodecResult;

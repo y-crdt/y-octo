@@ -1,16 +1,24 @@
+// The wire codecs need no unsafe code; the lint level on a `mod` item covers
+// the whole module. `doc` relies on `unsafe` for `Somr`.
 #[forbid(unsafe_code)]
 mod codec;
 mod doc;
+#[forbid(unsafe_code)]
 mod protocol;
 mod sync;
 
 pub use codec::*;
+#[cfg(feature = "random")]
+pub use doc::random_client_id;
 pub use doc::{
-    Any, Awareness, AwarenessEvent, Batch, Client, ClientMap, Clock, CrdtRead, CrdtReader, CrdtWrite, CrdtWriter, Doc,
-    DocOptions, HashMap as AHashMap, HashMapExt, History, HistoryOptions, Id, RawDecoder, RawEncoder, ReadAny,
-    ReadArray, ReadDoc, ReadError, ReadLimits, ReadMap, ReadText, ReadTextRun, ReadValue, StateVector, StoreHistory,
-    TextAttributes, TextDelta, TextDeltaOp, TextIdentityRun, TextInsert, TypeIdentity, Update, Value, YTypeKind,
-    batch_commit, encode_awareness_as_message, encode_update_as_message, merge_updates_v1,
+    AbsolutePosition, Any, ArrayRead, ArrayWrite, Awareness, AwarenessEvent, ChangedType, Client, ClientMap, Clock,
+    CommitEvent, CommitSummary, CrdtRead, CrdtReader, CrdtWrite, CrdtWriter, DeleteSet, Doc, DocOptions,
+    HashMap as AHashMap, HashMapExt, History, HistoryOptions, Id, IncomingUpdate, LocalUpdate, MapRead, MapWrite,
+    OrderRange, Origin, RawDecoder, RawEncoder, ReadAny, ReadArray, ReadDoc, ReadError, ReadLimits, ReadMap, ReadText,
+    ReadTextRun, ReadValue, RelativePosition, StateVector, StoreHistory, Subscription, TextAttributes, TextDelta,
+    TextDeltaOp, TextIdentityRun, TextInsert, TextRead, TextWrite, Transaction, TransactionMut, TypeIdentity, UndoItem,
+    UndoManager, UndoOptions, UndoOrigin, UndoScope, UndoStack, Update, Value, YTypeKind, encode_awareness_as_message,
+    encode_update_as_message, merge_updates_v1,
     types::{array::Array, map::Map, text::Text},
 };
 pub(crate) use doc::{Content, Item};
@@ -19,7 +27,8 @@ pub use doc::{DocMemoryLayout, memory_layout, profiling_counters, reset_profilin
 use log::warn;
 use nom::IResult;
 pub use protocol::{
-    AwarenessState, AwarenessStates, DocMessage, SyncMessage, SyncMessageScanner, read_sync_message, write_sync_message,
+    AwarenessState, AwarenessStates, DocMessage, SyncMessage, SyncMessageScanner, read_doc_message, read_sync_message,
+    write_doc_message, write_sync_message,
 };
 use thiserror::Error;
 
@@ -63,6 +72,20 @@ pub enum JwstCodecError {
     IndexOutOfBound(u64),
     #[error("Document has been released")]
     DocReleased,
+    #[error("Type belongs to another document")]
+    ForeignType,
+    #[error("Type has already been inserted into a document")]
+    TypeAlreadyInserted,
+    #[error("The document is already locked by this thread: inside a transaction, go through the transaction")]
+    Reentrant,
+    #[error("Another document is busy while this thread holds a document lock")]
+    NestedDocumentBusy,
+    #[error("A panic inside a transaction left the document half changed")]
+    DocPoisoned,
+    #[error("The document already has an undo manager")]
+    UndoManagerExists,
+    #[error("The document needs a client ID from the host before local writes (see Doc::client_required)")]
+    ClientIdRequired,
     #[error("Unexpected type, expect {0}")]
     UnexpectedType(&'static str),
 }
