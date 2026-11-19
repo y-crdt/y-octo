@@ -282,7 +282,10 @@ impl Node {
                     && let Some(mut parent) = unsafe { p.ty_mut() }
                     && let Some(markers) = &mut parent.markers
                 {
-                    markers.replace_marker(rref.clone(), lref.clone(), -(llen as i64));
+                    // Yjs `Item.mergeWith`: the marker index moves back by the
+                    // left item's length only if that length is visible
+                    let shift = if litem.indexable() { -(llen as i64) } else { 0 };
+                    markers.replace_marker(rref.clone(), lref.clone(), shift);
                 }
 
                 if ritem.keep() {

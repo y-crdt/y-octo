@@ -102,11 +102,14 @@ fn remote_apply_is_atomic_for_concurrent_readers() {
 
         // A store drops its pointer-keyed maps in address order, which differs
         // between loom executions; skip the teardown so every execution
-        // performs the same refcount updates.
+        // performs the same refcount updates. The handles too: with GC and
+        // merge after the update, the type's refcount sees more updates than
+        // loom 0.7 keeps history for, and dropping them trips its
+        // `match_rmw_to_stores` assertion.
         #[cfg(loom)]
-        std::mem::forget((doc, remote));
+        std::mem::forget((doc, remote, text, map));
         #[cfg(not(loom))]
-        drop((doc, remote));
+        drop((doc, remote, text, map));
     });
 }
 
@@ -114,11 +117,9 @@ fn remote_apply_is_atomic_for_concurrent_readers() {
 /// remote applies and readers, converge with a peer that receives the same
 /// updates.
 ///
-/// Local index edits go to another text than the remote applies: remote
-/// applies do not update search markers yet, so local index edits after a
-/// remote change of the same sequence can land at the wrong position (and
-/// underflow a marker index) single-threaded too. The next PR resets the
-/// markers and edits one text from both sides here.
+/// One text is edited by index locally while remote applies change it, which
+/// relies on remote applies resetting its search markers; a second text is
+/// only edited locally.
 #[test]
 #[cfg(not(loom))]
 #[cfg_attr(miri, ignore)]
@@ -141,10 +142,10 @@ fn threads_edit_apply_and_read_one_document() {
         remote_updates.push(remote.encode_state_as_update_v1(&sv).unwrap());
     }
 
-    let barrier = std::sync::Arc::new(Barrier::new(4));
+    let barrier = std::sync::Arc::new(Barrier::new(5));
     let mut handles = Vec::new();
-    {
-        let mut text = local_text.clone();
+    for text in [text.clone(), local_text.clone()] {
+        let mut text = text;
         let barrier = barrier.clone();
         handles.push(std::thread::spawn(move || {
             barrier.wait();
@@ -261,5 +262,37 @@ fn push_is_atomic_with_concurrent_remove() {
         writer.join().unwrap();
         assert_eq!(pushed, Ok(()));
         assert_eq!(array.iter().collect::<Vec<_>>(), vec![Value::from(2)]);
+    });
+}
+
+#[test]
+fn preliminary_mount_is_atomic_with_readers_and_child_edits() {
+    model(|| {
+        let doc = Doc::with_client(101);
+        let mut root = doc.get_or_create_array("array").unwrap();
+        let mut child = doc.create_array().unwrap();
+        child.push(1).unwrap();
+        let mut edit_child = child.clone();
+        let mount = thread::spawn(move || root.push(child).unwrap());
+        let edit = thread::spawn(move || edit_child.push(2).unwrap());
+        // Encoding takes one document read lock. A reader sees no subtree or
+        // a complete parent-before-child tree, never a partly rebuilt one.
+        let update = doc.encode_update_v1().unwrap();
+        mount.join().unwrap();
+        edit.join().unwrap();
+        let mut peer = Doc::with_client(202);
+        peer.apply_update_from_binary_v1(update).unwrap();
+        let seen = serde_json::to_value(peer.get_or_create_array("array").unwrap()).unwrap();
+        assert!(
+            seen == serde_json::json!([]) || seen == serde_json::json!([[1]]) || seen == serde_json::json!([[1, 2]])
+        );
+        assert!(!peer.has_pending_updates());
+        peer.apply_update_from_binary_v1(doc.encode_update_v1().unwrap())
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(peer.get_or_create_array("array").unwrap()).unwrap(),
+            serde_json::json!([[1, 2]])
+        );
+        assert_eq!(peer.get_state_vector(), doc.get_state_vector());
     });
 }

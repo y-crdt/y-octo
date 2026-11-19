@@ -160,18 +160,33 @@ pub(crate) fn item_at(parent: &YTypeRef, ty: &YType, index: u64) -> Option<(Item
     }
 
     let pos = find_pos(parent, ty, index)?;
-    if pos.offset == 0 {
-        Some((pos.right, 0))
-    } else {
-        Some((pos.left, pos.offset))
+    if pos.offset != 0 {
+        return Some((pos.left, pos.offset));
     }
+
+    // An insertion cursor can stop at a tombstone. A read needs the next
+    // visible value.
+    let mut item = pos.right;
+    while let Some(candidate) = item.get() {
+        if candidate.indexable() {
+            return Some((item, 0));
+        }
+        item = candidate.right.clone();
+    }
+    None
 }
 
 pub(crate) trait ListType: AsInner<Inner = YTypeRef> {
     #[inline(always)]
     fn _id(&self) -> Option<Id> {
         self.as_inner()
-            .read(|_, ty| ty.item.get().map(|item| item.id))
+            .read(|_, ty| {
+                if ty.is_preliminary() {
+                    None
+                } else {
+                    ty.item.get().map(|item| item.id)
+                }
+            })
             .ok()
             .flatten()
     }

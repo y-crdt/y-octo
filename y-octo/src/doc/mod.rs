@@ -6,6 +6,8 @@ mod concurrency;
 mod document;
 mod hasher;
 mod history;
+#[cfg(all(test, not(loom)))]
+mod live_edit_tests;
 mod read;
 mod redo;
 mod relative_position;

@@ -344,32 +344,42 @@ impl Doc {
         self.apply_update(update)
     }
 
-    pub fn apply_update(&mut self, mut update: Update) -> JwstCodecResult {
+    pub fn apply_update(&mut self, update: Update) -> JwstCodecResult {
         let mut store = self.store.write().unwrap();
+        // collect the types this update changes on their own
+        let changed_before = std::mem::take(&mut store.changed);
+
+        let result = Self::integrate_update(&mut store, &self.store, update);
+        if result.is_ok() {
+            store.optimize(self.opts.gc);
+        }
+
+        let changed = std::mem::replace(&mut store.changed, changed_before);
+        // Remote changes move items under the search markers of the types
+        // they touch, also when the update failed half way; Yjs drops those
+        // markers after a remote transaction (`AbstractType._callObserver`).
+        for (ty, keys) in changed {
+            // SAFETY: store write lock held, no type borrowed.
+            if let Some(mut ty) = unsafe { ty.ty_mut() }
+                && let Some(markers) = &mut ty.markers
+            {
+                markers.clear();
+            }
+            store.changed.entry(ty).or_default().extend(keys);
+        }
+
+        result
+    }
+
+    fn integrate_update(store: &mut DocStore, store_ref: &StoreRef, mut update: Update) -> JwstCodecResult {
         let mut retry = false;
 
         loop {
-            // clone every time to avoid ref count issue
-            let pending_types = update
-                .structs
-                .values()
-                .flatten()
-                .filter_map(|n| {
-                    if let Node::Item(item_ref) = n
-                        && let Some(item) = item_ref.get()
-                        && let Content::Type(ty) = &item.content
-                    {
-                        Some((item.id, ty.clone()))
-                    } else {
-                        None
-                    }
-                })
-                .collect();
             for (mut s, offset) in update.iter(store.get_state_vector()) {
                 if let Node::Item(item) = &mut s {
                     debug_assert!(item.is_owned());
                     let mut item = unsafe { item.get_mut_unchecked() };
-                    store.repair(&mut item, self.store.clone(), &pending_types)?;
+                    store.repair(&mut item, store_ref.clone())?;
                 }
                 store.integrate(s, offset, None)?;
             }
@@ -430,10 +440,6 @@ impl Doc {
             }
         }
 
-        if self.opts.gc {
-            store.optimize()?;
-        }
-
         Ok(())
     }
 
@@ -449,6 +455,10 @@ impl Doc {
             .build()
     }
 
+    /// Creates an editable preliminary text. Its current contents enter the
+    /// document atomically when inserted into a mounted type. Before then, its
+    /// edits have no document identity and do not affect updates or state
+    /// vectors.
     pub fn create_text(&self) -> JwstCodecResult<Text> {
         YTypeBuilder::new(self.store.clone()).with_kind(YTypeKind::Text).build()
     }
@@ -460,6 +470,10 @@ impl Doc {
             .build()
     }
 
+    /// Creates an editable preliminary array. Its current contents enter the
+    /// document atomically when inserted into a mounted type. Before then, its
+    /// edits have no document identity and do not affect updates or state
+    /// vectors.
     pub fn create_array(&self) -> JwstCodecResult<Array> {
         YTypeBuilder::new(self.store.clone())
             .with_kind(YTypeKind::Array)
@@ -473,6 +487,10 @@ impl Doc {
             .build()
     }
 
+    /// Creates an editable preliminary map. Its current contents enter the
+    /// document atomically when inserted into a mounted type. Before then, its
+    /// edits have no document identity and do not affect updates or state
+    /// vectors.
     pub fn create_map(&self) -> JwstCodecResult<Map> {
         YTypeBuilder::new(self.store.clone()).with_kind(YTypeKind::Map).build()
     }
@@ -516,14 +534,47 @@ impl Doc {
         self.store.read().unwrap().get_delete_sets()
     }
 
+    /// Garbage-collects every deleted struct and merges the whole store.
+    /// Updates already collect what they delete; this is the explicit full
+    /// pass.
     pub fn gc(&self) -> JwstCodecResult<()> {
-        self.store.write().unwrap().optimize()
+        self.store.write().unwrap().optimize_all();
+        Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_fuzz_update_with_gced_parent_round_trips() {
+        // The decode_doc_update fuzz case leaves descendants of a type whose
+        // own parent is missing. Its descendants still consume their clocks.
+        let update = [
+            0x01, 0x07, 0x00, 0x00, 0x27, 0x07, 0x00, 0x27, 0x00, 0x00, 0x00, 0x83, 0x00, 0x07, 0x00, 0x00, 0x00, 0x00,
+            0x83, 0x00, 0x00, 0x00, 0x01, 0x73, 0x00, 0x00, 0x74, 0x80, 0x8f, 0x00, 0x00, 0x09, 0x00,
+        ];
+
+        loom_model!({
+            for auto_gc in [false, true] {
+                let options = DocOptions::default().auto_gc(auto_gc);
+                let mut doc = Doc::with_options(options.clone());
+                doc.apply_update_from_binary_v1(update).unwrap();
+
+                let expected = StateVector::from([(0, 146)]);
+                assert_eq!(doc.get_state_vector(), expected);
+                assert!(!doc.has_pending_updates());
+
+                let encoded = doc.encode_update_v1().unwrap();
+                let mut reopened = Doc::with_options(options);
+                reopened.apply_update_from_binary_v1(&encoded).unwrap();
+                assert_eq!(reopened.get_state_vector(), expected);
+                assert!(!reopened.has_pending_updates());
+                assert_eq!(reopened.encode_update_v1().unwrap(), encoded);
+            }
+        });
+    }
 
     #[test]
     fn test_duplicate_update_with_gced_parent() {

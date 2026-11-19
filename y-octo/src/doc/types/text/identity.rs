@@ -17,7 +17,10 @@ impl Text {
     /// Deleted content is absent; use the document delete set for causal
     /// checks.
     pub fn identity_runs(&self) -> JwstCodecResult<Vec<TextIdentityRun>> {
-        self.as_inner().read(|_, ty| identity_runs(ty))?
+        self.as_inner().read(|_, ty| {
+            ty.identity()?;
+            identity_runs(ty)
+        })?
     }
 }
 

@@ -1,7 +1,7 @@
 use std::{
     collections::{VecDeque, hash_map::Entry},
     mem,
-    ops::{Deref, Range},
+    ops::Range,
 };
 
 use super::*;
@@ -11,7 +11,6 @@ use crate::{
 };
 
 pub type ChangedTypeRefs = HashMap<YTypeRef, Vec<SmolStr>>;
-type PendingTypes = HashMap<Id, YTypeRef>;
 
 #[derive(Default, Debug)]
 pub(crate) struct DocStore {
@@ -31,6 +30,17 @@ pub(crate) struct DocStore {
     pub changed: ChangedTypeRefs,
     // local redo mapping, old id range -> recreated id range
     pub redone: RedoMap,
+    /// Ranges that became deleted since the last [DocStore::optimize]: the
+    /// only ranges the next optimize garbage-collects and merges around.
+    pub gc_pending: DeleteSet,
+    /// Merge candidates outside of `gc_pending` and the newly added structs:
+    /// right halves of structs split since the last [DocStore::optimize],
+    /// already deleted children of types deleted since then, and children
+    /// replaced by GC structs.
+    pub merge_pending: Vec<Id>,
+    /// ID ranges garbage collection must keep. Owned by
+    /// the history layer; empty until it is wired up.
+    pub retained: DeleteSet,
 }
 
 pub(crate) type StoreRef = Arc<RwLock<DocStore>>;
@@ -170,8 +180,9 @@ impl DocStore {
 
         if let Content::Type(ty) = &item.get().unwrap().content
             // SAFETY: callers hold the store write lock and only reference the
-            // parent type. `check_insertable` admits only a type that was never
-            // inserted, which is neither the parent nor any of its ancestors.
+            // parent type. Local insertion preflights this child; preliminary
+            // rebuilding uses a prepared acyclic tree. In both cases it is
+            // distinct from the parent and all its ancestors.
             && let Some(mut ty) = unsafe { ty.ty_mut() }
         {
             ty.item = item.clone();
@@ -203,7 +214,9 @@ impl DocStore {
         if let Some(items) = self.items.get_mut(&id.client)
             && let Some(idx) = Self::get_node_index(items, id.clock)
         {
-            return Self::split_node_at(items, idx, diff);
+            let (left, right) = Self::split_node_at(items, idx, diff)?;
+            self.merge_pending.push(right.id());
+            return Ok((left, right));
         }
 
         Err(JwstCodecError::StructSequenceNotExists(id.client))
@@ -264,6 +277,7 @@ impl DocStore {
             let offset = id.clock - item.clock();
             if offset > 0 && item.is_item() {
                 let (_, right) = Self::split_node_at(items, index, offset)?;
+                self.merge_pending.push(right.id());
                 return Ok(right);
             } else {
                 return Ok(item);
@@ -281,7 +295,8 @@ impl DocStore {
             let item = items.get(index).unwrap().clone();
             let offset = id.clock - item.clock();
             if offset != item.len() - 1 && !item.is_gc() {
-                let (left, _) = Self::split_node_at(items, index, offset + 1)?;
+                let (left, right) = Self::split_node_at(items, index, offset + 1)?;
+                self.merge_pending.push(right.id());
                 return Ok(left);
             } else {
                 return Ok(item);
@@ -317,6 +332,7 @@ impl DocStore {
             Entry::Vacant(e) => {
                 let mut inner = YType::new(YTypeKind::Unknown, None);
                 inner.root_name = Some(name.to_string());
+                inner.published = true;
 
                 let ty = YTypeRef {
                     store: Arc::downgrade(store_ref),
@@ -337,7 +353,7 @@ impl DocStore {
     ///       `doc.get_or_create_text("content")`)
     ///     - [Parent::Id] for type as item (e.g `doc.create_text()`)
     ///     - [None] means borrow left.parent or right.parent
-    pub fn repair(&mut self, item: &mut Item, store_ref: StoreRef, pending_types: &PendingTypes) -> JwstCodecResult {
+    pub fn repair(&mut self, item: &mut Item, store_ref: StoreRef) -> JwstCodecResult {
         if let Some(left_id) = item.origin_left_id {
             if let Node::Item(left_ref) = self.split_at_and_get_left(left_id)? {
                 item.origin_left_id = left_ref.get().map(|left| left.last_id());
@@ -372,27 +388,15 @@ impl DocStore {
             // Item { id: (1, 0), content: Content::Type(_) }
             //        ^^ Parent::Id((1, 0))
             Some(Parent::Id(parent_id)) => {
-                match self.get_node(*parent_id) {
-                    Some(Node::Item(parent_item)) => {
-                        if let Content::Type(ty) = &parent_item.get().unwrap().content {
-                            item.parent.replace(Parent::Type(ty.clone()));
-                        } else {
-                            // invalid parent, take it.
-                            item.parent.take();
-                            // return Err(JwstCodecError::InvalidParent);
-                        }
+                // Only an integrated carrier can back a stored parent identity.
+                // The update iterator defers missing cross-client dependencies.
+                item.parent = self.get_node(*parent_id).and_then(|node| {
+                    let carrier = node.as_item();
+                    match &carrier.get()?.content {
+                        Content::Type(ty) => Some(Parent::Type(ty.clone())),
+                        _ => None,
                     }
-                    Some(Node::GC(_) | Node::Skip(_)) => {
-                        item.parent.take();
-                    }
-                    None => {
-                        if let Some(ty) = pending_types.get(parent_id) {
-                            item.parent.replace(Parent::Type(ty.clone()));
-                        } else {
-                            item.parent.take();
-                        }
-                    }
-                }
+                });
             }
             // no item.parent, borrow left.parent or right.parent
             None => {
@@ -432,6 +436,7 @@ impl DocStore {
     }
 
     pub fn integrate(&mut self, mut node: Node, offset: u64, parent: Option<&mut YType>) -> JwstCodecResult {
+        let mut publish_child = false;
         match &mut node {
             Node::Item(item_owner_ref) => {
                 assert!(
@@ -508,7 +513,23 @@ impl DocStore {
                     parent_ref.as_deref_mut()
                 };
 
-                if let (Some(Parent::Type(ty)), Some(parent)) = (&this.parent, parent) {
+                let parent = parent.and_then(|parent| {
+                    let deleted = match parent.item.get() {
+                        Some(item) if matches!(item.content, Content::Type(_)) => item.deleted(),
+                        // Named roots and private staging roots have no
+                        // carrier.
+                        None if parent.root_name.is_some() || parent.is_preliminary() && parent.item.is_unset() => {
+                            false
+                        }
+                        // Collection either replaced the containing item or
+                        // dropped its type content.
+                        _ => return None,
+                    };
+                    Some((parent, deleted))
+                });
+
+                if let (Some(Parent::Type(ty)), Some((parent, parent_deleted))) = (&this.parent, parent) {
+                    publish_child = parent.published;
                     let mut left = this.left.clone();
                     let mut right = this.right.clone();
 
@@ -606,8 +627,6 @@ impl DocStore {
                     }
                     this.right = right.clone();
 
-                    let parent_deleted = parent.item.get().map(|item| item.deleted()).unwrap_or(false);
-
                     // should delete
                     if parent_deleted || this.parent_sub.is_some() && this.right.is_some() {
                         self.delete_node(&Node::Item(item_owner_ref.clone()), Some(parent));
@@ -621,11 +640,9 @@ impl DocStore {
                     // mark changed item's parent
                     Self::mark_changed(&mut self.changed, ty.clone(), this.parent_sub.clone());
                 } else {
-                    // if parent not exists, integrate GC node instead
-                    // don't delete it because it may referenced by other nodes
-                    // if all nodes that reference it are deleted, it will
-                    // merged into one gc node
-                    node = Node::new_gc(node.id(), node.len());
+                    // Preserve the integrated clock range when the parent is
+                    // missing or collected.
+                    node = Node::new_gc(this.id, this.len());
                 }
             }
             Node::GC(item) => {
@@ -638,19 +655,49 @@ impl DocStore {
                 // skip ignored
             }
         }
-        self.add_node(node)
+        let child = match &node {
+            Node::Item(item) => match &item.get().unwrap().content {
+                Content::Type(ty) => Some(ty.clone()),
+                _ => None,
+            },
+            _ => None,
+        };
+        self.add_node(node)?;
+        if let Some(child) = child {
+            if publish_child {
+                // SAFETY: the document write lock is held. The child's carrying
+                // item was just added, and the acyclic child is distinct from
+                // the parent. This covers local, remote and rebuilt children.
+                unsafe { child.ty_mut() }.unwrap().published = true;
+            }
+            self.integrate_preliminary(&child)?;
+        }
+        Ok(())
     }
 
     pub fn delete_item(&mut self, item: &Item, parent: Option<&mut YType>) {
         let mut pending_delete_sets = HashMap::new();
-        Self::delete_item_inner(&mut pending_delete_sets, &mut self.changed, item, parent);
-        for (client, ranges) in pending_delete_sets {
+        Self::delete_item_inner(
+            &mut pending_delete_sets,
+            &mut self.merge_pending,
+            &mut self.changed,
+            item,
+            parent,
+        );
+        self.add_deleted(pending_delete_sets);
+    }
+
+    /// Records ranges deleted for the first time.
+    fn add_deleted(&mut self, ranges: HashMap<u64, Vec<Range<u64>>>) {
+        for (client, ranges) in ranges {
+            self.gc_pending.batch_add_ranges(client, ranges.clone());
             self.delete_set.batch_add_ranges(client, ranges);
         }
     }
 
     fn delete_item_inner(
         delete_set: &mut HashMap<u64, Vec<Range<u64>>>,
+        merges: &mut Vec<Id>,
         changed: &mut ChangedTypeRefs,
         item: &Item,
         parent: Option<&mut YType>,
@@ -693,10 +740,14 @@ impl DocStore {
                 // in remote updates.
                 if let Some(mut ty) = unsafe { ty.ty_mut() } {
                     // items in ty are all refs, not owned
+                    // children deleted earlier are not in this delete set; Yjs
+                    // `ContentType.delete` queues them for merging
                     let mut item_ref = ty.start.clone();
                     while let Some(item) = item_ref.get() {
                         if !item.deleted() {
-                            Self::delete_item_inner(delete_set, changed, item, Some(&mut ty));
+                            Self::delete_item_inner(delete_set, merges, changed, item, Some(&mut ty));
+                        } else {
+                            merges.push(item.id);
                         }
 
                         item_ref = item.right.clone();
@@ -704,10 +755,12 @@ impl DocStore {
 
                     let map_values = ty.map.values().cloned().collect::<Vec<_>>();
                     for item in map_values {
-                        if let Some(item) = item.get()
-                            && !item.deleted()
-                        {
-                            Self::delete_item_inner(delete_set, changed, item, Some(&mut ty));
+                        if let Some(item) = item.get() {
+                            if !item.deleted() {
+                                Self::delete_item_inner(delete_set, merges, changed, item, Some(&mut ty));
+                            } else {
+                                merges.push(item.id);
+                            }
                         }
                     }
                 }
@@ -746,7 +799,8 @@ impl DocStore {
                 let id = node.id();
 
                 if !node.deleted() && id.clock < start {
-                    DocStore::split_node_at(items, idx, start - id.clock)?;
+                    let (_, right) = DocStore::split_node_at(items, idx, start - id.clock)?;
+                    self.merge_pending.push(right.id());
                     idx += 1;
                 }
             };
@@ -762,14 +816,21 @@ impl DocStore {
                         // -----item-----
                         //           ^end
                         if end < id.clock + node.len() {
-                            DocStore::split_node_at(items, idx, end - id.clock)?;
+                            let (_, right) = DocStore::split_node_at(items, idx, end - id.clock)?;
+                            self.merge_pending.push(right.id());
                         }
 
                         // borrow after the split: split_node_at mutates the
                         // item in place and would
                         // invalidate a guard acquired earlier
                         if let Some(item) = node.as_item().get() {
-                            Self::delete_item_inner(&mut pending_delete_sets, &mut self.changed, item, None);
+                            Self::delete_item_inner(
+                                &mut pending_delete_sets,
+                                &mut self.merge_pending,
+                                &mut self.changed,
+                                item,
+                                None,
+                            );
                         }
                     }
                 } else {
@@ -777,9 +838,7 @@ impl DocStore {
                 }
                 idx += 1;
             }
-            for (client, ranges) in pending_delete_sets {
-                self.delete_set.batch_add_ranges(client, ranges);
-            }
+            self.add_deleted(pending_delete_sets);
         };
 
         Ok(())
@@ -899,122 +958,159 @@ impl DocStore {
         delete_set
     }
 
-    /// Optimize the memory usage of store
-    pub fn optimize(&mut self) -> JwstCodecResult {
-        //  1. gc delete set
-        self.gc_delete_set()?;
-        //  2. merge delete set (in our delete set impl, which is based on
-        //     `OrderRange` has already have auto-merge functionality), pass
-        //  3. merge same content siblings, e.g contentString + ContentString
+    /// Garbage-collects and merges what changed since the last call, after
+    /// Yjs v13.6.33 `cleanupTransactions`: GC of the ranges deleted since
+    /// then (`tryGcDeleteSet`), merge around them (`tryMergeDeleteSet`),
+    /// merge of the structs added since `last_optimized_state` and of the
+    /// recorded split points (`_mergeStructs`). The cost follows the size of
+    /// the change, not of the document.
+    pub fn optimize(&mut self, gc: bool) {
+        let deleted = mem::take(&mut self.gc_pending);
+
+        if gc {
+            self.gc_delete_set(&deleted);
+        }
+        // includes the children GC just replaced
+        let merges = mem::take(&mut self.merge_pending);
+        self.merge_delete_set(&deleted);
         self.make_continuous();
-        Ok(())
+        self.merge_split_points(&merges);
     }
 
-    fn gc_delete_set(&mut self) -> JwstCodecResult<()> {
-        for (client, deletes) in self.delete_set.deref() {
-            for range in deletes {
-                let start = range.start;
-                let end = range.end;
-                let items = self.items.get_mut(client).unwrap();
-                if let Some(mut idx) = Self::get_node_index(items, start) {
-                    while idx < items.len() {
-                        if let Node::Item(item) = items[idx].clone() {
-                            let item = unsafe { item.get_unchecked() };
+    /// Full GC and merge over the whole delete set and every struct.
+    pub fn optimize_all(&mut self) {
+        self.gc_pending.merge(&self.delete_set.clone());
+        self.last_optimized_state = StateVector::default();
+        self.optimize(true)
+    }
 
-                            if end <= item.id.clock {
-                                break;
-                            }
+    /// Whether GC must keep any part of `len` structs starting at `id`.
+    fn is_retained(&self, id: Id, len: u64) -> bool {
+        self.retained
+            .get(&id.client)
+            .is_some_and(|ranges| ranges.into_iter().any(|r| r.start < id.clock + len && id.clock < r.end))
+    }
 
-                            if !item.keep() {
-                                let parent_gced = Self::parent_is_gced(item);
-                                Self::gc_item(items, idx, parent_gced)?;
-                            }
-                        }
+    fn gc_delete_set(&mut self, deleted: &DeleteSet) {
+        for (client, ranges) in deleted.iter() {
+            for range in ranges {
+                let Some(mut idx) = self
+                    .items
+                    .get(client)
+                    .and_then(|items| Self::get_node_index(items, range.start))
+                else {
+                    continue;
+                };
 
-                        idx += 1;
+                while let Some(node) = self.items.get(client).and_then(|items| items.get(idx)).cloned() {
+                    if range.end <= node.clock() {
+                        break;
                     }
+
+                    if let Node::Item(item_ref) = &node
+                        && let Some(item) = item_ref.get()
+                        && item.deleted()
+                        && !item.keep()
+                        && !self.is_retained(item.id, item.len())
+                    {
+                        self.gc_item(item_ref, false);
+                    }
+
+                    idx += 1;
+                }
+            }
+        }
+    }
+
+    /// Yjs `Item.gc`: the content of a type item drops its children (which
+    /// become GC structs), then the item either keeps its place with
+    /// `ContentDeleted` or, when its parent type is being collected too, is
+    /// replaced by a GC struct.
+    /// `item_ref` is a live item of this store.
+    fn gc_item(&mut self, item_ref: &ItemRef, parent_gced: bool) {
+        let item = item_ref.get().expect("collected items are live");
+        debug_assert!(item.deleted());
+        let (id, len) = (item.id, item.len());
+
+        if let Content::Type(ty) = &item.content {
+            self.gc_type(ty);
+        }
+
+        if parent_gced {
+            let items = self.items.get_mut(&id.client).expect("live items are in the store");
+            let idx = Self::get_node_index(items, id.clock).expect("live items are in the store");
+            debug_assert_eq!(items[idx].id(), id);
+            items[idx] = Node::new_gc(id, len);
+            // Overwritten map values are neither in this delete set nor queued
+            // by `delete_item_inner`, so Yjs leaves their GC structs unmerged;
+            // queue every replaced child instead.
+            self.merge_pending.push(id);
+        } else {
+            // SAFETY: GC runs under the store write lock with nothing borrowed.
+            let mut item = unsafe { item_ref.get_mut_unchecked() };
+            item.replace_content(Content::Deleted(len));
+            item.flags.clear_countable();
+        }
+    }
+
+    /// Yjs `ContentType.gc`: collects every child of a type whose item is
+    /// being collected.
+    fn gc_type(&mut self, ty: &YTypeRef) {
+        let mut children = Vec::new();
+        if let Some(ty) = ty.ty() {
+            let mut item = ty.start.clone();
+            while let Some(next) = item.get().map(|i| i.right.clone()) {
+                children.push(item);
+                item = next;
+            }
+            for value in ty.map.values() {
+                let mut item = value.clone();
+                while let Some(next) = item.get().map(|i| i.left.clone()) {
+                    children.push(item);
+                    item = next;
                 }
             }
         }
 
-        loop {
-            let mut replaced = 0usize;
-            for items in self.items.values_mut() {
-                for idx in 0..items.len() {
-                    let should_gc = match &items[idx] {
-                        Node::Item(item_ref) => item_ref
-                            .get()
-                            .is_some_and(|item| !item.keep() && Self::parent_is_gced(item)),
-                        _ => false,
-                    };
-                    if should_gc {
-                        Self::gc_item(items, idx, true)?;
-                        replaced += 1;
-                    }
-                }
-            }
-            if replaced == 0 {
-                break;
-            }
-        }
-
-        Ok(())
-    }
-
-    fn parent_is_gced(item: &Item) -> bool {
-        let Some(Parent::Type(parent)) = &item.parent else {
-            return false;
-        };
-        let Some(parent) = parent.ty() else {
-            return true;
-        };
-
-        (parent.start.is_none() && parent.map.is_empty())
-            || parent
-                .item
-                .get()
-                .map(|item| item.deleted())
-                .unwrap_or(parent.root_name.is_none())
-    }
-
-    fn gc_item(items: &mut VecDeque<Node>, idx: usize, replace: bool) -> JwstCodecResult {
-        if let Node::Item(item_ref) = items[idx].clone() {
-            let item = unsafe { item_ref.get_unchecked() };
-
-            // if replace=true we don't check if the item deleted,
-            // because the parent already delete but children may not delete
-            if !replace && !item.deleted() {
-                return Err(JwstCodecError::Unexpected);
-            }
-
-            Self::gc_content(&item.content)?;
-
-            if replace {
-                let _ = mem::replace(&mut items[idx], Node::new_gc(item.id, item.len()));
-            } else {
-                let mut item = unsafe { item_ref.get_mut_unchecked() };
-                let len = item.len();
-                item.replace_content(Content::Deleted(len));
-                item.flags.clear_countable();
-                debug_assert!(!item.flags.countable());
-            }
-        }
-
-        Ok(())
-    }
-
-    fn gc_content(content: &Content) -> JwstCodecResult {
         // SAFETY: GC runs under the store write lock with no type borrowed.
-        if let Content::Type(ty) = content
-            && let Some(mut ty) = unsafe { ty.ty_mut() }
-        {
+        if let Some(mut ty) = unsafe { ty.ty_mut() } {
             ty.start = Somr::none();
             ty.map.clear();
+            if let Some(markers) = &mut ty.markers {
+                markers.clear();
+            }
         }
 
-        Ok(())
+        for child in children {
+            self.gc_item(&child, true);
+        }
     }
 
+    /// Yjs `tryMergeDeleteSet`: merges the structs in and right after each
+    /// deleted range, from right to left.
+    fn merge_delete_set(&mut self, deleted: &DeleteSet) {
+        for (client, ranges) in deleted.iter() {
+            let ranges = ranges.into_iter().collect::<Vec<_>>();
+            let Some(nodes) = self.items.get_mut(client) else {
+                continue;
+            };
+            for range in ranges.into_iter().rev() {
+                let Some(last) = range
+                    .end
+                    .checked_sub(1)
+                    .and_then(|clock| Self::get_node_index(nodes, clock))
+                else {
+                    continue;
+                };
+                let mut si = (nodes.len() - 1).min(last + 1);
+                while si > 0 && nodes[si].clock() >= range.start {
+                    si = si.saturating_sub(1 + Self::merge_with_lefts(nodes, si));
+                }
+            }
+        }
+    }
+
+    /// Merges every struct added since `last_optimized_state`.
     fn make_continuous(&mut self) {
         let state = self.get_state_vector();
 
@@ -1036,6 +1132,28 @@ impl DocStore {
         self.last_optimized_state = state;
     }
 
+    /// Merges recorded split points with their neighbors (Yjs
+    /// `_mergeStructs`).
+    fn merge_split_points(&mut self, merges: &[Id]) {
+        for id in merges.iter().rev() {
+            let Some(nodes) = self.items.get_mut(&id.client) else {
+                continue;
+            };
+            let Some(pos) = Self::get_node_index(nodes, id.clock) else {
+                continue;
+            };
+            if pos + 1 < nodes.len() && Self::merge_with_lefts(nodes, pos + 1) > 1 {
+                // both neighbors are already merged
+                continue;
+            }
+            if pos > 0 {
+                Self::merge_with_lefts(nodes, pos);
+            }
+        }
+    }
+
+    /// Yjs `tryToMergeWithLefts`: merges `nodes[idx]` into its left
+    /// neighbors as far as possible and returns how many were merged.
     fn merge_with_lefts(nodes: &mut VecDeque<Node>, idx: usize) -> usize {
         let mut pos = idx;
         loop {
@@ -1050,18 +1168,16 @@ impl DocStore {
                 break;
             }
 
-            // Yjs v13.6.33 tryToMergeWithLefts keeps the current map value
-            // pointing at the surviving item before dropping the right item.
-            if let Node::Item(right) = &right {
-                let item = right.get().unwrap();
-                if let (Some(Parent::Type(parent)), Some(key)) = (&item.parent, &item.parent_sub)
-                    // SAFETY: merging runs under the store write lock with no
-                    // type borrowed.
-                    && let Some(mut parent) = unsafe { parent.ty_mut() }
-                    && parent.map.get(key) == Some(right)
-                {
-                    parent.map.insert(key.clone(), left.as_item());
-                }
+            // the merged right item may be the current value of its map key
+            if let Node::Item(right) = &right
+                && let Some(item) = right.get()
+                && let (Some(Parent::Type(parent)), Some(key)) = (&item.parent, &item.parent_sub)
+                // SAFETY: merging runs under the store write lock with no type
+                // borrowed.
+                && let Some(mut parent) = unsafe { parent.ty_mut() }
+                && parent.map.get(key).is_some_and(|current| current.ptr_eq(right))
+            {
+                parent.map.insert(key.clone(), left.as_item());
             }
 
             pos -= 1;
@@ -1408,7 +1524,8 @@ mod tests {
             store.add_node(Node::Item(Somr::new(item2))).unwrap();
             store.delete_set.add_range(1, 0..4);
 
-            store.gc_delete_set().unwrap();
+            let ds = store.delete_set.clone();
+            store.gc_delete_set(&ds);
 
             assert_eq!(
                 &store.get_node((1, 0)).unwrap().as_item().get().unwrap().content,
@@ -1433,7 +1550,8 @@ mod tests {
             arr.remove(0, 1).unwrap();
             assert_eq!(arr.len(), 0);
             let mut store = doc.store.write().unwrap();
-            store.gc_delete_set().unwrap();
+            let ds = store.delete_set.clone();
+            store.gc_delete_set(&ds);
 
             assert_eq!(
                 &store.get_node((1, 0)).unwrap().as_item().get().unwrap().content,
@@ -1449,26 +1567,44 @@ mod tests {
                 store.get_node((1, 7)).unwrap(), // " world" GCd
                 Node::new_gc((1, 6).into(), 6)
             );
+        });
+    }
 
-            let parent = YTypeRef::new(YTypeKind::Array, None);
-            let item = Somr::new(
-                ItemBuilder::new()
-                    .id((2, 8).into())
-                    .parent(Some(Parent::Type(parent.clone())))
-                    .content(Content::Any(vec![Any::Integer(1); 8]))
-                    .build(),
-            );
-            item.get().unwrap().delete();
-            // SAFETY: `parent` is detached and owned by this test.
-            unsafe { parent.ty_mut() }.unwrap().start = item.clone();
+    /// Yjs `Item.gc(store, parentGCd)`: children become GC structs only when
+    /// their parent type item is collected. A kept (or otherwise not
+    /// collected) deleted parent leaves its deleted children as items with
+    /// `ContentDeleted`, so the parent's item list stays linked.
+    #[test]
+    fn should_only_replace_children_of_collected_types() {
+        loom_model!({
+            let doc = DocOptions::new().with_client_id(1).auto_gc(false).build();
 
-            let mut orphan_store = DocStore::with_client(2);
-            orphan_store.add_node(Node::new_gc((2, 0).into(), 8)).unwrap();
-            orphan_store.add_node(Node::Item(item)).unwrap();
-            orphan_store.delete_set.add_range(2, 0..8);
-            orphan_store.gc_delete_set().unwrap();
+            let mut arr = doc.get_or_create_array("arr").unwrap();
+            let mut text = doc.create_text().unwrap();
+            arr.insert(0, Value::from(text.clone())).unwrap();
+            text.insert(0, "hello").unwrap();
+            arr.remove(0, 1).unwrap();
 
-            assert_eq!(orphan_store.get_node((2, 8)).unwrap(), Node::new_gc((2, 8).into(), 8));
+            let mut store = doc.store.write().unwrap();
+            // keep the text item (1, 0) itself
+            store
+                .get_node((1, 0))
+                .unwrap()
+                .as_item()
+                .get()
+                .unwrap()
+                .flags
+                .set_keep();
+            let ds = store.delete_set.clone();
+            store.gc_delete_set(&ds);
+
+            assert!(matches!(
+                &store.get_node((1, 0)).unwrap().as_item().get().unwrap().content,
+                Content::Type(_)
+            ));
+            let hello = store.get_node((1, 1)).unwrap();
+            assert!(hello.is_item());
+            assert_eq!(&hello.as_item().get().unwrap().content, &Content::Deleted(5));
         });
     }
 
@@ -1495,7 +1631,8 @@ mod tests {
             pages.remove("page1");
 
             let mut store = doc.store.write().unwrap();
-            store.gc_delete_set().unwrap();
+            let ds = store.delete_set.clone();
+            store.gc_delete_set(&ds);
 
             assert_eq!(
                 &store.get_node((1, 0)).unwrap().as_item().get().unwrap().content,

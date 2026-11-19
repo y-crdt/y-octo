@@ -87,6 +87,10 @@ name    = "apply_benchmarks"
 
 [[bench]]
 harness = false
+name    = "apply_scaling_benchmarks"
+
+[[bench]]
+harness = false
 name    = "update_benchmarks"
 
 [[bench]]

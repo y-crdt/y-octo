@@ -65,7 +65,7 @@ fn offline_regression_traces() {
     }
 }
 #[test]
-#[ignore = "A2: live remote Text marker invalidation"]
+#[cfg_attr(miri, ignore = "Semantic traces run in ordinary tests")]
 fn offline_text_marker_regression() {
     run_offline(
         &traces()
@@ -76,7 +76,7 @@ fn offline_text_marker_regression() {
     .unwrap();
 }
 #[test]
-#[ignore = "A2: live remote Array marker invalidation"]
+#[cfg_attr(miri, ignore = "Semantic traces run in ordinary tests")]
 fn offline_array_marker_regression() {
     run_offline(
         &traces()
@@ -127,7 +127,7 @@ fn online_yjs_differential() {
     assert!(failures.is_empty(), "{}", failures.join("\n\n"));
 }
 #[test]
-#[ignore = "A2 Text marker bug; requires pinned Node oracle"]
+#[ignore = "Requires Node and npm ci --prefix y-octo/tests/oracle"]
 fn online_text_marker_regression() {
     let mut oracle = Oracle::start().unwrap();
     let t = traces()
@@ -137,7 +137,7 @@ fn online_text_marker_regression() {
     oracle.compare(&t, "13.6.33").unwrap();
 }
 #[test]
-#[ignore = "A2 Array marker bug; requires pinned Node oracle"]
+#[ignore = "Requires Node and npm ci --prefix y-octo/tests/oracle"]
 fn online_array_marker_regression() {
     let mut oracle = Oracle::start().unwrap();
     let t = traces()

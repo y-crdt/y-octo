@@ -68,6 +68,9 @@ impl RelativePosition {
     /// Yjs `createRelativePositionFromTypeIndex` on the type data `ty`.
     fn from_type_index(ty: &YType, index: u64, assoc: i64) -> JwstCodecResult<Self> {
         check_assoc(assoc)?;
+        if ty.is_preliminary() {
+            return Err(JwstCodecError::InvalidParent);
+        }
         if index > ty.len {
             return Err(JwstCodecError::IndexOutOfBound(index));
         }

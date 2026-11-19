@@ -85,13 +85,13 @@ fn model_live(kind: &str) {
 }
 
 #[test]
-#[ignore = "Remote updates leave stale Text search markers; fixed by core direction A2"]
+#[cfg_attr(miri, ignore = "Large semantic oracle; ordinary tests cover it")]
 fn text_local_remote_model() {
     model_live("text");
 }
 
 #[test]
-#[ignore = "Remote updates leave stale Array search markers; fixed by core direction A2"]
+#[cfg_attr(miri, ignore = "Large semantic oracle; ordinary tests cover it")]
 fn array_local_remote_model() {
     model_live("array");
 }

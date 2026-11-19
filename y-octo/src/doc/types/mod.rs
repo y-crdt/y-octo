@@ -1,6 +1,7 @@
 pub(crate) mod array;
 mod list;
 pub(crate) mod map;
+mod preliminary;
 pub(crate) mod text;
 mod value;
 mod xml;
@@ -37,6 +38,12 @@ pub(crate) struct YType {
     pub root_name: Option<String>,
     kind: YTypeKind,
     pub markers: Option<MarkerList>,
+    /// Local-only editing state before this subtree is mounted. It is protected
+    /// by the owning document lock, and never contributes to its SV or update.
+    pub preliminary: Option<Box<DocStore>>,
+    /// Monotonic: this type has acquired a document identity. Retirement is
+    /// still determined by its carrying item, never by resetting this bit.
+    pub published: bool,
 }
 
 /// A handle to a type stored in a [DocStore].
@@ -105,6 +112,9 @@ impl YType {
     }
 
     pub fn identity(&self) -> JwstCodecResult<TypeIdentity> {
+        if self.is_preliminary() {
+            return Err(JwstCodecError::InvalidParent);
+        }
         if let Some(item) = self.item.get() {
             Ok(TypeIdentity::Item(item.id))
         } else if let Some(name) = &self.root_name {
@@ -174,10 +184,30 @@ impl YTypeRef {
     pub fn write<R>(&self, f: impl FnOnce(&mut DocStore, &mut YType) -> JwstCodecResult<R>) -> JwstCodecResult<R> {
         let store_ref = self.store_ref()?;
         let mut store = store_ref.write().unwrap();
-        // SAFETY: we hold the store write lock and this is the only reference
-        // to the type handed out under it.
-        let mut ty = unsafe { self.ty_mut() }.ok_or(JwstCodecError::DocReleased)?;
-        f(&mut store, &mut ty)
+        if let Some(root) = self.preliminary_root()? {
+            // Move the staging store out while editing so it cannot alias the
+            // mutable type data passed to f (the type may itself be the root).
+            // SAFETY: the document write lock covers both types; temporary
+            // mutable references to the root end before f is called.
+            let mut staging = unsafe { root.ty_mut() }
+                .unwrap()
+                .preliminary
+                .take()
+                .unwrap_or_else(|| Box::new(DocStore::with_client(0)));
+            // SAFETY: staging was moved out; no type data is borrowed here.
+            let result = match unsafe { self.ty_mut() } {
+                Some(mut ty) => f(&mut staging, &mut ty),
+                None => Err(JwstCodecError::DocReleased),
+            };
+            // SAFETY: f returned and its mutable type reference ended.
+            unsafe { root.ty_mut() }.unwrap().preliminary = Some(staging);
+            result
+        } else {
+            // SAFETY: we hold the store write lock and this is the only
+            // reference to the type handed out under it.
+            let mut ty = unsafe { self.ty_mut() }.ok_or(JwstCodecError::DocReleased)?;
+            f(&mut store, &mut ty)
+        }
     }
 }
 
@@ -270,6 +300,7 @@ impl YTypeBuilder {
                         kind: self.kind,
                         name: self.name,
                         root_name: Some(root_name),
+                        published: true,
                         markers: Self::markers(self.kind),
                         ..Default::default()
                     });
@@ -384,6 +415,8 @@ macro_rules! impl_type {
                 Self(inner)
             }
 
+            /// The document identity, available after this type is mounted.
+            /// Preliminary types and their nested children have no published identity.
             pub fn identity(&self) -> $crate::JwstCodecResult<super::TypeIdentity> {
                 self.0.read(|_, ty| ty.identity())?
             }

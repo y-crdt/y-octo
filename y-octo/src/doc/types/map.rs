@@ -10,7 +10,13 @@ impl_type!(Map);
 pub(crate) trait MapType: AsInner<Inner = YTypeRef> {
     fn _id(&self) -> Option<Id> {
         self.as_inner()
-            .read(|_, ty| ty.item.get().map(|item| item.id))
+            .read(|_, ty| {
+                if ty.is_preliminary() {
+                    None
+                } else {
+                    ty.item.get().map(|item| item.id)
+                }
+            })
             .ok()
             .flatten()
     }
