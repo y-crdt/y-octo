@@ -4,53 +4,6 @@ impl_type!(Array);
 
 impl ListType for Array {}
 
-pub struct ArrayIter<'a> {
-    iter: ListIterator<'a>,
-    pending: Option<PendingArrayValues>,
-}
-
-enum PendingArrayValues {
-    Any { values: Vec<Any>, index: usize },
-}
-
-impl Iterator for ArrayIter<'_> {
-    type Item = Value;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        loop {
-            if let Some(PendingArrayValues::Any { values, index }) = &mut self.pending {
-                if *index < values.len() {
-                    let value = values[*index].clone();
-                    *index += 1;
-                    return Some(Value::Any(value));
-                }
-                self.pending = None;
-            }
-
-            let item = self.iter.next()?;
-            if let Some(item) = item.get() {
-                if !item.countable() {
-                    continue;
-                }
-
-                match &item.content {
-                    Content::Any(values) if !values.is_empty() => {
-                        if values.len() > 1 {
-                            self.pending = Some(PendingArrayValues::Any {
-                                values: values.clone(),
-                                index: 1,
-                            });
-                        }
-
-                        return Some(Value::Any(values[0].clone()));
-                    }
-                    _ => return Some(Value::from(&item.content)),
-                }
-            }
-        }
-    }
-}
-
 impl Array {
     #[inline(always)]
     pub fn id(&self) -> Option<Id> {
@@ -68,26 +21,44 @@ impl Array {
     }
 
     pub fn get(&self, index: u64) -> Option<Value> {
-        let (item, offset) = self.get_item_at(index)?;
-
-        item.get().and_then(|item| {
-            // TODO: rewrite to content.read(&mut [Any])
-            match &item.content {
-                Content::Any(any) => any.get(offset as usize).map(|any| Value::Any(any.clone())),
-                _ => Some(Value::from(&item.content)),
-            }
-        })
+        let parent = self.as_inner();
+        parent
+            .read(|_, ty| {
+                let (item, offset) = item_at(parent, ty, index)?;
+                item.get().and_then(|item| {
+                    // TODO: rewrite to content.read(&mut [Any])
+                    match &item.content {
+                        Content::Any(any) => any.get(offset as usize).map(|any| Value::Any(any.clone())),
+                        _ => Some(Value::from(&item.content)),
+                    }
+                })
+            })
+            .ok()
+            .flatten()
     }
 
-    pub fn iter(&self) -> ArrayIter<'_> {
-        ArrayIter {
-            iter: self.iter_item(),
-            pending: None,
-        }
+    /// A snapshot of the values, taken under one store read lock.
+    pub fn iter(&self) -> std::vec::IntoIter<Value> {
+        self.as_inner()
+            .read(|_, ty| {
+                let mut values = Vec::with_capacity(ty.len as usize);
+                for item in ListIterator::new(ty) {
+                    if !item.countable() {
+                        continue;
+                    }
+                    match &item.content {
+                        Content::Any(any) if !any.is_empty() => values.extend(any.iter().cloned().map(Value::Any)),
+                        _ => values.push(Value::from(&item.content)),
+                    }
+                }
+                values
+            })
+            .unwrap_or_default()
+            .into_iter()
     }
 
     pub fn push<V: Into<Value>>(&mut self, val: V) -> JwstCodecResult {
-        self.insert(self.len(), val)
+        self.push_back(val.into().into())
     }
 
     pub fn insert<V: Into<Value>>(&mut self, idx: u64, val: V) -> JwstCodecResult {
@@ -106,9 +77,10 @@ impl serde::Serialize for Array {
     {
         use serde::ser::SerializeSeq;
 
-        let mut seq = serializer.serialize_seq(Some(self.len() as usize))?;
+        let values = self.iter();
+        let mut seq = serializer.serialize_seq(Some(values.len()))?;
 
-        for item in self.iter() {
+        for item in values {
             seq.serialize_element(&item)?;
         }
         seq.end()
@@ -242,6 +214,36 @@ mod tests {
             let arr = doc.get_or_create_array("abc").unwrap();
 
             assert_eq!(arr.get(2).unwrap(), Value::Any(Any::String("world".to_string())))
+        });
+    }
+
+    /// A type is inserted at most once: a second insert would rewrite its item
+    /// while the first container still holds it, and the ancestor walk could
+    /// then miss a cycle (a contains b, b moved under c, b takes a), which the
+    /// recursive delete of `a` would walk with aliased `&mut` types.
+    #[test]
+    fn test_type_is_inserted_at_most_once() {
+        loom_model!({
+            let doc = Doc::with_client(1);
+            let mut a = doc.create_array().unwrap();
+            let mut b = doc.create_array().unwrap();
+            let mut c = doc.get_or_create_array("c").unwrap();
+
+            a.push(b.clone()).unwrap();
+            assert_eq!(c.push(b.clone()), Err(JwstCodecError::TypeAlreadyInserted));
+            assert_eq!(b.push(a.clone()), Err(JwstCodecError::InvalidParent));
+            a.remove(0, 1).unwrap();
+
+            // deleted and collected types stay inserted
+            assert_eq!(a.push(b.clone()), Err(JwstCodecError::TypeAlreadyInserted));
+            doc.gc().unwrap();
+            assert_eq!(c.insert(0, b.clone()), Err(JwstCodecError::TypeAlreadyInserted));
+            // so do root types
+            assert_eq!(a.push(c.clone()), Err(JwstCodecError::TypeAlreadyInserted));
+
+            assert!(a.is_empty());
+            assert!(c.is_empty());
+            assert!(b.is_empty());
         });
     }
 }

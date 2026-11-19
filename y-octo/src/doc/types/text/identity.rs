@@ -1,5 +1,6 @@
 use super::{
-    Any, Content, Id, JwstCodecError, JwstCodecResult, ListType, Text, TextAttributes, TextInsert, is_nullish,
+    Any, AsInner, Content, Id, JwstCodecError, JwstCodecResult, ListIterator, Text, TextAttributes, TextInsert, YType,
+    is_nullish,
 };
 
 /// A visible content run with its original UTF-16 clock range.
@@ -16,10 +17,16 @@ impl Text {
     /// Deleted content is absent; use the document delete set for causal
     /// checks.
     pub fn identity_runs(&self) -> JwstCodecResult<Vec<TextIdentityRun>> {
+        self.as_inner().read(|_, ty| identity_runs(ty))?
+    }
+}
+
+/// The caller holds the store lock.
+fn identity_runs(ty: &YType) -> JwstCodecResult<Vec<TextIdentityRun>> {
+    {
         let mut runs = Vec::new();
         let mut attributes = TextAttributes::new();
-        for item_ref in self.iter_item() {
-            let item = item_ref.get().ok_or(JwstCodecError::DocReleased)?;
+        for item in ListIterator::new(ty) {
             let insert = match &item.content {
                 Content::Format { key, value } => {
                     if is_nullish(value) {

@@ -7,14 +7,11 @@ use std::{
 use super::*;
 use crate::{
     doc::StateVector,
-    sync::{Arc, RwLock, RwLockWriteGuard, Weak},
+    sync::{Arc, RwLock, Weak},
 };
 
 pub type ChangedTypeRefs = HashMap<YTypeRef, Vec<SmolStr>>;
 type PendingTypes = HashMap<Id, YTypeRef>;
-
-unsafe impl Send for DocStore {}
-unsafe impl Sync for DocStore {}
 
 #[derive(Default, Debug)]
 pub(crate) struct DocStore {
@@ -172,7 +169,10 @@ impl DocStore {
         let item = Somr::new(Item::new(id, content, left, right, parent, parent_sub));
 
         if let Content::Type(ty) = &item.get().unwrap().content
-            && let Some(mut ty) = ty.ty_mut()
+            // SAFETY: callers hold the store write lock and only reference the
+            // parent type. `check_insertable` admits only a type that was never
+            // inserted, which is neither the parent nor any of its ancestors.
+            && let Some(mut ty) = unsafe { ty.ty_mut() }
         {
             ty.item = item.clone();
         }
@@ -320,7 +320,7 @@ impl DocStore {
 
                 let ty = YTypeRef {
                     store: Arc::downgrade(store_ref),
-                    inner: Somr::new(RwLock::new(inner)),
+                    inner: Somr::new(inner),
                 };
                 let ty_ref = ty.clone();
                 e.insert(ty);
@@ -495,14 +495,17 @@ impl DocStore {
                     }
                 }
 
-                let mut parent_lock: Option<RwLockWriteGuard<YType>> = None;
+                let mut parent_ref = None;
                 let parent = if let Some(parent) = parent {
                     Some(parent)
                 } else {
                     if let Some(Parent::Type(ty)) = &this.parent {
-                        parent_lock = ty.ty_mut();
+                        // SAFETY: remote integration holds the store write
+                        // lock and no other type reference; the cycle check
+                        // above keeps `this.content` distinct from the parent.
+                        parent_ref = unsafe { ty.ty_mut() };
                     }
-                    parent_lock.as_deref_mut()
+                    parent_ref.as_deref_mut()
                 };
 
                 if let (Some(Parent::Type(ty)), Some(parent)) = (&this.parent, parent) {
@@ -615,12 +618,9 @@ impl DocStore {
                         }
                     }
 
-                    parent_lock.take();
-
                     // mark changed item's parent
                     Self::mark_changed(&mut self.changed, ty.clone(), this.parent_sub.clone());
                 } else {
-                    drop(parent_lock);
                     // if parent not exists, integrate GC node instead
                     // don't delete it because it may referenced by other nodes
                     // if all nodes that reference it are deleted, it will
@@ -673,15 +673,25 @@ impl DocStore {
                 if parent.len != 0 {
                     parent.len -= item.len();
                 }
-            } else if let Some(Parent::Type(ty)) = &item.parent {
-                ty.ty_mut().unwrap().len -= item.len();
+            } else if let Some(Parent::Type(ty)) = &item.parent
+                // SAFETY: store write lock held; without `parent` the caller
+                // holds no reference to this type.
+                && let Some(mut ty) = unsafe { ty.ty_mut() }
+            {
+                ty.len -= item.len();
             }
         }
 
         match &item.content {
             Content::Type(ty) => {
                 // 4. delete all children
-                if let Some(mut ty) = ty.ty_mut() {
+                // SAFETY: store write lock held; the type tree is acyclic, so
+                // `ty` is not the `parent` borrowed by the caller nor any
+                // type borrowed further up this recursion. Local inserts keep
+                // it acyclic because `check_insertable` inserts a type at most
+                // once and walks its new ancestors; integrate rejects cycles
+                // in remote updates.
+                if let Some(mut ty) = unsafe { ty.ty_mut() } {
                     // items in ty are all refs, not owned
                     let mut item_ref = ty.start.clone();
                     while let Some(item) = item_ref.get() {
@@ -804,10 +814,17 @@ impl DocStore {
         };
 
         if with_pending && let Some(pending) = &self.pending {
-            let mut pending = pending.clone();
             // Pending does not mean unknown to the recipient. Apply its SV to
             // these ranges too, while retaining deletions for missing targets.
-            pending.structs = Self::diff_structs(&pending.structs, sv)?;
+            // The structs are shared with `self.pending`: the result is only
+            // used under the store lock.
+            let pending = Update {
+                structs: Self::diff_structs(&pending.structs, sv)?,
+                delete_set: pending.delete_set.clone(),
+                pending_structs: pending.pending_structs.clone(),
+                missing_state: pending.missing_state.clone(),
+                pending_delete_set: pending.pending_delete_set.clone(),
+            };
             Update::merge_into(&mut update, [pending]);
         }
 
@@ -987,8 +1004,9 @@ impl DocStore {
     }
 
     fn gc_content(content: &Content) -> JwstCodecResult {
+        // SAFETY: GC runs under the store write lock with no type borrowed.
         if let Content::Type(ty) = content
-            && let Some(mut ty) = ty.ty_mut()
+            && let Some(mut ty) = unsafe { ty.ty_mut() }
         {
             ty.start = Somr::none();
             ty.map.clear();
@@ -1037,7 +1055,9 @@ impl DocStore {
             if let Node::Item(right) = &right {
                 let item = right.get().unwrap();
                 if let (Some(Parent::Type(parent)), Some(key)) = (&item.parent, &item.parent_sub)
-                    && let Some(mut parent) = parent.ty_mut()
+                    // SAFETY: merging runs under the store write lock with no
+                    // type borrowed.
+                    && let Some(mut parent) = unsafe { parent.ty_mut() }
                     && parent.map.get(key) == Some(right)
                 {
                     parent.map.insert(key.clone(), left.as_item());
@@ -1411,10 +1431,10 @@ mod tests {
             text.remove(5, 6).unwrap();
 
             arr.remove(0, 1).unwrap();
+            assert_eq!(arr.len(), 0);
             let mut store = doc.store.write().unwrap();
             store.gc_delete_set().unwrap();
 
-            assert_eq!(arr.len(), 0);
             assert_eq!(
                 &store.get_node((1, 0)).unwrap().as_item().get().unwrap().content,
                 &Content::Deleted(1)
@@ -1439,7 +1459,8 @@ mod tests {
                     .build(),
             );
             item.get().unwrap().delete();
-            parent.ty_mut().unwrap().start = item.clone();
+            // SAFETY: `parent` is detached and owned by this test.
+            unsafe { parent.ty_mut() }.unwrap().start = item.clone();
 
             let mut orphan_store = DocStore::with_client(2);
             orphan_store.add_node(Node::new_gc((2, 0).into(), 8)).unwrap();
@@ -1540,10 +1561,12 @@ mod tests {
 
             assert_eq!(text.to_string(), "abc, hello");
 
-            let mut store = doc.store.write().unwrap();
-            assert_eq!(store.items.get(&1).unwrap().len(), 4);
-            store.make_continuous();
-            assert_eq!(store.items.get(&1).unwrap().len(), 1);
+            {
+                let mut store = doc.store.write().unwrap();
+                assert_eq!(store.items.get(&1).unwrap().len(), 4);
+                store.make_continuous();
+                assert_eq!(store.items.get(&1).unwrap().len(), 1);
+            }
             assert_eq!(text.to_string(), "abc, hello");
         });
     }

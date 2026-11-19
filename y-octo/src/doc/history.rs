@@ -20,10 +20,31 @@ pub struct HistoryOptions {
     pub limit: Option<usize>,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct StoreHistory {
     store: StoreRef,
     parents: Arc<RwLock<HashMap<Id, Somr<Item>>>>,
+}
+
+/// The cached items in `parents` may only be read under the store lock, which
+/// `Debug` neither takes nor can rely on, so nothing is dereferenced.
+impl std::fmt::Debug for StoreHistory {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StoreHistory").finish_non_exhaustive()
+    }
+}
+
+/// [Value]'s `Display` without taking the store lock again: the caller holds
+/// it.
+fn content_string(content: &Content) -> String {
+    match content {
+        Content::Type(ty) => ty
+            .ty()
+            .filter(|ty| ty.kind() == YTypeKind::Text)
+            .map(types::text::text_string)
+            .unwrap_or_default(),
+        content => Value::from(content).to_string(),
+    }
 }
 
 impl StoreHistory {
@@ -58,6 +79,8 @@ impl StoreHistory {
     }
 
     pub fn parse_update(&self, update: &Update) -> Vec<History> {
+        // the parent chains point into the store
+        let store = self.store.read().unwrap();
         let store_items = SortedNodes::new(update.structs.iter().collect::<Vec<_>>())
             .filter_map(|n| n.as_item().get().cloned())
             .collect::<Vec<_>>();
@@ -66,7 +89,7 @@ impl StoreHistory {
         let mut store_items = store_items.iter().collect::<Vec<_>>();
         store_items.sort_by_key(|item| item.id.clock);
 
-        self.parse_items(store_items)
+        self.parse_items(&store, store_items)
     }
 
     pub fn parse_delete_sets(
@@ -97,16 +120,16 @@ impl StoreHistory {
             .flatten()
             .collect();
 
-        self.parse_deleted_items(deleted_items)
+        self.parse_deleted_items(&store, deleted_items)
     }
 
     pub fn parse_store(&self, options: HistoryOptions) -> Vec<History> {
+        let store = self.store.read().unwrap();
         let store_items = {
             let client = options
                 .client
                 .as_ref()
                 .and_then(|client| client.ne(&0).then_some(client));
-            let store = self.store.read().unwrap();
             let mut sort_iter: Box<dyn Iterator<Item = Item>> = Box::new(
                 SortedNodes::new(if let Some(client) = client {
                     store.items.get(client).map(|i| vec![(client, i)]).unwrap_or_default()
@@ -132,10 +155,11 @@ impl StoreHistory {
         let mut store_items = store_items.iter().collect::<Vec<_>>();
         store_items.sort_by_key(|item| item.id.clock);
 
-        self.parse_items(store_items)
+        self.parse_items(&store, store_items)
     }
 
-    fn parse_items(&self, store_items: Vec<&Item>) -> Vec<History> {
+    /// `_store` is the held read guard: items are only read under the lock.
+    fn parse_items(&self, _store: &DocStore, store_items: Vec<&Item>) -> Vec<History> {
         let parents = self.parents.read().unwrap();
         let mut histories = vec![];
 
@@ -147,7 +171,7 @@ impl StoreHistory {
             histories.push(History {
                 id: item.id.to_string(),
                 parent: Self::parse_path(item, &parents),
-                content: Value::from(&item.content).to_string(),
+                content: content_string(&item.content),
                 action: HistoryAction::Update,
             })
         }
@@ -155,7 +179,7 @@ impl StoreHistory {
         histories
     }
 
-    fn parse_deleted_items(&self, deleted_items: Vec<Item>) -> Vec<History> {
+    fn parse_deleted_items(&self, _store: &DocStore, deleted_items: Vec<Item>) -> Vec<History> {
         let parents = self.parents.read().unwrap();
         let mut histories = vec![];
 
@@ -163,7 +187,7 @@ impl StoreHistory {
             histories.push(History {
                 id: item.id.to_string(),
                 parent: Self::parse_path(&item, &parents),
-                content: Value::from(&item.content).to_string(),
+                content: content_string(&item.content),
                 action: HistoryAction::Delete,
             })
         }

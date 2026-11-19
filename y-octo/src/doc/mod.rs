@@ -1,6 +1,8 @@
 mod awareness;
 mod codec;
 mod common;
+#[cfg(test)]
+mod concurrency;
 mod document;
 mod hasher;
 mod history;
@@ -11,7 +13,18 @@ mod store;
 pub(crate) mod types;
 mod utils;
 
+#[cfg(not(loom))]
 pub use ahash::{HashMap, HashMapExt, HashSet, HashSetExt};
+#[cfg(loom)]
+pub use ahash::{HashMapExt, HashSetExt};
+// Under loom every execution of a model must perform the same synchronization
+// operations in the same order. ahash seeds each map randomly, so iteration
+// and drop order (and with it the order of `Somr` refcount updates) would
+// change between executions; use fixed keys instead.
+#[cfg(loom)]
+pub type HashMap<K, V> = std::collections::HashMap<K, V, std::hash::BuildHasherDefault<ahash::AHasher>>;
+#[cfg(loom)]
+pub type HashSet<K> = std::collections::HashSet<K, std::hash::BuildHasherDefault<ahash::AHasher>>;
 pub use awareness::{Awareness, AwarenessEvent};
 pub use codec::*;
 pub use common::*;

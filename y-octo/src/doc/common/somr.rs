@@ -38,10 +38,20 @@ type RefAtomicType = crate::sync::AtomicU16;
 type RefPrimitiveType = u16;
 
 pub(crate) struct SomrInner<T> {
-    data: Option<UnsafeCell<T>>,
+    /// The outer cell lets the owner drop the data through a shared reference:
+    /// other threads may update `refs` at any time (cloning or dropping their
+    /// handles needs no lock), so no `&mut SomrInner` is ever created. The
+    /// inner cell keeps the `Option` tag out of `T`'s bytes, so checking for
+    /// presence never reads the data.
+    data: UnsafeCell<Option<UnsafeCell<T>>>,
     /// increase the size when we really meet the the scenario with refs more
     /// then u16::MAX(65535) times
     refs: RefAtomicType,
+    /// Lets loom check that every access to `data` is ordered by the store
+    /// lock: concurrent unsynchronized `get`/`get_mut_*` calls panic under
+    /// `--cfg loom`.
+    #[cfg(loom)]
+    access: loom::cell::UnsafeCell<()>,
     _marker: PhantomData<Option<T>>,
 }
 
@@ -64,8 +74,13 @@ impl<T> DerefMut for InnerRefMut<'_, T> {
     }
 }
 
-unsafe impl<T: Send> Send for Somr<T> {}
-unsafe impl<T: Sync> Sync for Somr<T> {}
+// SAFETY: a `Somr` is a shared pointer like `Arc`, so it needs `T: Send + Sync`
+// in both directions. The data itself is only read or mutated while the owning
+// `DocStore` lock is held (shared for `get`, exclusive for `get_mut_*`), see
+// the lock protocol in `doc/store.rs`; detached values (decoded updates not
+// yet integrated) have a single owner thread.
+unsafe impl<T: Send + Sync> Send for Somr<T> {}
+unsafe impl<T: Send + Sync> Sync for Somr<T> {}
 
 impl<T> Default for Somr<T> {
     fn default() -> Self {
@@ -76,8 +91,10 @@ impl<T> Default for Somr<T> {
 impl<T> Somr<T> {
     pub fn new(data: T) -> Self {
         let inner = Box::new(SomrInner {
-            data: Some(UnsafeCell::new(data)),
+            data: UnsafeCell::new(Some(UnsafeCell::new(data))),
             refs: RefAtomicType::new(1),
+            #[cfg(loom)]
+            access: loom::cell::UnsafeCell::new(()),
             _marker: PhantomData,
         });
 
@@ -90,12 +107,28 @@ impl<T> Somr<T> {
 }
 
 impl<T> SomrInner<T> {
+    /// The data slot. Only the owner's drop writes it (under the store lock),
+    /// so shared access to the tag is ordered like any data access.
+    fn slot(&self) -> &Option<UnsafeCell<T>> {
+        unsafe { &*self.data.get() }
+    }
+
+    fn data_present(&self) -> bool {
+        #[cfg(loom)]
+        self.access.with(|_| ());
+        self.slot().is_some()
+    }
+
     fn data_ref(&self) -> Option<&T> {
-        self.data.as_ref().map(|x| unsafe { &*x.get() })
+        #[cfg(loom)]
+        self.access.with(|_| ());
+        self.slot().as_ref().map(|x| unsafe { &*x.get() })
     }
 
     fn data_mut(&self) -> Option<InnerRefMut<'_, T>> {
-        self.data.as_ref().map(|x| InnerRefMut {
+        #[cfg(loom)]
+        self.access.with_mut(|_| ());
+        self.slot().as_ref().map(|x| InnerRefMut {
             inner: unsafe { NonNull::new_unchecked(x.get()) },
             _marker: PhantomData,
         })
@@ -105,12 +138,14 @@ impl<T> SomrInner<T> {
 impl<T> Somr<T> {
     #[inline]
     pub fn is_none(&self) -> bool {
-        self.dangling() || self.inner().data_ref().is_none()
+        !self.is_some()
     }
 
     #[inline]
     pub fn is_some(&self) -> bool {
-        !self.dangling() && self.inner().data_ref().is_some()
+        // Only the presence: no reference to the data is created, so this is
+        // fine while the data is mutably borrowed elsewhere.
+        !self.dangling() && self.inner().data_present()
     }
 
     pub fn get(&self) -> Option<&T> {
@@ -140,8 +175,9 @@ impl<T> Somr<T> {
             return None;
         }
 
-        let inner = self.inner_mut();
-        inner.data.as_mut().map(|x| x.get_mut())
+        // SAFETY: `&mut self` on the owner; access ordered as for
+        // `get_mut_unchecked`
+        self.inner().data_mut().map(|data| unsafe { &mut *data.inner.as_ptr() })
     }
 
     #[allow(unused)]
@@ -150,8 +186,7 @@ impl<T> Somr<T> {
             return None;
         }
 
-        let inner = self.inner_mut();
-        inner.data_mut()
+        self.inner().data_mut()
     }
 
     pub unsafe fn get_mut_unchecked(&self) -> InnerRefMut<'_, T> {
@@ -159,12 +194,19 @@ impl<T> Somr<T> {
             panic!("Try to visit Somr data that has already been dropped.")
         }
 
-        match self.inner_mut().data_mut() {
+        match self.inner().data_mut() {
             Some(data) => data,
             None => {
                 panic!("Try to unwrap on None")
             }
         }
+    }
+
+    /// Whether this was never pointed at any data ([Somr::none]). Unlike
+    /// [Somr::is_none], it stays false after the data is dropped.
+    #[inline]
+    pub fn is_unset(&self) -> bool {
+        self.dangling()
     }
 
     #[inline]
@@ -186,13 +228,6 @@ impl<T> Somr<T> {
     fn inner(&self) -> &SomrInner<T> {
         debug_assert!(!self.dangling());
         unsafe { self.ptr().as_ref() }
-    }
-
-    #[inline]
-    #[allow(clippy::mut_from_ref)]
-    fn inner_mut(&self) -> &mut SomrInner<T> {
-        debug_assert!(!self.dangling());
-        unsafe { self.ptr().as_mut() }
     }
 
     #[inline]
@@ -234,13 +269,18 @@ impl<T> Clone for Somr<T> {
 
 impl<T> Drop for Owned<T> {
     fn drop(&mut self) {
-        let inner = unsafe { &mut *self.0.as_ptr() };
+        // shared: other threads may update `refs` concurrently
+        let inner = unsafe { &*self.0.as_ptr() };
 
         // ensure all reads are finished
         // See [Arc::Drop]
         inner.refs.load(Ordering::Acquire);
 
-        inner.data.take();
+        #[cfg(loom)]
+        inner.access.with_mut(|_| ());
+        // SAFETY: only the owner writes the slot, under the store lock (or
+        // with the store gone); see `SomrInner::data`.
+        drop(unsafe { (*inner.data.get()).take() });
         drop(Ref(self.0));
     }
 }

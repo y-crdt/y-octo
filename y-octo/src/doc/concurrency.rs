@@ -1,0 +1,265 @@
+//! Readers and writers of one document on different threads. Under
+//! `--cfg loom` every access to item and type data is checked for being
+//! ordered by the store lock (see `Somr`), so a reader that walks items while
+//! a remote update splits, deletes, garbage-collects or merges them fails the
+//! model.
+
+use super::*;
+use crate::sync::thread;
+
+const BEFORE: &str = "abcdef";
+const AFTER: &str = "acXYdef";
+
+/// A local document (client 1) and an update from client 2 that, when applied
+/// to it, splits the local text item twice, deletes and garbage-collects a
+/// character inside it, integrates two adjacent items that merge on optimize,
+/// and overwrites a map key.
+fn fixture() -> (Doc, Doc, Vec<u8>) {
+    let local = Doc::with_client(1);
+    local.get_or_create_text("text").unwrap().insert(0, BEFORE).unwrap();
+    local.get_or_create_map("map").unwrap().insert("k".into(), 1).unwrap();
+
+    let mut remote = Doc::with_client(2);
+    remote
+        .apply_update_from_binary_v1(local.encode_update_v1().unwrap())
+        .unwrap();
+    let sv = remote.get_state_vector();
+    let mut text = remote.get_or_create_text("text").unwrap();
+    text.insert(3, "X").unwrap();
+    text.insert(4, "Y").unwrap();
+    text.remove(1, 1).unwrap();
+    remote.get_or_create_map("map").unwrap().insert("k".into(), 2).unwrap();
+    assert_eq!(text.to_string(), AFTER);
+
+    let update = remote.encode_state_as_update_v1(&sv).unwrap();
+    (local, remote, update)
+}
+
+/// Runs `body` once, or under loom with every interleaving of up to two
+/// preemptions.
+fn model(body: fn()) {
+    #[cfg(loom)]
+    {
+        let mut builder = loom::model::Builder::new();
+        builder.preemption_bound = Some(2);
+        // every refcount update of a shared item is a loom atomic
+        builder.max_branches = 1 << 20;
+        builder.check(move || {
+            // the model body needs more than loom's default 4 KiB stack
+            loom::thread::Builder::new()
+                .stack_size(256 << 10)
+                .spawn(body)
+                .unwrap()
+                .join()
+                .unwrap();
+        });
+    }
+
+    #[cfg(not(loom))]
+    body()
+}
+
+#[test]
+fn remote_apply_is_atomic_for_concurrent_readers() {
+    model(|| {
+        let (doc, remote, update) = fixture();
+        let text = doc.get_or_create_text("text").unwrap();
+        let map = doc.get_or_create_map("map").unwrap();
+
+        let mut writer_doc = doc.clone();
+        let writer = thread::spawn(move || writer_doc.apply_update_from_binary_v1(update).unwrap());
+
+        let seen_text = text.to_string();
+        let seen_len = text.len();
+        let seen_k = map.get("k");
+        writer.join().unwrap();
+
+        // each read sees the document either before or after the whole update
+        assert!(seen_text == BEFORE || seen_text == AFTER, "{seen_text}");
+        assert!(seen_len == 6 || seen_len == 7, "{seen_len}");
+        let k_after = seen_k == Some(Value::Any(Any::Integer(2)));
+        assert!(k_after || seen_k == Some(Value::Any(Any::Integer(1))));
+        // reads happen in this order: once one sees the update, the later
+        // ones do too
+        if seen_text == AFTER {
+            assert_eq!(seen_len, 7);
+        }
+        if seen_len == 7 {
+            assert!(k_after);
+        }
+
+        assert_eq!(text.to_string(), AFTER);
+        assert_eq!(map.get("k"), Some(Value::Any(Any::Integer(2))));
+        // the remote items were merged and the deleted one collected
+        {
+            let store = doc.store.read().unwrap();
+            assert_eq!(store.items.get(&2).unwrap().len(), 2);
+            assert!(matches!(
+                &store.get_node((1, 1)).unwrap().as_item().get().unwrap().content,
+                Content::Deleted(1)
+            ));
+        }
+
+        // A store drops its pointer-keyed maps in address order, which differs
+        // between loom executions; skip the teardown so every execution
+        // performs the same refcount updates.
+        #[cfg(loom)]
+        std::mem::forget((doc, remote));
+        #[cfg(not(loom))]
+        drop((doc, remote));
+    });
+}
+
+/// Local edits from several threads through cloned handles, interleaved with
+/// remote applies and readers, converge with a peer that receives the same
+/// updates.
+///
+/// Local index edits go to another text than the remote applies: remote
+/// applies do not update search markers yet, so local index edits after a
+/// remote change of the same sequence can land at the wrong position (and
+/// underflow a marker index) single-threaded too. The next PR resets the
+/// markers and edits one text from both sides here.
+#[test]
+#[cfg(not(loom))]
+#[cfg_attr(miri, ignore)]
+fn threads_edit_apply_and_read_one_document() {
+    use std::sync::Barrier;
+
+    let doc = Doc::with_client(1);
+    let text = doc.get_or_create_text("text").unwrap();
+    let local_text = doc.get_or_create_text("local").unwrap();
+    let map = doc.get_or_create_map("map").unwrap();
+    let remote = Doc::with_client(2);
+    let mut remote_text = remote.get_or_create_text("text").unwrap();
+    let mut remote_updates = Vec::new();
+    for i in 0..200u64 {
+        let sv = remote.get_state_vector();
+        remote_text.insert(0, format!("r{i}")).unwrap();
+        if i % 3 == 0 {
+            remote_text.remove(1, 1).unwrap();
+        }
+        remote_updates.push(remote.encode_state_as_update_v1(&sv).unwrap());
+    }
+
+    let barrier = std::sync::Arc::new(Barrier::new(4));
+    let mut handles = Vec::new();
+    {
+        let mut text = local_text.clone();
+        let barrier = barrier.clone();
+        handles.push(std::thread::spawn(move || {
+            barrier.wait();
+            for i in 0..200u64 {
+                let len = text.len();
+                text.insert(len / 2, format!("l{i}")).unwrap();
+                if i % 4 == 0 && text.len() > 2 {
+                    text.remove(1, 2).unwrap();
+                }
+            }
+        }));
+    }
+    {
+        let mut map = map.clone();
+        let barrier = barrier.clone();
+        handles.push(std::thread::spawn(move || {
+            barrier.wait();
+            for i in 0..200u64 {
+                map.insert(format!("k{}", i % 7), i).unwrap();
+                if i % 5 == 0 {
+                    map.remove(&format!("k{}", i % 3));
+                }
+            }
+        }));
+    }
+    {
+        let mut doc = doc.clone();
+        let barrier = barrier.clone();
+        handles.push(std::thread::spawn(move || {
+            barrier.wait();
+            for update in remote_updates {
+                doc.apply_update_from_binary_v1(update).unwrap();
+            }
+        }));
+    }
+    {
+        let text = text.clone();
+        let local_text = local_text.clone();
+        let map = map.clone();
+        let doc = doc.clone();
+        handles.push(std::thread::spawn(move || {
+            barrier.wait();
+            for _ in 0..200 {
+                let _ = text.to_string();
+                let _ = text.to_delta();
+                let _ = local_text.to_string();
+                let _ = map.iter().count();
+                let _ = doc.encode_update_v1().unwrap();
+            }
+        }));
+    }
+    for handle in handles {
+        handle.join().unwrap();
+    }
+
+    let mut peer = Doc::with_client(3);
+    peer.apply_update_from_binary_v1(doc.encode_update_v1().unwrap())
+        .unwrap();
+    assert_eq!(peer.get_or_create_text("text").unwrap().to_string(), text.to_string());
+    assert_eq!(
+        peer.get_or_create_text("local").unwrap().to_string(),
+        local_text.to_string()
+    );
+    assert_eq!(peer.get_or_create_map("map").unwrap().len(), map.len());
+    assert_eq!(peer.get_state_vector(), doc.get_state_vector());
+}
+
+/// `{:?}` of the public type handles prints their identity only, so it may run
+/// while another thread writes the types.
+#[test]
+fn debug_of_type_handles_reads_no_type_data() {
+    model(|| {
+        let doc = Doc::with_client(1);
+        let text = doc.get_or_create_text("text").unwrap();
+        let array = doc.get_or_create_array("array").unwrap();
+        let map = doc.get_or_create_map("map").unwrap();
+        let (mut t, mut a, mut m) = (text.clone(), array.clone(), map.clone());
+        let writer = thread::spawn(move || {
+            t.insert(0, "x").unwrap();
+            a.push(1).unwrap();
+            m.insert("k".into(), 1).unwrap();
+        });
+        let _ = format!("{text:?} {array:?} {map:?} {:?}", Value::from(text.clone()));
+        writer.join().unwrap();
+    });
+}
+
+/// `{:?}` of a [StoreHistory] does not read its cached items, which another
+/// thread may split or delete.
+#[test]
+fn debug_of_history_reads_no_items() {
+    model(|| {
+        let doc = Doc::with_client(1);
+        let mut text = doc.get_or_create_text("text").unwrap();
+        text.insert(0, "abc").unwrap();
+        let history = doc.history();
+        let writer = thread::spawn(move || text.remove(1, 1).unwrap());
+        let _ = format!("{history:?}");
+        writer.join().unwrap();
+    });
+}
+
+/// `push` appends at the end it sees under its own lock: a concurrent removal
+/// cannot leave it inserting past the end.
+#[test]
+fn push_is_atomic_with_concurrent_remove() {
+    model(|| {
+        let doc = Doc::with_client(1);
+        let mut array = doc.get_or_create_array("array").unwrap();
+        array.push(1).unwrap();
+        let mut other = array.clone();
+        let writer = thread::spawn(move || other.remove(0, 1).unwrap());
+        let pushed = array.push(2);
+        writer.join().unwrap();
+        assert_eq!(pushed, Ok(()));
+        assert_eq!(array.iter().collect::<Vec<_>>(), vec![Value::from(2)]);
+    });
+}

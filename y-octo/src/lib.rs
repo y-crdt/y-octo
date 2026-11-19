@@ -63,6 +63,10 @@ pub enum JwstCodecError {
     IndexOutOfBound(u64),
     #[error("Document has been released")]
     DocReleased,
+    #[error("Type belongs to another document")]
+    ForeignType,
+    #[error("Type has already been inserted into a document")]
+    TypeAlreadyInserted,
     #[error("Unexpected type, expect {0}")]
     UnexpectedType(&'static str),
 }

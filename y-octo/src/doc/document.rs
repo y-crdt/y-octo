@@ -177,8 +177,17 @@ pub struct Doc {
     pub(crate) store: StoreRef,
 }
 
-unsafe impl Send for Doc {}
-unsafe impl Sync for Doc {}
+// Documents and type handles are shared across threads; every call takes the
+// store lock itself.
+const _: fn() = || {
+    fn send_sync<T: Send + Sync>() {}
+    send_sync::<Doc>();
+    send_sync::<Array>();
+    send_sync::<Map>();
+    send_sync::<Text>();
+    send_sync::<Value>();
+    send_sync::<Update>();
+};
 
 impl Default for Doc {
     fn default() -> Self {
@@ -285,6 +294,9 @@ impl Doc {
     }
 
     pub fn store_compare(&self, other: &Doc) -> bool {
+        if Arc::ptr_eq(&self.store, &other.store) {
+            return true;
+        }
         let store = self.store.read().unwrap();
         let other_store = other.store.read().unwrap();
 
@@ -477,7 +489,10 @@ impl Doc {
     }
 
     pub fn encode_state_as_update_v1(&self, sv: &StateVector) -> JwstCodecResult<Vec<u8>> {
-        let update = self.encode_state_as_update(sv)?;
+        // The diff shares items with the store, so it is encoded under the
+        // same read lock.
+        let store = self.store.read().unwrap();
+        let update = store.diff_state_vector(sv, true)?;
 
         let mut encoder = RawEncoder::default();
         update.write(&mut encoder)?;
@@ -488,8 +503,9 @@ impl Doc {
         self.encode_state_as_update(&StateVector::default())
     }
 
+    /// The returned [Update] is detached from this document.
     pub fn encode_state_as_update(&self, sv: &StateVector) -> JwstCodecResult<Update> {
-        self.store.read().unwrap().diff_state_vector(sv, true)
+        Update::decode_v1(self.encode_state_as_update_v1(sv)?)
     }
 
     pub fn get_state_vector(&self) -> StateVector {

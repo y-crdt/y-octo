@@ -524,7 +524,7 @@ mod tests {
     }
 
     fn mutable_map_json(map: Map) -> JsonValue {
-        mutable_type_map_json(&map.0.ty().unwrap())
+        mutable_type_map_json(map.0.ty().unwrap())
     }
 
     fn mutable_type_map_json(ty: &YType) -> JsonValue {
@@ -553,7 +553,7 @@ mod tests {
         serde_json::json!({
             "kind": ty.kind().as_str(),
             "tag": ty.name.as_deref(),
-            "map": mutable_type_map_json(&ty),
+            "map": mutable_type_map_json(ty),
             "list": list,
         })
     }

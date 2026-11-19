@@ -7,6 +7,7 @@ mod xml;
 
 use std::{
     collections::hash_map::Entry,
+    fmt,
     hash::{Hash, Hasher},
     sync::Weak,
 };
@@ -22,10 +23,7 @@ use super::{
     store::{StoreRef, WeakStoreRef},
     *,
 };
-use crate::{
-    Item, JwstCodecError, JwstCodecResult,
-    sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard},
-};
+use crate::{Item, JwstCodecError, JwstCodecResult, sync::Arc};
 
 #[derive(Debug, Default)]
 pub(crate) struct YType {
@@ -41,10 +39,32 @@ pub(crate) struct YType {
     pub markers: Option<MarkerList>,
 }
 
-#[derive(Debug, Default, Clone)]
+/// A handle to a type stored in a [DocStore].
+///
+/// Lock protocol: the owning store's `RwLock` is the only synchronization
+/// point. The [YType] behind `inner` (and every [Item] reachable from it) is
+/// only read while that lock is held for reading and only mutated while it is
+/// held for writing. Public APIs take the lock through [YTypeRef::read] /
+/// [YTypeRef::write]; code that already runs under the lock uses
+/// [YTypeRef::ty] / [YTypeRef::ty_mut]. A type that has no store yet (decoded
+/// from an update and not integrated) has a single owner and needs no lock.
+#[derive(Default, Clone)]
 pub(crate) struct YTypeRef {
     pub store: WeakStoreRef,
-    pub inner: Somr<RwLock<YType>>,
+    pub inner: Somr<YType>,
+}
+
+/// Only the handle's identity: the public type handles (`Text`, `Array`,
+/// `Map`, `Value`, ...) derive `Debug` through it and may be formatted on any
+/// thread without the store lock, or with it already held, so the type's data
+/// is neither read nor locked here.
+impl fmt::Debug for YTypeRef {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("YTypeRef")
+            .field("ptr", &self.inner.ptr())
+            .field("owned", &self.inner.is_owned())
+            .finish()
+    }
 }
 
 impl PartialEq for YType {
@@ -84,6 +104,16 @@ impl YType {
         self.kind
     }
 
+    pub fn identity(&self) -> JwstCodecResult<TypeIdentity> {
+        if let Some(item) = self.item.get() {
+            Ok(TypeIdentity::Item(item.id))
+        } else if let Some(name) = &self.root_name {
+            Ok(TypeIdentity::Root(name.clone()))
+        } else {
+            Err(JwstCodecError::InvalidParent)
+        }
+    }
+
     pub fn set_kind(&mut self, kind: YTypeKind) -> JwstCodecResult {
         std::debug_assert!(kind != YTypeKind::Unknown);
 
@@ -102,48 +132,58 @@ impl YType {
 impl YTypeRef {
     pub fn new(kind: YTypeKind, tag_name: Option<String>) -> Self {
         Self {
-            inner: Somr::new(RwLock::new(YType::new(kind, tag_name))),
+            inner: Somr::new(YType::new(kind, tag_name)),
             store: Weak::new(),
         }
     }
 
-    pub fn ty(&self) -> Option<RwLockReadGuard<'_, YType>> {
-        self.inner.get().and_then(|ty| ty.read().ok())
+    /// Shared view of the type. The caller holds the owning store's lock (or
+    /// the type is detached), see [YTypeRef].
+    #[inline]
+    pub fn ty(&self) -> Option<&YType> {
+        self.inner.get()
     }
 
-    pub fn ty_mut(&self) -> Option<RwLockWriteGuard<'_, YType>> {
-        self.inner.get().and_then(|ty| ty.write().ok())
-    }
-
-    #[allow(dead_code)]
-    pub fn store<'a>(&self) -> Option<RwLockReadGuard<'a, DocStore>> {
-        if let Some(store) = self.store.upgrade() {
-            let ptr = unsafe { &*Arc::as_ptr(&store) };
-
-            Some(ptr.read().unwrap())
+    /// Exclusive view of the type.
+    ///
+    /// # Safety
+    /// The caller holds the owning store's write lock (or the type is
+    /// detached) and no other reference to this [YType] is alive.
+    #[inline]
+    pub unsafe fn ty_mut(&self) -> Option<InnerRefMut<'_, YType>> {
+        if self.inner.is_some() {
+            Some(unsafe { self.inner.get_mut_unchecked() })
         } else {
             None
         }
     }
 
-    pub fn store_mut<'a>(&self) -> Option<RwLockWriteGuard<'a, DocStore>> {
-        if let Some(store) = self.store.upgrade() {
-            let ptr = unsafe { &*Arc::as_ptr(&store) };
-
-            Some(ptr.write().unwrap())
-        } else {
-            None
-        }
+    pub fn store_ref(&self) -> JwstCodecResult<StoreRef> {
+        self.store.upgrade().ok_or(JwstCodecError::DocReleased)
     }
 
-    #[allow(dead_code)]
-    pub fn read(&self) -> Option<(RwLockReadGuard<'_, DocStore>, RwLockReadGuard<'_, YType>)> {
-        self.store().zip(self.ty())
+    /// Runs `f` under the owning store's read lock.
+    pub fn read<R>(&self, f: impl FnOnce(&DocStore, &YType) -> R) -> JwstCodecResult<R> {
+        let store_ref = self.store_ref()?;
+        let store = store_ref.read().unwrap();
+        let ty = self.ty().ok_or(JwstCodecError::DocReleased)?;
+        Ok(f(&store, ty))
     }
 
-    pub fn write(&self) -> Option<(RwLockWriteGuard<'_, DocStore>, RwLockWriteGuard<'_, YType>)> {
-        self.store_mut().zip(self.ty_mut())
+    /// Runs `f` under the owning store's write lock.
+    pub fn write<R>(&self, f: impl FnOnce(&mut DocStore, &mut YType) -> JwstCodecResult<R>) -> JwstCodecResult<R> {
+        let store_ref = self.store_ref()?;
+        let mut store = store_ref.write().unwrap();
+        // SAFETY: we hold the store write lock and this is the only reference
+        // to the type handed out under it.
+        let mut ty = unsafe { self.ty_mut() }.ok_or(JwstCodecError::DocReleased)?;
+        f(&mut store, &mut ty)
     }
+}
+
+/// A public type handle wrapping a [YTypeRef] whose kind is already checked.
+pub(crate) trait FromTypeRef {
+    fn from_type_ref(value: YTypeRef) -> Self;
 }
 
 pub(crate) struct YTypeBuilder {
@@ -184,37 +224,55 @@ impl YTypeBuilder {
         self
     }
 
-    pub fn build_exists<T: TryFrom<YTypeRef, Error = JwstCodecError>>(self) -> JwstCodecResult<T> {
-        let store = self.store.read().unwrap();
-        let ty = if let Some(root_name) = self.root_name {
-            match store.types.get(&root_name) {
+    pub fn build_exists<T: FromTypeRef>(self) -> JwstCodecResult<T> {
+        let kind = self.kind;
+        let store = self.store.write().unwrap();
+        let ty = if let Some(root_name) = &self.root_name {
+            match store.types.get(root_name) {
                 Some(ty) => ty.clone(),
                 None => {
-                    return Err(JwstCodecError::RootStructNotFound(root_name));
+                    return Err(JwstCodecError::RootStructNotFound(root_name.clone()));
                 }
             }
         } else {
             return Err(JwstCodecError::TypeCastError("root_name is not set"));
         };
 
+        Self::assign_kind(kind, &ty)?;
         drop(store);
 
-        T::try_from(ty)
+        Ok(T::from_type_ref(ty))
     }
 
-    pub fn build<T: TryFrom<YTypeRef, Error = JwstCodecError>>(self) -> JwstCodecResult<T> {
+    /// Gives `ty` the builder's kind, or fails if it already has another one.
+    /// The caller holds the store write lock: finding or creating a type and
+    /// assigning its kind is one step.
+    fn assign_kind(kind: YTypeKind, ty: &YTypeRef) -> JwstCodecResult {
+        if kind == YTypeKind::Unknown {
+            return Ok(());
+        }
+        // SAFETY: the caller holds the store write lock and no reference to
+        // this type's data.
+        match unsafe { ty.ty_mut() } {
+            Some(mut inner) => inner.set_kind(kind),
+            None => Err(JwstCodecError::DocReleased),
+        }
+    }
+
+    pub fn build<T: FromTypeRef>(self) -> JwstCodecResult<T> {
+        let kind = self.kind;
         let mut store = self.store.write().unwrap();
         let ty = if let Some(root_name) = self.root_name {
             match store.types.entry(root_name.clone()) {
                 Entry::Occupied(e) => e.get().clone(),
                 Entry::Vacant(e) => {
-                    let inner = Somr::new(RwLock::new(YType {
+                    let inner = Somr::new(YType {
                         kind: self.kind,
                         name: self.name,
                         root_name: Some(root_name),
                         markers: Self::markers(self.kind),
                         ..Default::default()
-                    }));
+                    });
 
                     let ty = YTypeRef {
                         store: Arc::downgrade(&self.store),
@@ -228,13 +286,13 @@ impl YTypeBuilder {
                 }
             }
         } else {
-            let inner = Somr::new(RwLock::new(YType {
+            let inner = Somr::new(YType {
                 kind: self.kind,
                 name: self.name,
                 root_name: self.root_name.clone(),
                 markers: Self::markers(self.kind),
                 ..Default::default()
-            }));
+            });
 
             let ty = YTypeRef {
                 store: Arc::downgrade(&self.store),
@@ -248,9 +306,10 @@ impl YTypeBuilder {
             ty_ref
         };
 
+        Self::assign_kind(kind, &ty)?;
         drop(store);
 
-        T::try_from(ty)
+        Ok(T::from_type_ref(ty))
     }
 
     fn markers(kind: YTypeKind) -> Option<MarkerList> {
@@ -319,8 +378,6 @@ macro_rules! impl_type {
     ($name: ident) => {
         #[derive(Debug, Clone, PartialEq)]
         pub struct $name(pub(crate) super::YTypeRef);
-        unsafe impl Sync for $name {}
-        unsafe impl Send for $name {}
 
         impl $name {
             pub(crate) fn new(inner: super::YTypeRef) -> Self {
@@ -328,14 +385,7 @@ macro_rules! impl_type {
             }
 
             pub fn identity(&self) -> $crate::JwstCodecResult<super::TypeIdentity> {
-                let ty = self.0.ty().ok_or($crate::JwstCodecError::DocReleased)?;
-                if let Some(item) = ty.item.get() {
-                    Ok(super::TypeIdentity::Item(item.id))
-                } else if let Some(name) = &ty.root_name {
-                    Ok(super::TypeIdentity::Root(name.clone()))
-                } else {
-                    Err($crate::JwstCodecError::InvalidParent)
-                }
+                self.0.read(|_, ty| ty.identity())?
             }
         }
 
@@ -352,24 +402,22 @@ macro_rules! impl_type {
             type Error = $crate::JwstCodecError;
 
             fn try_from(value: super::YTypeRef) -> Result<Self, Self::Error> {
-                if let Some((_, mut inner)) = value.write() {
-                    match inner.kind {
-                        super::YTypeKind::$name => Ok($name::new(value.clone())),
-                        super::YTypeKind::Unknown => {
-                            inner.set_kind(super::YTypeKind::$name)?;
-                            Ok($name::new(value.clone()))
-                        }
-                        _ => Err($crate::JwstCodecError::TypeCastError(std::stringify!($name))),
-                    }
-                } else {
-                    Err($crate::JwstCodecError::TypeCastError(std::stringify!($name)))
-                }
+                value
+                    .write(|_, inner| inner.set_kind(super::YTypeKind::$name))
+                    .map_err(|_| $crate::JwstCodecError::TypeCastError(std::stringify!($name)))?;
+                Ok($name::new(value))
             }
         }
 
         impl $name {
             pub(crate) fn from_unchecked(value: super::YTypeRef) -> Self {
                 $name::new(value.clone())
+            }
+        }
+
+        impl super::FromTypeRef for $name {
+            fn from_type_ref(value: super::YTypeRef) -> Self {
+                $name::new(value)
             }
         }
 

@@ -3,7 +3,10 @@ use std::{collections::BTreeMap, fmt::Display};
 
 pub use identity::TextIdentityRun;
 
-use super::{AsInner, Id, list::ListType};
+use super::{
+    AsInner, Id,
+    list::{ListIterator, ListType},
+};
 use crate::{
     Any, Content, JwstCodecError, JwstCodecResult,
     doc::{DocStore, ItemRef, Node, Parent, Somr, YType, YTypeRef},
@@ -64,51 +67,58 @@ impl Text {
     }
 
     pub fn to_delta(&self) -> TextDelta {
-        let mut ops = Vec::new();
-        let mut attrs = TextAttributes::new();
-
-        for item_ref in self.iter_item() {
-            if let Some(item) = item_ref.get() {
-                match &item.content {
-                    Content::Format { key, value } => {
-                        if is_nullish(value) {
-                            attrs.remove(key.as_str());
-                        } else {
-                            attrs.insert(key.to_string(), value.as_ref().clone());
-                        }
-                    }
-                    Content::String(text) => {
-                        push_insert(&mut ops, TextInsert::Text(text.clone()), &attrs);
-                    }
-                    Content::Embed(embed) => {
-                        push_insert(&mut ops, TextInsert::Embed(vec![embed.as_ref().clone()]), &attrs);
-                    }
-                    Content::Any(any) => {
-                        push_insert(&mut ops, TextInsert::Embed(any.clone()), &attrs);
-                    }
-                    Content::Json(values) => {
-                        let converted = values
-                            .iter()
-                            .map(|value| value.as_ref().map(|s| Any::String(s.clone())).unwrap_or(Any::Undefined))
-                            .collect::<Vec<_>>();
-                        push_insert(&mut ops, TextInsert::Embed(converted), &attrs);
-                    }
-                    Content::Binary(value) => {
-                        push_insert(&mut ops, TextInsert::Embed(vec![Any::Binary(value.clone())]), &attrs);
-                    }
-                    _ => {}
-                }
-            }
-        }
-
-        ops
+        self.as_inner().read(|_, ty| text_delta(ty)).unwrap_or_default()
     }
 
     pub fn apply_delta(&mut self, delta: &[TextDeltaOp]) -> JwstCodecResult {
-        let (mut store, mut ty) = self.as_inner().write().ok_or(JwstCodecError::DocReleased)?;
-        let parent = self.as_inner().clone();
+        let parent = self.as_inner();
+        parent.write(|store, ty| apply_text_delta(parent, store, ty, delta))
+    }
+}
 
-        let mut pos = TextPosition::new(parent, ty.start.clone());
+/// The caller holds the store lock.
+pub(crate) fn text_delta(ty: &YType) -> TextDelta {
+    let mut ops = Vec::new();
+    let mut attrs = TextAttributes::new();
+
+    for item in ListIterator::new(ty) {
+        match &item.content {
+            Content::Format { key, value } => {
+                if is_nullish(value) {
+                    attrs.remove(key.as_str());
+                } else {
+                    attrs.insert(key.to_string(), value.as_ref().clone());
+                }
+            }
+            Content::String(text) => {
+                push_insert(&mut ops, TextInsert::Text(text.clone()), &attrs);
+            }
+            Content::Embed(embed) => {
+                push_insert(&mut ops, TextInsert::Embed(vec![embed.as_ref().clone()]), &attrs);
+            }
+            Content::Any(any) => {
+                push_insert(&mut ops, TextInsert::Embed(any.clone()), &attrs);
+            }
+            Content::Json(values) => {
+                let converted = values
+                    .iter()
+                    .map(|value| value.as_ref().map(|s| Any::String(s.clone())).unwrap_or(Any::Undefined))
+                    .collect::<Vec<_>>();
+                push_insert(&mut ops, TextInsert::Embed(converted), &attrs);
+            }
+            Content::Binary(value) => {
+                push_insert(&mut ops, TextInsert::Embed(vec![Any::Binary(value.clone())]), &attrs);
+            }
+            _ => {}
+        }
+    }
+
+    ops
+}
+
+fn apply_text_delta(parent: &YTypeRef, store: &mut DocStore, ty: &mut YType, delta: &[TextDeltaOp]) -> JwstCodecResult {
+    {
+        let mut pos = TextPosition::new(parent.clone(), ty.start.clone());
 
         for op in delta {
             match op {
@@ -116,13 +126,13 @@ impl Text {
                     let attrs = format.clone().unwrap_or_default();
                     match insert {
                         TextInsert::Text(text) => {
-                            insert_text_content(&mut store, &mut ty, &mut pos, Content::String(text.clone()), attrs)?;
+                            insert_text_content(store, ty, &mut pos, Content::String(text.clone()), attrs)?;
                         }
                         TextInsert::Embed(values) => {
                             for value in values {
                                 insert_text_content(
-                                    &mut store,
-                                    &mut ty,
+                                    store,
+                                    ty,
                                     &mut pos,
                                     Content::Embed(Box::new(value.clone())),
                                     attrs.clone(),
@@ -134,13 +144,13 @@ impl Text {
                 TextDeltaOp::Retain { retain, format } => {
                     let attrs = format.clone().unwrap_or_default();
                     if attrs.is_empty() {
-                        advance_text_position(&mut store, &mut pos, *retain)?;
+                        advance_text_position(store, &mut pos, *retain)?;
                     } else {
-                        format_text(&mut store, &mut ty, &mut pos, *retain, attrs)?;
+                        format_text(store, ty, &mut pos, *retain, attrs)?;
                     }
                 }
                 TextDeltaOp::Delete { delete } => {
-                    delete_text(&mut store, &mut ty, &mut pos, *delete)?;
+                    delete_text(store, ty, &mut pos, *delete)?;
                 }
             }
         }
@@ -151,14 +161,19 @@ impl Text {
 
 impl Display for Text {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.iter_item().try_for_each(|item| {
-            if let Content::String(str) = &item.get().unwrap().content {
-                write!(f, "{str}")
-            } else {
-                Ok(())
-            }
-        })
+        f.write_str(&self.as_inner().read(|_, ty| text_string(ty)).unwrap_or_default())
     }
+}
+
+/// The plain string of a text type. The caller holds the store lock.
+pub(crate) fn text_string(ty: &YType) -> String {
+    let mut out = String::new();
+    for item in ListIterator::new(ty) {
+        if let Content::String(str) = &item.content {
+            out.push_str(str);
+        }
+    }
+    out
 }
 
 impl serde::Serialize for Text {
@@ -288,7 +303,7 @@ fn minimize_attribute_changes(pos: &mut TextPosition, attrs: &TextAttributes) {
 }
 
 fn insert_item(store: &mut DocStore, ty: &mut YType, pos: &mut TextPosition, content: Content) -> JwstCodecResult {
-    if let Some(markers) = &ty.markers
+    if let Some(markers) = &mut ty.markers
         && content.countable()
     {
         markers.update_marker_changes(pos.index, content.clock_len() as i64);
@@ -484,7 +499,7 @@ fn delete_text(store: &mut DocStore, ty: &mut YType, pos: &mut TextPosition, mut
         pos.forward();
     }
 
-    if let Some(markers) = &ty.markers {
+    if let Some(markers) = &mut ty.markers {
         markers.update_marker_changes(pos.index, -((start - remaining) as i64));
     }
 

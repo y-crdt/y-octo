@@ -131,7 +131,7 @@ impl RelativePosition {
                 unreachable!("items in the store have a type parent");
             };
             let parent = parent.ty()?;
-            let identity = live_identity(&parent)?;
+            let identity = live_identity(parent)?;
 
             let mut index = if item.indexable() {
                 offset + if self.assoc >= 0 { 0 } else { 1 }
@@ -163,7 +163,7 @@ impl RelativePosition {
                 }
             };
             let ty = ty.ty()?;
-            let identity = live_identity(&ty)?;
+            let identity = live_identity(ty)?;
 
             Some(AbsolutePosition {
                 r#type: identity,
@@ -301,8 +301,7 @@ macro_rules! impl_relative_position {
                 "the type is not part of the document yet."
             )]
             pub fn relative_position(&self, index: u64, assoc: i64) -> JwstCodecResult<RelativePosition> {
-                let (_store, ty) = self.0.read().ok_or(JwstCodecError::DocReleased)?;
-                RelativePosition::from_type_index(&ty, index, assoc)
+                self.0.read(|_, ty| RelativePosition::from_type_index(ty, index, assoc))?
             }
         }
     };

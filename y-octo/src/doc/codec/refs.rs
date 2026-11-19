@@ -53,6 +53,32 @@ impl From<Item> for Node {
 }
 
 impl Node {
+    /// A copy that shares no allocation with `self`, for structs of a detached
+    /// [Update]. A nested type gets a fresh, empty [YType] of the same kind.
+    pub fn detached_clone(&self) -> Self {
+        match self {
+            Node::Item(item_ref) => {
+                let Some(item) = item_ref.get() else {
+                    return Node::Item(Somr::none());
+                };
+                let mut copy = item.clone();
+                if let Content::Type(ty) = &item.content {
+                    let (kind, name) = ty.ty().map(|t| (t.kind(), t.name.clone())).unwrap_or_default();
+                    copy.content = Content::Type(YTypeRef::new(kind, name));
+                }
+                let copy = Somr::new(copy);
+                // SAFETY: the copied type is detached and owned by `copy`.
+                if let Content::Type(ty) = &copy.get().unwrap().content
+                    && let Some(mut ty) = unsafe { ty.ty_mut() }
+                {
+                    ty.item = copy.clone();
+                }
+                Node::Item(copy)
+            }
+            node => node.clone(),
+        }
+    }
+
     pub fn new_skip(id: Id, len: u64) -> Self {
         Self::Skip(Box::new(NodeLen { id, len }))
     }
@@ -250,9 +276,11 @@ impl Node {
                     }
                 }
 
+                // SAFETY: merging runs under the store write lock with no type
+                // borrowed.
                 if let Some(Parent::Type(p)) = &litem.parent
-                    && let Some(parent) = p.ty_mut()
-                    && let Some(markers) = &parent.markers
+                    && let Some(mut parent) = unsafe { p.ty_mut() }
+                    && let Some(markers) = &mut parent.markers
                 {
                     markers.replace_marker(rref.clone(), lref.clone(), -(llen as i64));
                 }

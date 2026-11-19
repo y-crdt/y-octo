@@ -7,7 +7,7 @@ use std::{
 use super::*;
 use crate::doc::{StateVector, codec::decoder::v1 as decoder, find_missing_dependency};
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default)]
 pub struct Update {
     pub(crate) structs: ClientMap<VecDeque<Node>>,
     pub(crate) delete_set: DeleteSet,
@@ -20,6 +20,27 @@ pub struct Update {
     pub(crate) missing_state: StateVector,
     /// all unapplicable delete set
     pub(crate) pending_delete_set: DeleteSet,
+}
+
+/// Cloning copies every struct: the structs of an update become part of a
+/// document when it is applied, so a clone must not share them.
+impl Clone for Update {
+    fn clone(&self) -> Self {
+        fn copy(structs: &ClientMap<VecDeque<Node>>) -> ClientMap<VecDeque<Node>> {
+            structs
+                .iter()
+                .map(|(client, nodes)| (*client, nodes.iter().map(Node::detached_clone).collect()))
+                .collect()
+        }
+
+        Self {
+            structs: copy(&self.structs),
+            delete_set: self.delete_set.clone(),
+            pending_structs: copy(&self.pending_structs),
+            missing_state: self.missing_state.clone(),
+            pending_delete_set: self.pending_delete_set.clone(),
+        }
+    }
 }
 
 impl<'a> CrdtRead<RawDecoder<'a>> for Update {
@@ -132,8 +153,9 @@ impl<'a> decoder::Sink<'a> for OwnedUpdateSink {
         if matches!(item.get().unwrap().content, Content::Deleted(_)) {
             item.get().unwrap().flags.set_deleted();
         }
+        // SAFETY: the decoded type is detached and owned by this update.
         if let Content::Type(ty) = &item.get().unwrap().content
-            && let Some(mut ty) = ty.ty_mut()
+            && let Some(mut ty) = unsafe { ty.ty_mut() }
         {
             ty.item = item.clone();
         }

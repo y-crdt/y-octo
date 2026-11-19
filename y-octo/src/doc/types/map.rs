@@ -1,5 +1,3 @@
-use std::{collections::hash_map::Iter, rc::Rc};
-
 use super::*;
 use crate::{
     JwstCodecResult,
@@ -11,148 +9,99 @@ impl_type!(Map);
 
 pub(crate) trait MapType: AsInner<Inner = YTypeRef> {
     fn _id(&self) -> Option<Id> {
-        self.as_inner().ty().and_then(|ty| ty.item.get().map(|item| item.id))
+        self.as_inner()
+            .read(|_, ty| ty.item.get().map(|item| item.id))
+            .ok()
+            .flatten()
     }
 
     fn _insert<V: Into<Value>>(&mut self, key: String, value: V) -> JwstCodecResult {
-        if let Some((mut store, mut ty)) = self.as_inner().write() {
-            let left = ty.map.get(&SmolStr::new(&key)).cloned();
+        let parent = self.as_inner();
+        let content: Content = value.into().into();
+        parent.write(|store, ty| {
+            check_insertable(parent, ty, &content)?;
+            let key = SmolStr::new(key);
+            let left = ty.map.get(&key).cloned();
 
             let item = store.create_item(
-                value.into().into(),
+                content,
                 left.unwrap_or(Somr::none()),
                 Somr::none(),
-                Some(Parent::Type(self.as_inner().clone())),
-                Some(SmolStr::new(key)),
+                Some(Parent::Type(parent.clone())),
+                Some(key),
             );
-            store.integrate(Node::Item(item), 0, Some(&mut ty))?;
-        }
-
-        Ok(())
-    }
-
-    fn _get(&self, key: &str) -> Option<Value> {
-        self.as_inner().ty().and_then(|ty| {
-            ty.map.get(key).and_then(|item| {
-                if let Some(item) = item.get() {
-                    if item.deleted() {
-                        return None;
-                    }
-
-                    Some(Value::from(&item.content))
-                } else {
-                    None
-                }
-            })
+            store.integrate(Node::Item(item), 0, Some(ty))
         })
     }
 
+    fn _get(&self, key: &str) -> Option<Value> {
+        self.as_inner()
+            .read(|_, ty| map_value(ty, key).map(|item| Value::from(&item.content)))
+            .ok()
+            .flatten()
+    }
+
     fn _contains_key(&self, key: &str) -> bool {
-        if let Some(ty) = self.as_inner().ty() {
-            ty.map
-                .get(key)
-                .and_then(|item| item.get())
-                .is_some_and(|item| !item.deleted())
-        } else {
-            false
-        }
+        self.as_inner()
+            .read(|_, ty| map_value(ty, key).is_some())
+            .unwrap_or(false)
     }
 
     fn _remove(&mut self, key: &str) {
-        if let Some((mut store, mut ty)) = self.as_inner().write()
-            && let Some(item) = ty.map.get(key).cloned()
-            && let Some(item) = item.get()
-        {
-            store.delete_item(item, Some(&mut ty));
-        }
+        let _ = self.as_inner().write(|store, ty| {
+            if let Some(item) = ty.map.get(key).cloned()
+                && let Some(item) = item.get()
+            {
+                store.delete_item(item, Some(ty));
+            }
+            Ok(())
+        });
     }
 
     fn _len(&self) -> u64 {
-        self._keys().count() as u64
+        self.as_inner()
+            .read(|_, ty| map_entries(ty).count() as u64)
+            .unwrap_or(0)
     }
 
-    fn _iter(&self) -> EntriesInnerIterator<'_> {
-        let ty = self.as_inner().ty();
-
-        if let Some(ty) = ty {
-            let ty = Rc::new(ty);
-
-            EntriesInnerIterator {
-                iter: Some(unsafe { &*Rc::as_ptr(&ty) }.map.iter()),
-                _lock: Some(ty),
-            }
-        } else {
-            EntriesInnerIterator {
-                _lock: None,
-                iter: None,
-            }
-        }
+    /// A snapshot of the visible entries, taken under one store read lock.
+    fn _entries(&self) -> Vec<(String, Value)> {
+        self.as_inner()
+            .read(|_, ty| {
+                map_entries(ty)
+                    .map(|(k, item)| (k.to_string(), Value::from(&item.content)))
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
-    fn _keys(&self) -> KeysIterator<'_> {
-        KeysIterator(self._iter())
+    fn _keys(&self) -> Vec<String> {
+        self.as_inner()
+            .read(|_, ty| map_entries(ty).map(|(k, _)| k.to_string()).collect())
+            .unwrap_or_default()
     }
 
-    fn _values(&self) -> ValuesIterator<'_> {
-        ValuesIterator(self._iter())
-    }
-
-    fn _entries(&self) -> EntriesIterator<'_> {
-        EntriesIterator(self._iter())
+    fn _values(&self) -> Vec<Value> {
+        self.as_inner()
+            .read(|_, ty| map_entries(ty).map(|(_, item)| Value::from(&item.content)).collect())
+            .unwrap_or_default()
     }
 }
 
-pub(crate) struct EntriesInnerIterator<'a> {
-    _lock: Option<Rc<RwLockReadGuard<'a, YType>>>,
-    iter: Option<Iter<'a, SmolStr, ItemRef>>,
+/// The current, not deleted value item of `key`. The caller holds the store
+/// lock.
+pub(crate) fn map_value<'a>(ty: &'a YType, key: &str) -> Option<&'a Item> {
+    ty.map
+        .get(key)
+        .and_then(|item| item.get())
+        .filter(|item| !item.deleted())
 }
 
-pub struct KeysIterator<'a>(EntriesInnerIterator<'a>);
-pub struct ValuesIterator<'a>(EntriesInnerIterator<'a>);
-pub struct EntriesIterator<'a>(EntriesInnerIterator<'a>);
-
-impl<'a> Iterator for EntriesInnerIterator<'a> {
-    type Item = (&'a str, &'a Item);
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if let Some(iter) = &mut self.iter {
-            for (k, v) in iter {
-                if let Some(item) = v.get()
-                    && !item.deleted()
-                {
-                    return Some((k.as_str(), item));
-                }
-            }
-
-            None
-        } else {
-            None
-        }
-    }
-}
-
-impl<'a> Iterator for KeysIterator<'a> {
-    type Item = &'a str;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.0.next().map(|(k, _)| k)
-    }
-}
-
-impl Iterator for ValuesIterator<'_> {
-    type Item = Value;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.0.next().map(|(_, v)| Value::from(&v.content))
-    }
-}
-
-impl<'a> Iterator for EntriesIterator<'a> {
-    type Item = (&'a str, Value);
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.0.next().map(|(k, v)| (k, Value::from(&v.content)))
-    }
+/// The visible entries of a map type. The caller holds the store lock.
+pub(crate) fn map_entries(ty: &YType) -> impl Iterator<Item = (&str, &Item)> {
+    ty.map
+        .iter()
+        .filter_map(|(k, v)| v.get().filter(|item| !item.deleted()).map(|item| (k.as_str(), item)))
 }
 
 impl MapType for Map {}
@@ -193,24 +142,28 @@ impl Map {
         self.len() == 0
     }
 
+    /// A snapshot of the visible entries, taken under one store read lock.
     #[inline(always)]
-    pub fn iter(&self) -> EntriesIterator<'_> {
-        self._entries()
+    pub fn iter(&self) -> std::vec::IntoIter<(String, Value)> {
+        self._entries().into_iter()
     }
 
+    /// Same as [Map::iter].
     #[inline(always)]
-    pub fn entries(&self) -> EntriesIterator<'_> {
-        self._entries()
+    pub fn entries(&self) -> std::vec::IntoIter<(String, Value)> {
+        self._entries().into_iter()
     }
 
+    /// A snapshot of the visible keys.
     #[inline(always)]
-    pub fn keys(&self) -> KeysIterator<'_> {
-        self._keys()
+    pub fn keys(&self) -> std::vec::IntoIter<String> {
+        self._keys().into_iter()
     }
 
+    /// A snapshot of the visible values.
     #[inline(always)]
-    pub fn values(&self) -> ValuesIterator<'_> {
-        self._values()
+    pub fn values(&self) -> std::vec::IntoIter<Value> {
+        self._values().into_iter()
     }
 }
 
@@ -218,8 +171,9 @@ impl serde::Serialize for Map {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeMap;
 
-        let mut map = serializer.serialize_map(Some(self.len() as usize))?;
-        for (key, value) in self.iter() {
+        let entries = self.iter();
+        let mut map = serializer.serialize_map(Some(entries.len()))?;
+        for (key, value) in entries {
             map.serialize_entry(&key, &value)?;
         }
         map.end()
@@ -333,15 +287,57 @@ mod tests {
             let mut vec = map.entries().collect::<Vec<_>>();
 
             // hashmap iteration is in random order instead of insert order
-            vec.sort_by(|a, b| a.0.cmp(b.0));
+            vec.sort_by(|a, b| a.0.cmp(&b.0));
 
             assert_eq!(
                 vec,
                 vec![
-                    ("1", Value::Any(Any::String("value1".to_string()))),
-                    ("2", Value::Any(Any::String("value2".to_string())))
+                    ("1".to_string(), Value::Any(Any::String("value1".to_string()))),
+                    ("2".to_string(), Value::Any(Any::String("value2".to_string())))
                 ]
             )
+        });
+    }
+
+    /// The map form of `array::tests::test_type_is_inserted_at_most_once`.
+    #[test]
+    fn test_type_is_inserted_at_most_once() {
+        loom_model!({
+            let doc = Doc::with_client(1);
+            let mut a = doc.create_map().unwrap();
+            let mut b = doc.create_map().unwrap();
+            let mut c = doc.get_or_create_map("c").unwrap();
+
+            a.insert("b".into(), b.clone()).unwrap();
+            assert_eq!(
+                c.insert("b".into(), b.clone()),
+                Err(JwstCodecError::TypeAlreadyInserted)
+            );
+            // also under the key that holds it
+            assert_eq!(
+                a.insert("b".into(), b.clone()),
+                Err(JwstCodecError::TypeAlreadyInserted)
+            );
+            assert_eq!(b.insert("a".into(), a.clone()), Err(JwstCodecError::InvalidParent));
+            a.remove("b");
+
+            assert_eq!(
+                a.insert("b".into(), b.clone()),
+                Err(JwstCodecError::TypeAlreadyInserted)
+            );
+            doc.gc().unwrap();
+            assert_eq!(
+                c.insert("b".into(), b.clone()),
+                Err(JwstCodecError::TypeAlreadyInserted)
+            );
+            assert_eq!(
+                a.insert("c".into(), c.clone()),
+                Err(JwstCodecError::TypeAlreadyInserted)
+            );
+
+            assert!(a.is_empty());
+            assert!(c.is_empty());
+            assert!(b.is_empty());
         });
     }
 }
