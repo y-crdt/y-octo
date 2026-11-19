@@ -218,7 +218,7 @@ impl Node {
         self.flags().deleted()
     }
 
-    pub fn merge(&mut self, right: Self) -> bool {
+    pub fn merge(&mut self, right: &Self) -> bool {
         match (self, right) {
             (Node::GC(left), Node::GC(right)) => {
                 left.len += right.len;
@@ -232,11 +232,6 @@ impl Node {
                 let llen = litem.len();
                 let rlen = ritem.len();
 
-                let parent_kind = match &litem.parent {
-                    Some(Parent::Type(ty)) => ty.ty().map(|ty| ty.kind()),
-                    _ => None,
-                };
-
                 if litem.id.client != ritem.id.client
                     // not same delete status
                     || litem.deleted() != ritem.deleted()
@@ -247,10 +242,15 @@ impl Node {
                     // not insertion continuous
                     || litem.origin_right_id != ritem.origin_right_id
                     // not runtime continuous
-                    || litem.right != rref
+                    || litem.right != *rref
                 {
                     return false;
                 }
+
+                let parent_kind = match &litem.parent {
+                    Some(Parent::Type(ty)) => ty.ty().map(|ty| ty.kind()),
+                    _ => None,
+                };
 
                 match (&mut litem.content, &mut ritem.content) {
                     (Content::Deleted(l), Content::Deleted(r)) => {

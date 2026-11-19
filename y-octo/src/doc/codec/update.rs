@@ -620,7 +620,7 @@ impl<'a> UpdateIterator<'a> {
     /// tell if current update's dependencies(left, right, parent) has already
     /// been consumed and recorded and return the client of them if not.
     fn get_missing_dep(&self, struct_info: &Node) -> Option<Client> {
-        let owner = struct_info.as_item();
+        let Node::Item(owner) = struct_info else { return None };
         let item = owner.get()?;
         let parent = match &item.parent {
             Some(Parent::Id(parent_id)) => Some(*parent_id),

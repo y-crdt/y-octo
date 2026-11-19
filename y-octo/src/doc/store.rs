@@ -70,6 +70,9 @@ pub(crate) struct DocStore {
     client: Client,
     pub items: ClientMap<VecDeque<Node>>,
     pub delete_set: DeleteSet,
+    // Monotonic for integrated structs, including wire GC and ContentDeleted
+    // that never pass through the ordinary delete collector.
+    has_deleted_structs: bool,
 
     // following fields are only used in memory
     pub types: HashMap<String, YTypeRef>,
@@ -196,6 +199,7 @@ impl DocStore {
 
     pub fn add_node(&mut self, item: Node) -> JwstCodecResult {
         let client_id = item.client();
+        let deleted = !self.has_deleted_structs && item.deleted();
         match self.items.entry(client_id) {
             Entry::Occupied(mut entry) => {
                 let structs = entry.get_mut();
@@ -215,6 +219,7 @@ impl DocStore {
             }
         }
 
+        self.has_deleted_structs |= deleted;
         Ok(())
     }
 
@@ -425,7 +430,7 @@ impl DocStore {
     ///       `doc.get_or_create_text("content")`)
     ///     - [Parent::Id] for type as item (e.g `doc.create_text()`)
     ///     - [None] means borrow left.parent or right.parent
-    pub fn repair(&mut self, item: &mut Item, store_ref: StoreRef) -> JwstCodecResult {
+    pub fn repair(&mut self, item: &mut Item, store_ref: &StoreRef) -> JwstCodecResult {
         // Same-client origins are never deferred by the update iterator, which
         // assumes they precede the item; an item cannot anchor to a struct
         // created at or after itself (as `ReadDoc` checks).
@@ -458,7 +463,7 @@ impl DocStore {
             // doc.get_or_create_text("content");
             //                         ^^^^^^^ Parent::String("content")
             Some(Parent::String(str)) => {
-                let ty = self.get_or_create_type(&store_ref, str);
+                let ty = self.get_or_create_type(store_ref, str);
                 item.parent.replace(Parent::Type(ty));
             }
             // type as item
@@ -489,10 +494,10 @@ impl DocStore {
             }
             // no item.parent, borrow left.parent or right.parent
             None => {
-                if let Some(left) = ItemRef::from(item.left.clone()).get() {
+                if let Some(left) = item.left.get() {
                     item.parent = left.parent.clone();
                     item.parent_sub = left.parent_sub.clone();
-                } else if let Some(right) = ItemRef::from(item.right.clone()).get() {
+                } else if let Some(right) = item.right.get() {
                     item.parent = right.parent.clone();
                     item.parent_sub = right.parent_sub.clone();
                 }
@@ -503,7 +508,7 @@ impl DocStore {
         // assign store in ytype to ensure store exists if a ytype not has any
         // children
         if let Content::Type(ty) = &mut item.content {
-            ty.store = Arc::downgrade(&store_ref);
+            ty.store = Arc::downgrade(store_ref);
 
             // we keep ty owner in dangling_types so the delete of any type will
             // not make it dropped
@@ -805,6 +810,7 @@ impl DocStore {
     }
 
     pub fn delete_item(&mut self, item: &Item, parent: Option<&mut YType>) {
+        self.has_deleted_structs = true;
         let mut pending_delete_sets = HashMap::new();
         Self::delete_item_inner(&mut pending_delete_sets, &mut self.collector, item, parent);
         self.add_deleted(pending_delete_sets);
@@ -986,7 +992,7 @@ impl DocStore {
 
             let mut pending_delete_sets = HashMap::new();
             while idx < items.len() {
-                let node = items[idx].clone();
+                let node = &items[idx];
                 let id = node.id();
 
                 if id.clock < end {
@@ -1002,7 +1008,10 @@ impl DocStore {
                         // borrow after the split: split_node_at mutates the
                         // item in place and would
                         // invalidate a guard acquired earlier
-                        if let Some(item) = node.as_item().get() {
+                        if let Node::Item(owner) = &items[idx]
+                            && let Some(item) = owner.get()
+                        {
+                            self.has_deleted_structs = true;
                             Self::delete_item_inner(&mut pending_delete_sets, &mut self.collector, item, None);
                         }
                     }
@@ -1036,7 +1045,58 @@ impl DocStore {
         diff
     }
 
-    pub fn diff_state_vector(&self, sv: &StateVector, with_pending: bool) -> JwstCodecResult<Update> {
+    pub fn write_state_as_update<W: CrdtWriter>(&self, sv: &StateVector, encoder: &mut W) -> JwstCodecResult {
+        if self.pending.is_some() {
+            return self.diff_state_vector(sv)?.write(encoder);
+        }
+
+        // The store read lock keeps the borrowed structs alive until encoding
+        // finishes. Only a recipient clock inside a struct needs a split.
+        let mut clients = Vec::new();
+        for (&client, nodes) in &self.items {
+            let Some((first, last)) = nodes.front().zip(nodes.back()) else {
+                continue;
+            };
+            let clock = sv.get(&client).max(first.clock());
+            if clock >= last.clock() + last.len() {
+                continue;
+            }
+            let Some(start) = Self::get_node_index(nodes, clock) else {
+                continue;
+            };
+            // Integrated updates can contain empty structs. Keep their
+            // encoding consistent with Update::write.
+            let count = nodes.range(start..).filter(|node| node.len() > 0).count();
+            if count != 0 {
+                clients.push((client, clock, nodes, start, count));
+            }
+        }
+        clients.sort_unstable_by_key(|entry| std::cmp::Reverse(entry.0));
+
+        encoder.write_var_u64(clients.len() as u64)?;
+        for (client, clock, nodes, start, count) in clients {
+            encoder.write_var_u64(count as u64)?;
+            encoder.write_var_u64(client)?;
+            encoder.write_var_u64(clock)?;
+            let first = &nodes[start];
+            let offset = clock - first.clock();
+            if offset == 0 {
+                first.write(encoder)?;
+            } else {
+                first.split_at(offset)?.1.write(encoder)?;
+            }
+            for node in nodes.range(start + 1..).filter(|node| node.len() > 0) {
+                node.write(encoder)?;
+            }
+        }
+        if self.has_deleted_structs {
+            Self::generate_delete_set(&self.items).write(encoder)
+        } else {
+            encoder.write_var_u64(0)
+        }
+    }
+
+    fn diff_state_vector(&self, sv: &StateVector) -> JwstCodecResult<Update> {
         let update_structs = Self::diff_structs(&self.items, sv)?;
 
         let mut update = Update {
@@ -1045,7 +1105,7 @@ impl DocStore {
             ..Update::default()
         };
 
-        if with_pending && let Some(pending) = &self.pending {
+        if let Some(pending) = &self.pending {
             // Pending does not mean unknown to the recipient. Apply its SV to
             // these ranges too, while retaining deletions for missing targets.
             // The structs are shared with `self.pending`: the result is only
@@ -1124,11 +1184,28 @@ impl DocStore {
     fn generate_delete_set(refs: &ClientMap<VecDeque<Node>>) -> DeleteSet {
         let mut delete_set = DeleteSet::default();
 
-        for (client, nodes) in refs {
-            nodes
-                .iter()
-                .filter(|n| n.deleted())
-                .for_each(|n| delete_set.add(*client, n.clock(), n.len()));
+        for (&client, nodes) in refs {
+            let mut deleted = nodes.iter().filter(|node| node.deleted() && node.len() != 0);
+            let Some(first) = deleted.next() else { continue };
+            let mut current = first.clock()..first.clock() + first.len();
+            let mut previous = VecDeque::new();
+            for node in deleted {
+                let start = node.clock();
+                let end = start + node.len();
+                if start <= current.end {
+                    current.end = current.end.max(end);
+                } else {
+                    previous.push_back(current);
+                    current = start..end;
+                }
+            }
+            let ranges = if previous.is_empty() {
+                OrderRange::Range(current)
+            } else {
+                previous.push_back(current);
+                OrderRange::Fragment(previous)
+            };
+            delete_set.insert(client, ranges);
         }
 
         delete_set
@@ -1140,7 +1217,7 @@ impl DocStore {
     /// merge of the structs added since `last_optimized_state` and of the
     /// recorded split points (`_mergeStructs`). The cost follows the size of
     /// the change, not of the document.
-    pub fn optimize(&mut self, gc: bool) {
+    pub fn optimize(&mut self, gc: bool, state: StateVector) {
         let deleted = mem::take(&mut self.collector.deleted);
 
         if gc {
@@ -1149,7 +1226,7 @@ impl DocStore {
         // includes the children GC just replaced
         let merges = mem::take(&mut self.collector.merges);
         self.merge_delete_set(&deleted);
-        self.make_continuous();
+        self.make_continuous(state);
         self.merge_split_points(&merges);
     }
 
@@ -1157,7 +1234,7 @@ impl DocStore {
     pub fn optimize_all(&mut self) {
         self.collector.deleted.merge(&self.delete_set.clone());
         self.last_optimized_state = StateVector::default();
-        self.optimize(true)
+        self.optimize(true, self.get_state_vector())
     }
 
     /// Whether GC must keep any part of `len` structs starting at `id`.
@@ -1309,9 +1386,7 @@ impl DocStore {
     }
 
     /// Merges every struct added since `last_optimized_state`.
-    fn make_continuous(&mut self) {
-        let state = self.get_state_vector();
-
+    fn make_continuous(&mut self, state: StateVector) {
         for (client, state) in state.iter() {
             let before_state = self.last_optimized_state.get(client);
             if before_state == *state {
@@ -1362,7 +1437,7 @@ impl DocStore {
             let right = nodes.get(pos).unwrap().clone();
             let left = nodes.get_mut(pos - 1).unwrap();
 
-            if !left.merge(right.clone()) {
+            if !left.merge(&right) {
                 break;
             }
 
@@ -1423,6 +1498,79 @@ impl DocStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wire_delete_set_includes_tombstones_received_in_structs() {
+        loom_model!({
+            let source = DocOptions::from_identity(101, "source".into()).auto_gc(true).build();
+            let mut receiver = DocOptions::from_identity(202, "receiver".into()).auto_gc(true).build();
+            let mut text = source.get_or_create_text("body").unwrap();
+            text.insert(0, "abc").unwrap();
+            let state = source.get_state_vector();
+            text.remove(1, 1).unwrap();
+
+            let snapshot = source.encode_update_v1().unwrap();
+            receiver.apply_update_from_binary_v1(&snapshot).unwrap();
+            assert_eq!(receiver.encode_update_v1().unwrap(), snapshot);
+            assert_eq!(receiver.get_or_create_text("body").unwrap().to_string(), "ac");
+
+            let deletions = receiver.encode_state_as_update_v1(&state).unwrap();
+            let update = Update::decode_v1(&deletions).unwrap();
+            assert!(update.structs.is_empty());
+            let store = receiver.store.read().unwrap();
+            let generated = DocStore::generate_delete_set(&store.items);
+            assert_eq!(generated[&101], OrderRange::Range(1..2));
+            assert_eq!(generated, update.delete_set);
+        });
+    }
+
+    #[test]
+    fn borrowed_update_matches_materialized_diff_at_mid_struct_clock() {
+        loom_model!({
+            let source = Doc::with_client(101);
+            let mut receiver = Doc::with_client(202);
+            let mut text = source.get_or_create_text("body").unwrap();
+            text.insert(0, "ab").unwrap();
+            receiver
+                .apply_update_from_binary_v1(source.encode_update_v1().unwrap())
+                .unwrap();
+            let receiver_state = receiver.get_state_vector();
+
+            text.insert(2, "😀c").unwrap();
+            {
+                // Both inserts were merged, so the receiver's clock falls
+                // inside the struct being written.
+                let store = source.store.read().unwrap();
+                assert_eq!(store.items[&101].len(), 1);
+                assert_eq!(store.items[&101][0].len(), 5);
+            }
+            for state in [
+                StateVector::default(),
+                StateVector::from([(101, 0)]),
+                receiver_state.clone(),
+            ] {
+                let materialized = source
+                    .store
+                    .read()
+                    .unwrap()
+                    .diff_state_vector(&state)
+                    .unwrap()
+                    .encode_v1()
+                    .unwrap();
+                assert_eq!(source.encode_state_as_update_v1(&state).unwrap(), materialized);
+            }
+
+            receiver
+                .apply_update_from_binary_v1(source.encode_state_as_update_v1(&receiver_state).unwrap())
+                .unwrap();
+            assert_eq!(receiver.get_or_create_text("body").unwrap().to_string(), "ab😀c");
+            assert_eq!(receiver.get_state_vector(), source.get_state_vector());
+            assert_eq!(
+                source.encode_state_as_update_v1(&receiver.get_state_vector()).unwrap(),
+                [0, 0]
+            );
+        });
+    }
 
     #[test]
     fn test_get_state() {
@@ -1920,7 +2068,7 @@ mod tests {
                 ]),
             );
 
-            store.make_continuous();
+            store.make_continuous(store.get_state_vector());
 
             assert_eq!(store.items.get(&1).unwrap().len(), 4);
         });

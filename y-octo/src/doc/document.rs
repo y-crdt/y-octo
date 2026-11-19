@@ -687,7 +687,7 @@ impl Doc {
                 if let Node::Item(item) = &mut s {
                     debug_assert!(item.is_owned());
                     let mut item = unsafe { item.get_mut_unchecked() };
-                    store.repair(&mut item, store_ref.clone())?;
+                    store.repair(&mut item, store_ref)?;
                 }
                 store.integrate(s, offset, None)?;
             }
@@ -814,13 +814,9 @@ impl Doc {
     }
 
     pub fn encode_state_as_update_v1(&self, sv: &StateVector) -> JwstCodecResult<Vec<u8>> {
-        // The diff shares items with the store, so it is encoded under the
-        // same read lock.
         let store = read_store(&self.store)?;
-        let update = store.diff_state_vector(sv, true)?;
-
         let mut encoder = RawEncoder::default();
-        update.write(&mut encoder)?;
+        store.write_state_as_update(sv, &mut encoder)?;
         Ok(encoder.into_inner())
     }
 
@@ -865,16 +861,24 @@ pub enum LocalUpdate {
 impl IncomingUpdate {
     /// What `update` itself declares.
     fn of(update: &Update) -> Self {
+        let mut structs = DeleteSet::default();
+        for (&client, nodes) in &update.structs {
+            let mut run: Option<std::ops::Range<Clock>> = None;
+            for node in nodes.iter().filter(|node| !node.is_skip()) {
+                let start = node.clock();
+                let end = start + node.len();
+                if let Some(range) = run.as_mut().filter(|range| range.end == start) {
+                    range.end = end;
+                } else if let Some(range) = run.replace(start..end) {
+                    structs.add_range(client, range);
+                }
+            }
+            if let Some(range) = run {
+                structs.add_range(client, range);
+            }
+        }
         Self {
-            structs: update
-                .structs
-                .iter()
-                .fold(DeleteSet::default(), |mut ranges, (client, nodes)| {
-                    for node in nodes.iter().filter(|node| !matches!(node, Node::Skip(_))) {
-                        ranges.add(*client, node.clock(), node.len());
-                    }
-                    ranges
-                }),
+            structs,
             delete_set: update.delete_set.clone(),
         }
     }

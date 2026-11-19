@@ -242,6 +242,33 @@ fn implicit_writes_cloned_handles_and_remote_applies_commit() {
 }
 
 #[test]
+fn incoming_commit_ranges_leave_pending_clock_gaps() {
+    let source = Doc::with_client(1);
+    let mut text = source.get_or_create_text("text").unwrap();
+    text.insert(0, "a").unwrap();
+    let first = source.encode_update_v1().unwrap();
+    text.insert(1, "b").unwrap();
+    let prefix = source.get_state_vector();
+    text.insert(2, "c").unwrap();
+    let third = source.encode_state_as_update_v1(&prefix).unwrap();
+
+    let receiver = Doc::with_client(2);
+    let (_sub, events) = record(&receiver);
+    receiver
+        .apply_update_with_origin(merge_updates_v1([first, third]).unwrap(), None)
+        .unwrap();
+
+    let events = take(&events);
+    assert_eq!(events.len(), 1);
+    assert_eq!(
+        ranges(&events[0].incoming.as_ref().unwrap().structs),
+        vec![(1, vec![0..1, 2..3])]
+    );
+    assert_eq!(ranges(&events[0].inserted), vec![(1, vec![0..1])]);
+    assert!(receiver.has_pending_updates());
+}
+
+#[test]
 fn update_bytes_hold_only_the_transaction() {
     let doc = Doc::with_client(1);
     let mut text = doc.get_or_create_text("text").unwrap();

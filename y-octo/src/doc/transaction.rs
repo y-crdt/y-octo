@@ -345,7 +345,8 @@ impl Deref for CommitEvent {
 }
 
 /// The history stage of the commit pipeline: runs under the write lock after
-/// the changes and before GC, and may retain ranges from GC.
+/// the changes and before GC, and may retain or release ranges from GC
+/// without advancing any struct clocks.
 pub(crate) trait CommitHook: Send + Sync + fmt::Debug {
     fn on_commit(&mut self, store: &mut DocStore, summary: &CommitSummary);
     fn as_any(&self) -> &dyn StdAny;
@@ -741,14 +742,11 @@ impl<'doc> TransactionMut<'doc> {
         };
 
         // 1. what changed
-        let mut inserted = DeleteSet::default();
-        for (client, clock) in after_state.iter() {
-            let before = self.before_state.get(client);
-            if *clock > before {
-                inserted.add(*client, before, clock - before);
-            }
-        }
-        let changes = !inserted.is_empty() || !collector.deleted.is_empty() || !collector.changed.is_empty();
+        let changes = !collector.deleted.is_empty()
+            || !collector.changed.is_empty()
+            || after_state
+                .iter()
+                .any(|(client, clock)| *clock > self.before_state.get(client));
         let hub = changes.then(|| store.events.clone());
         // Keep subscription changes serialized with enqueue, including when
         // there are no subscribers and we skip encoding.
@@ -756,6 +754,13 @@ impl<'doc> TransactionMut<'doc> {
         let deliver = subscribers.as_ref().is_some_and(|guard| !guard.1.is_empty());
         // only built for someone who reads it
         let summary = (deliver || (changes && self.capture_history && store.history_hook.is_some())).then(|| {
+            let mut inserted = DeleteSet::default();
+            for (client, clock) in after_state.iter() {
+                let before = self.before_state.get(client);
+                if *clock > before {
+                    inserted.add(*client, before, clock - before);
+                }
+            }
             let (changed, ancestors) = changed_types(&collector.changed, &self.before_state);
             CommitSummary {
                 origin: maintenance_origin.clone().or_else(|| self.origin.clone()),
@@ -793,7 +798,9 @@ impl<'doc> TransactionMut<'doc> {
         debug_assert!(store.collector.deleted.is_empty());
         store.collector.deleted = deleted;
         store.collector.merges.extend(merges);
-        store.optimize(store.gc);
+        let client = store.client();
+        let client_clock_advanced = !local && after_state.get(&client) != self.before_state.get(&client);
+        store.optimize(store.gc, after_state);
         debug_assert!(store.collector.is_empty());
 
         // 5. remote changes move items under the search markers of the types
@@ -812,8 +819,7 @@ impl<'doc> TransactionMut<'doc> {
         // Another client advanced our clock: it uses our client ID. Yjs
         // `cleanupTransactions` switches to a new ID so our next edits cannot
         // collide with theirs.
-        let client = store.client();
-        if !local && after_state.get(&client) != self.before_state.get(&client) {
+        if client_clock_advanced {
             // Without randomness the host assigns identities: refuse local
             // writes until it sets a new one.
             #[cfg(feature = "random")]
