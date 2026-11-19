@@ -21,7 +21,8 @@ fuzz_target!(|ops: Vec<TextOp>| {
     let mut text = doc.get_or_create_text("test").unwrap();
     text.insert(0, "This is a string with length 32.").unwrap();
 
-    let mut len = 32u64;
+    let mut model = "This is a string with length 32.".to_owned();
+    let mut len = model.len() as u64;
     for op in ops {
         match op {
             TextOp::Insert(pos, content) => {
@@ -32,6 +33,7 @@ fuzz_target!(|ops: Vec<TextOp>| {
                 // insert_at rejects index > len, so stay within [0, len]
                 let pos = pos as u64 % (len + 1);
                 text.insert(pos, &content).unwrap();
+                model.insert_str(pos as usize, &content);
                 len += content.len() as u64;
             }
             TextOp::Remove(pos, remove_len) => {
@@ -42,9 +44,12 @@ fuzz_target!(|ops: Vec<TextOp>| {
                 let pos = pos as u64 % len;
                 let remove_len = 1 + remove_len as u64 % (len - pos);
                 text.remove(pos, remove_len).unwrap();
+                model.drain(pos as usize..(pos + remove_len) as usize);
                 len -= remove_len;
             }
         }
+        assert_eq!(text.to_string(), model);
+        assert_eq!(text.len(), len);
     }
 
     assert_eq!(text.to_string().len(), len as usize);

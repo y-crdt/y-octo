@@ -10,29 +10,17 @@ version = "0.0.1"
 [features]
 bench     = ["regex"]
 default   = ["merger"]
-fuzz      = ["arbitrary", "phf"]
 merger    = ["clap", "y-octo/large_refs"]
-profiling = ["y-octo/debug", "y-octo/large_refs", "dep:yrs-latest"]
+profiling = ["y-octo/debug", "y-octo/large_refs"]
 
 [dependencies]
-arbitrary   = { workspace = true, features = ["derive"], optional = true }
 clap        = { workspace = true, features = ["derive"], optional = true }
-lib0        = { workspace = true, features = ["lib0-serde"] }
-phf         = { workspace = true, features = ["macros"], optional = true }
 rand        = { workspace = true }
 rand_chacha = { workspace = true }
 regex       = { workspace = true, optional = true }
 reqwest     = { workspace = true }
 serde_json  = { workspace = true }
 y-octo      = { workspace = true }
-yrs         = { workspace = true }
-yrs-latest  = { package = "yrs", version = "=0.27.3", optional = true }
-
-[dev-dependencies]
-criterion       = { workspace = true }
-path-ext        = { workspace = true }
-proptest        = { workspace = true }
-proptest-derive = { workspace = true }
 
 [[bin]]
 name = "bench_result_render"
@@ -54,30 +42,3 @@ required-features = ["profiling"]
 [[bin]]
 name = "tg_notify"
 path = "bin/tg_notify.rs"
-
-[[bench]]
-harness = false
-name    = "array_ops_benchmarks"
-
-[[bench]]
-harness = false
-name    = "codec_benchmarks"
-
-[[bench]]
-harness = false
-name    = "map_ops_benchmarks"
-
-[[bench]]
-harness = false
-name    = "text_ops_benchmarks"
-
-[[bench]]
-harness = false
-name    = "apply_benchmarks"
-
-[[bench]]
-harness = false
-name    = "update_benchmarks"
-
-[lib]
-bench = true

@@ -8,10 +8,6 @@ use std::{
 
 use serde_json::json;
 use y_octo::{DocOptions, ReadDoc, Update as OctoUpdate, memory_layout, profiling_counters, reset_profiling_counters};
-use yrs::{
-    Doc as YrsDoc, Options as YrsOptions, ReadTxn, StateVector as YrsStateVector, Transact, Update as YrsUpdate,
-    updates::decoder::Decode,
-};
 
 struct CountingAllocator;
 
@@ -155,114 +151,15 @@ fn profile_readonly(file: &str) {
     black_box(&doc);
 }
 
-fn profile_yrs(file: &str, output: Option<&str>) {
-    let started = Instant::now();
-    let data = fs::read(file).unwrap();
-    snapshot(
-        "yrs",
-        file,
-        "read",
-        started,
-        json!({
-            "input_bytes": data.len(),
-            "layout": {
-                "id": std::mem::size_of::<yrs::ID>(),
-                "option_id": std::mem::size_of::<Option<yrs::ID>>(),
-                "item": std::mem::size_of::<yrs::block::Item>(),
-                "item_content": std::mem::size_of::<yrs::block::ItemContent>(),
-                "item_ptr": std::mem::size_of::<yrs::block::ItemPtr>(),
-                "option_item_ptr": std::mem::size_of::<Option<yrs::block::ItemPtr>>(),
-                "block_range": std::mem::size_of::<yrs::block::BlockRange>(),
-            }
-        }),
-    );
-
-    let stage = Instant::now();
-    let update = YrsUpdate::decode_v1(&data).unwrap();
-    snapshot("yrs", file, "decode", stage, json!({}));
-
-    let doc = YrsDoc::with_options(YrsOptions::default());
-    let stage = Instant::now();
-    {
-        let mut txn = doc.transact_mut();
-        txn.apply_update(update).unwrap();
-    }
-    snapshot("yrs", file, "apply_default_gc", stage, json!({}));
-
-    let stage = Instant::now();
-    let encoded = doc.transact().encode_state_as_update_v1(&YrsStateVector::default());
-    snapshot("yrs", file, "encode", stage, json!({"output_bytes": encoded.len()}));
-    if let Some(output) = output {
-        fs::write(output, &encoded).unwrap();
-    }
-    black_box((&doc, &encoded));
-}
-
-fn profile_yrs_latest(file: &str, output: Option<&str>) {
-    use yrs_latest::{ReadTxn, Transact, updates::decoder::Decode};
-
-    let started = Instant::now();
-    let data = fs::read(file).unwrap();
-    snapshot(
-        "yrs-0.27.3",
-        file,
-        "read",
-        started,
-        json!({
-            "input_bytes": data.len(),
-            "layout": {
-                "id": std::mem::size_of::<yrs_latest::ID>(),
-                "item": std::mem::size_of::<yrs_latest::block::Item>(),
-                "item_content": std::mem::size_of::<yrs_latest::block::ItemContent>(),
-                "item_ptr": std::mem::size_of::<yrs_latest::block::ItemPtr>(),
-            }
-        }),
-    );
-
-    let stage = Instant::now();
-    let update = yrs_latest::Update::decode_v1(&data).unwrap();
-    snapshot("yrs-0.27.3", file, "decode", stage, json!({}));
-
-    let doc = yrs_latest::Doc::with_options(yrs_latest::Options::default());
-    let stage = Instant::now();
-    {
-        let mut txn = doc.transact_mut();
-        txn.apply_update(update).unwrap();
-    }
-    snapshot("yrs-0.27.3", file, "apply_default_gc", stage, json!({}));
-
-    let stage = Instant::now();
-    let encoded = doc
-        .transact()
-        .encode_state_as_update_v1(&yrs_latest::StateVector::default());
-    snapshot(
-        "yrs-0.27.3",
-        file,
-        "encode",
-        stage,
-        json!({"output_bytes": encoded.len()}),
-    );
-    if let Some(output) = output {
-        fs::write(output, &encoded).unwrap();
-    }
-    black_box((&doc, &encoded));
-}
-
 fn main() {
     let mut args = env::args();
     let _program = args.next();
-    let engine = args
-        .next()
-        .expect("usage: profile_ydoc <y-octo|read-only|yrs|yrs-latest> <file>");
-    let file = args
-        .next()
-        .expect("usage: profile_ydoc <y-octo|read-only|yrs|yrs-latest> <file>");
+    let engine = args.next().expect("usage: profile_ydoc <y-octo|read-only> <file>");
+    let file = args.next().expect("usage: profile_ydoc <y-octo|read-only> <file>");
     let output = args.next();
     match engine.as_str() {
         "y-octo" => profile_octo(&file, output.as_deref()),
         "read-only" => profile_readonly(&file),
-        "yrs" => profile_yrs(&file, output.as_deref()),
-        "yrs-latest" => profile_yrs_latest(&file, output.as_deref()),
         _ => panic!("unknown engine: {engine}"),
     }
 }

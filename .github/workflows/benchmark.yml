@@ -46,11 +46,11 @@ jobs:
 
       - name: Run Bench on main Branch
         run: |
-          cargo bench --bench codec_benchmarks --features bench -- --save-baseline main
-          cargo bench --bench array_ops_benchmarks --features bench -- --save-baseline main
-          cargo bench --bench map_ops_benchmarks --features bench -- --save-baseline main
-          cargo bench --bench text_ops_benchmarks --features bench -- --save-baseline main
-          cargo bench --bench update_benchmarks --features bench -- --save-baseline main
+          cargo bench -p y-octo --bench codec_benchmarks --features bench -- --save-baseline main
+          cargo bench -p y-octo --bench array_ops_benchmarks --features bench -- --save-baseline main
+          cargo bench -p y-octo --bench map_ops_benchmarks --features bench -- --save-baseline main
+          cargo bench -p y-octo --bench text_ops_benchmarks --features bench -- --save-baseline main
+          cargo bench -p y-octo --bench update_benchmarks --features bench -- --save-baseline main
 
       - name: Checkout PR head
         if: github.event_name == 'pull_request'
@@ -62,11 +62,11 @@ jobs:
       - name: Run Bench on PR Branch
         if: github.event_name == 'pull_request'
         run: |
-          cargo bench --bench codec_benchmarks --features bench -- --save-baseline pr
-          cargo bench --bench array_ops_benchmarks --features bench -- --save-baseline pr
-          cargo bench --bench map_ops_benchmarks --features bench -- --save-baseline pr
-          cargo bench --bench text_ops_benchmarks --features bench -- --save-baseline pr
-          cargo bench --bench update_benchmarks --features bench -- --save-baseline pr
+          cargo bench -p y-octo --bench codec_benchmarks --features bench -- --save-baseline pr
+          cargo bench -p y-octo --bench array_ops_benchmarks --features bench -- --save-baseline pr
+          cargo bench -p y-octo --bench map_ops_benchmarks --features bench -- --save-baseline pr
+          cargo bench -p y-octo --bench text_ops_benchmarks --features bench -- --save-baseline pr
+          cargo bench -p y-octo --bench update_benchmarks --features bench -- --save-baseline pr
 
       - name: Upload benchmark results
         uses: actions/upload-artifact@v4

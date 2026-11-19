@@ -523,8 +523,6 @@ impl Doc {
 
 #[cfg(test)]
 mod tests {
-    use yrs::{Array, Map, Options, Transact, types::ToJson, updates::decoder::Decode};
-
     use super::*;
 
     #[test]
@@ -655,43 +653,49 @@ mod tests {
     }
 
     #[test]
+    fn test_yjs_typed_embeds_with_declared_text_roots() {
+        let bytes = yjs_fixture("text-type-embeds");
+        loom_model!({
+            let mut doc = DocOptions {
+                client_id: 202,
+                guid: "typed-embed-wire".into(),
+                gc: true,
+            }
+            .build();
+            let text = doc.get_or_create_text("typed_text").unwrap();
+            let _: XMLText = YTypeBuilder::new(doc.store.clone())
+                .with_kind(YTypeKind::XMLText)
+                .set_name("typed_xml_text".into())
+                .build()
+                .unwrap();
+            doc.apply_update_from_binary_v1(&bytes).unwrap();
+            assert!(!doc.has_pending_updates());
+            assert_eq!(text.to_string(), "leftright");
+            assert_eq!(text.len(), 12);
+            let store = doc.store.read().unwrap();
+            for name in ["typed_text", "typed_xml_text"] {
+                let root = store.types[name].ty().unwrap();
+                assert_eq!(root.len, 12);
+                let mut children = Vec::new();
+                let mut item = root.start.clone();
+                while let Some(node) = item.get() {
+                    if let Content::Type(child) = &node.content {
+                        children.push(child.ty().unwrap().kind());
+                    }
+                    item = node.right.clone();
+                }
+                assert_eq!(children, vec![YTypeKind::Map, YTypeKind::Array, YTypeKind::Text]);
+            }
+        });
+    }
+
+    #[test]
     fn test_encode_state_as_update() {
         loom_model!(64 << 10, {
-            let yrs_options_left = Options::default();
-            let yrs_options_right = Options::default();
-
-            let (binary, binary_new) = if cfg!(miri) {
-                let doc = Doc::new();
-
-                let mut map = doc.get_or_create_map("abc").unwrap();
-                map.insert("a".to_string(), 1).unwrap();
-                let binary = doc.encode_update_v1().unwrap();
-
-                let doc_new = Doc::new();
-                let mut array = doc_new.get_or_create_array("array").unwrap();
-                array.insert(0, "array_value").unwrap();
-                let binary_new = doc.encode_update_v1().unwrap();
-
-                (binary, binary_new)
-            } else {
-                let yrs_doc = yrs::Doc::with_options(yrs_options_left.clone());
-
-                let map = yrs_doc.get_or_insert_map("abc");
-                let mut trx = yrs_doc.transact_mut();
-                map.insert(&mut trx, "a", 1);
-                let binary = trx.encode_update_v1();
-
-                let yrs_doc_new = yrs::Doc::with_options(yrs_options_right.clone());
-                let array = yrs_doc_new.get_or_insert_array("array");
-                let mut trx = yrs_doc_new.transact_mut();
-                array.insert(&mut trx, 0, "array_value");
-                let binary_new = trx.encode_update_v1();
-
-                (binary, binary_new)
-            };
-
-            let mut doc = Doc::try_from_binary_v1(binary).unwrap();
-            let mut doc_new = Doc::try_from_binary_v1(binary_new).unwrap();
+            let binary = yjs_fixture("map");
+            let binary_new = yjs_fixture("array-peer");
+            let mut doc = Doc::try_from_binary_v1(&binary).unwrap();
+            let mut doc_new = Doc::try_from_binary_v1(&binary_new).unwrap();
 
             let diff_update = doc_new.encode_state_as_update_v1(&doc.get_state_vector()).unwrap();
 
@@ -855,30 +859,15 @@ mod tests {
     #[test]
     #[cfg_attr(any(miri, loom), ignore)]
     fn test_array_create() {
-        let yrs_options = yrs::Options::default();
-
         let json = serde_json::json!([42.0, -42.0, true, false, "hello", "world", [1.0]]);
 
         {
-            let doc = yrs::Doc::with_options(yrs_options.clone());
-            let array = doc.get_or_insert_array("abc");
-            let mut trx = doc.transact_mut();
-            array.insert(&mut trx, 0, 42);
-            array.insert(&mut trx, 1, -42);
-            array.insert(&mut trx, 2, true);
-            array.insert(&mut trx, 3, false);
-            array.insert(&mut trx, 4, "hello");
-            array.insert(&mut trx, 5, "world");
-
-            let sub_array = yrs::ArrayPrelim::default();
-            let sub_array = array.insert(&mut trx, 6, sub_array);
-            sub_array.insert(&mut trx, 0, 1);
-
-            drop(trx);
+            let doc = Doc::try_from_binary_v1(yjs_fixture("mixed-array")).unwrap();
+            let array = doc.get_or_create_array("abc").unwrap();
             let config = assert_json_diff::Config::new(assert_json_diff::CompareMode::Strict)
                 .numeric_mode(assert_json_diff::NumericMode::AssumeFloat);
-            assert_json_diff::assert_json_matches!(array.to_json(&doc.transact()), json, config);
-        };
+            assert_json_diff::assert_json_matches!(serde_json::to_value(&array).unwrap(), json, config);
+        }
 
         {
             let binary = {
@@ -893,20 +882,10 @@ mod tests {
 
                 let mut sub_array = doc.create_array().unwrap();
                 array.insert(6, sub_array.clone()).unwrap();
-                // FIXME: array need insert first to compatible with yrs
                 sub_array.insert(0, 1).unwrap();
 
                 doc.encode_update_v1().unwrap()
             };
-
-            let ydoc = yrs::Doc::with_options(yrs_options);
-            let array = ydoc.get_or_insert_array("abc");
-            let mut trx = ydoc.transact_mut();
-            trx.apply_update(yrs::Update::decode_v1(&binary).unwrap()).unwrap();
-
-            let config = assert_json_diff::Config::new(assert_json_diff::CompareMode::Strict)
-                .numeric_mode(assert_json_diff::NumericMode::AssumeFloat);
-            assert_json_diff::assert_json_matches!(array.to_json(&trx), json, config);
 
             let mut doc = Doc::new();
             let array = doc.get_or_create_array("abc").unwrap();

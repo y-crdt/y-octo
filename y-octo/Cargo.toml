@@ -51,14 +51,12 @@ async-lock = { workspace = true }
 assert-json-diff = { workspace = true }
 criterion        = { workspace = true }
 flate2           = "1"
-lib0             = { workspace = true }
 ordered-float    = { workspace = true, features = ["proptest"] }
 path-ext         = { workspace = true }
 proptest         = { workspace = true }
 proptest-derive  = { workspace = true }
 rand_chacha      = { workspace = true }
 sha2             = "0.10"
-yrs              = { workspace = true }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = [

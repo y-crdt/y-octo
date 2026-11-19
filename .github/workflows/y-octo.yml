@@ -49,6 +49,9 @@ jobs:
         with:
           tool: clippy-sarif,sarif-fmt
 
+      - name: Check repository test payload budget
+        run: node y-octo/tests/oracle/budget.mjs
+
       - name: Format check
         run: |
           yarn prettier --check .
@@ -179,7 +182,10 @@ jobs:
           npm ci --prefix y-octo/tests/oracle --ignore-scripts
           npm run check --prefix y-octo/tests/oracle
       - name: Run online differential batch
-        run: cargo test -p y-octo --test trace_differential --features large_refs online_yjs_differential -- --ignored --exact --nocapture
+        run: |
+          cargo test -p y-octo --test trace_differential --features large_refs online_yjs_differential -- --ignored --exact --nocapture
+          cargo test -p y-octo --test legacy_yjs_wire --features large_refs online_legacy_yjs_roundtrip -- --ignored --exact --nocapture
+          cargo test -p y-octo --test trace_differential --features large_refs online_fuzz_trajectories -- --ignored --exact --nocapture
       - name: Preserve minimized failures
         if: failure()
         uses: actions/upload-artifact@v4

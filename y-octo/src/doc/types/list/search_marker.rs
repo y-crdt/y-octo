@@ -239,36 +239,16 @@ mod tests {
     use rand::{RngExt, SeedableRng};
     #[cfg(not(loom))]
     use rand_chacha::ChaCha20Rng;
-    use yrs::{Array, Options, Transact};
 
     use super::*;
 
     #[test]
     fn test_marker_list() {
         let options = DocOptions::default();
-        let yrs_options = Options::default();
+        let buffer = crate::doc::yjs_fixture("marker-array");
 
         loom_model!({
-            let (client_id, buffer) = if cfg!(miri) {
-                let doc = Doc::with_options(options.clone());
-                let mut array = doc.get_or_create_array("abc").unwrap();
-
-                array.insert(0, " ").unwrap();
-                array.insert(0, "Hello").unwrap();
-                array.insert(2, "World").unwrap();
-
-                (doc.client(), doc.encode_update_v1().unwrap())
-            } else {
-                let doc = yrs::Doc::with_options(yrs_options.clone());
-                let array = doc.get_or_insert_array("abc");
-
-                let mut trx = doc.transact_mut();
-                array.insert(&mut trx, 0, " ");
-                array.insert(&mut trx, 0, "Hello");
-                array.insert(&mut trx, 2, "World");
-
-                (doc.client_id(), trx.encode_update_v1())
-            };
+            let client_id = 101;
 
             let mut decoder = RawDecoder::new(&buffer);
             let update = Update::read(&mut decoder).unwrap();

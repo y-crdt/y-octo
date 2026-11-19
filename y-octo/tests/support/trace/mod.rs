@@ -1,5 +1,6 @@
 pub mod generate;
 pub mod online;
+pub mod trajectory;
 // Test-only operation trace interpreter. No oracle process is started here.
 use std::collections::BTreeMap;
 
@@ -206,6 +207,11 @@ fn make(trace: &Json, client: u64) -> Result<Doc> {
     .build();
     for (name, kind) in trace["roots"].as_object().unwrap() {
         root(&d, kind.as_str().unwrap(), name)?;
+    }
+    if let Some(roots) = trace["wire_roots"].as_object() {
+        for (name, kind) in roots {
+            root(&d, kind.as_str().unwrap(), name)?;
+        }
     }
     Ok(d)
 }

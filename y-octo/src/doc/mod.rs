@@ -51,3 +51,23 @@ use super::*;
 ///     - A kinda safer approach is give it a max capacity of 1024 at first
 ///       allocation, and then let std makes the growth as need.
 pub const HASHMAP_SAFE_CAPACITY: usize = 1 << 10;
+
+#[cfg(test)]
+pub(crate) fn yjs_fixture(name: &str) -> Vec<u8> {
+    use std::io::Read;
+    let mut text = String::new();
+    flate2::read::GzDecoder::new(include_bytes!("../fixtures/yjs-legacy.jsonl.gz").as_slice())
+        .read_to_string(&mut text)
+        .unwrap();
+    let fixture = text
+        .lines()
+        .skip(1)
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .find(|record| record["name"] == name)
+        .unwrap();
+    let hex = fixture["update"].as_str().unwrap();
+    (0..hex.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
+        .collect()
+}

@@ -36,9 +36,6 @@ Y-Octo also has interoperability and binary compatibility with [yjs]. Developers
 
 The parallel workload applies the full Automerge trace to two replicas in random batches of 1–1000 local edits, synchronizes after each pair of batches, and verifies replica convergence.
 
-Ref: https://github.com/darkskygit/crdt-bench-native
-
-
 ## Features
 
 - ✅ Collaborative Text
@@ -94,10 +91,6 @@ Put everything to the test! We've established various test suites, but we're con
 - [DarkSky](https://github.com/darkskygit)
 - [liuyi](https://github.com/forehalo)
 - [LongYinan](https://github.com/Brooooooklyn)
-
-## Why not [yrs](https://github.com/y-crdt/y-crdt/)
-
-See [Why we're not using yrs](./y-octo-utils/yrs-is-unsafe/README.md)
 
 ## License
 

@@ -510,7 +510,6 @@ fn delete_text(store: &mut DocStore, ty: &mut YType, pos: &mut TextPosition, mut
 mod tests {
     use rand::{RngExt, SeedableRng};
     use rand_chacha::ChaCha20Rng;
-    use yrs::{Options, Text, Transact};
 
     use super::{TextAttributes, TextDeltaOp, TextInsert};
     #[cfg(not(loom))]
@@ -726,25 +725,8 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore)]
     fn test_recover_from_yjs_encoder() {
-        let yrs_options = Options {
-            client_id: rand::random(),
-            guid: nanoid::nanoid!().into(),
-            ..Default::default()
-        };
-
+        let binary = crate::doc::yjs_fixture("text-recovery");
         loom_model!({
-            let binary = {
-                let doc = yrs::Doc::with_options(yrs_options.clone());
-                let text = doc.get_or_insert_text("greating");
-                let mut trx = doc.transact_mut();
-                text.insert(&mut trx, 0, "hello");
-                text.insert(&mut trx, 5, " world!");
-                text.remove_range(&mut trx, 11, 1);
-
-                trx.encode_update_v1()
-            };
-            // in loom loop
-            #[allow(clippy::needless_borrow)]
             let doc = Doc::try_from_binary_v1(&binary).unwrap();
             let mut text = doc.get_or_create_text("greating").unwrap();
 

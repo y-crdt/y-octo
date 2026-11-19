@@ -46,3 +46,5 @@ npm run check:upstream --prefix y-octo/tests/oracle
 cargo test --release -p y-octo --features large_refs --test yjs_upstream_oracle replay_upstream_factory -- --ignored --exact
 node y-octo/tests/oracle/upstream-exports.mjs
 ```
+
+Run `node y-octo/tests/oracle/budget.mjs` to report fixture sizes.

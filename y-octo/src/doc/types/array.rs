@@ -127,93 +127,33 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore)]
-    fn test_ytext_equal() {
-        use yrs::{Options, Text, Transact};
-        let options = DocOptions::default();
-        let yrs_options = Options::default();
-
-        loom_model!({
-            let doc = yrs::Doc::with_options(yrs_options.clone());
-            let array = doc.get_or_insert_text("abc");
-
-            let mut trx = doc.transact_mut();
-            array.insert(&mut trx, 0, " ");
-            array.insert(&mut trx, 0, "Hello");
-            array.insert(&mut trx, 6, "World");
-            array.insert(&mut trx, 11, "!");
-            let buffer = trx.encode_update_v1();
-
-            let mut decoder = RawDecoder::new(&buffer);
-            let update = Update::read(&mut decoder).unwrap();
-
-            let mut doc = Doc::with_options(options.clone());
-            doc.apply_update(update).unwrap();
-            let array = doc.get_or_create_array("abc").unwrap();
-
-            assert_eq!(array.get(0).unwrap(), Value::Any(Any::String("Hello".into())));
-            assert_eq!(array.get(5).unwrap(), Value::Any(Any::String(" ".into())));
-            assert_eq!(array.get(6).unwrap(), Value::Any(Any::String("World".into())));
-            assert_eq!(array.get(11).unwrap(), Value::Any(Any::String("!".into())));
-        });
-
-        let options = DocOptions::default();
-        let yrs_options = Options::default();
-
-        loom_model!({
-            let doc = yrs::Doc::with_options(yrs_options.clone());
-            let array = doc.get_or_insert_text("abc");
-
-            let mut trx = doc.transact_mut();
-            array.insert(&mut trx, 0, "Hello");
-            array.insert(&mut trx, 5, " ");
-            array.insert(&mut trx, 6, "World");
-            array.insert(&mut trx, 11, "!");
-            let buffer = trx.encode_update_v1();
-
-            let mut decoder = RawDecoder::new(&buffer);
-            let update = Update::read(&mut decoder).unwrap();
-
-            let mut doc = Doc::with_options(options.clone());
-            doc.apply_update(update).unwrap();
-            let array = doc.get_or_create_array("abc").unwrap();
-
-            assert_eq!(array.get(0).unwrap(), Value::Any(Any::String("Hello".into())));
-            assert_eq!(array.get(5).unwrap(), Value::Any(Any::String(" ".into())));
-            assert_eq!(array.get(6).unwrap(), Value::Any(Any::String("World".into())));
-            assert_eq!(array.get(11).unwrap(), Value::Any(Any::String("!".into())));
-        });
+    fn test_yjs_text_as_sequence() {
+        for fixture in ["text-split", "text-append"] {
+            let update = crate::doc::yjs_fixture(fixture);
+            loom_model!({
+                let doc = Doc::try_from_binary_v1(&update).unwrap();
+                let array = doc.get_or_create_array("abc").unwrap();
+                let text = array
+                    .iter()
+                    .map(|v| match v {
+                        Value::Any(Any::String(s)) => s,
+                        _ => panic!("text sequence contains non-string"),
+                    })
+                    .collect::<String>();
+                assert_eq!(text, "Hello World!");
+                assert_eq!(array.len(), 12);
+            });
+        }
     }
 
     #[test]
-    #[cfg_attr(miri, ignore)]
-    fn test_yrs_array_decode() {
-        use yrs::{Array, Transact};
-
+    fn test_yjs_array_decode() {
+        let update = crate::doc::yjs_fixture("array-words");
         loom_model!({
-            let update = {
-                let doc = yrs::Doc::new();
-                let array = doc.get_or_insert_array("abc");
-                let mut trx = doc.transact_mut();
-
-                array.insert(&mut trx, 0, "hello");
-                array.insert(&mut trx, 1, "world");
-                array.insert(&mut trx, 1, " ");
-
-                trx.encode_update_v1()
-            };
-            let doc = Doc::try_from_binary_v1_with_options(
-                update.clone(),
-                DocOptions {
-                    guid: String::from("1"),
-                    client_id: 1,
-                    gc: true,
-                },
-            )
-            .unwrap();
+            let doc = Doc::try_from_binary_v1(&update).unwrap();
             let arr = doc.get_or_create_array("abc").unwrap();
-
-            assert_eq!(arr.get(2).unwrap(), Value::Any(Any::String("world".to_string())))
+            assert_eq!(arr.get(2).unwrap(), Value::Any(Any::String("world".to_string())));
+            assert_eq!(arr.len(), 3);
         });
     }
 

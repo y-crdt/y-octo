@@ -245,3 +245,42 @@ fn arbitrary_state_vector_preserves_source() {
         assert_eq!(set.docs[0].encode_update_v1().unwrap(), original, "echo clock {clock}");
     }
 }
+
+#[test]
+#[cfg_attr(miri, ignore = "Trace semantic properties run outside Miri")]
+fn fuzz_trajectory_seed_properties() {
+    for bytes in trace::trajectory::seeds() {
+        let input = trace::trajectory::from_bytes(&bytes);
+        let seed = input["seed"].as_u64().unwrap() as u32;
+        if let Err(error) = trace::generate::update_properties(&input, seed) {
+            let saved = trace::generate::regression(&input, &error, seed);
+            panic!("{error}\n{}", trace::save_failure(&saved, "trajectory-seed"));
+        }
+    }
+}
+#[test]
+#[ignore = "Requires pinned Node oracle; same byte traces as the fuzzer"]
+fn online_fuzz_trajectories() {
+    let mut oracle = Oracle::start().unwrap();
+    let mut typed_cases = Vec::new();
+    for bytes in trace::trajectory::seeds() {
+        let input = trace::trajectory::from_bytes(&bytes);
+        if let Some(name) = input["packet_fixture"].as_str() {
+            let mut set = ReplicaSet::new(&input).unwrap();
+            for step in input["steps"].as_array().unwrap() {
+                set.step(step).unwrap();
+            }
+            typed_cases.push(
+                serde_json::json!({"name":name,"update":trace::encode_hex(&set.docs[0].encode_update_v1().unwrap())}),
+            );
+            continue;
+        }
+        for version in ["13.6.21", "13.6.33"] {
+            if let Err(error) = oracle.compare(&input, version) {
+                let minimal = trace::online::minimize(&mut oracle, &input, version, &error);
+                panic!("{error}\n{}", trace::save_failure(&minimal, "fuzz-online"));
+            }
+        }
+    }
+    trace::trajectory::verify_legacy(&serde_json::json!(typed_cases)).unwrap();
+}
