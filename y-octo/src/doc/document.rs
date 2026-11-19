@@ -173,6 +173,7 @@ impl TryFrom<Any> for DocOptions {
 #[derive(Debug, Clone)]
 pub struct Doc {
     opts: DocOptions,
+    events: Arc<EventHub>,
 
     pub(crate) store: StoreRef,
 }
@@ -207,21 +208,30 @@ impl Doc {
     }
 
     pub fn with_options(options: DocOptions) -> Self {
-        let store = Arc::new(RwLock::new(DocStore::with_client(options.client_id)));
+        let mut store = DocStore::with_client(options.client_id);
+        store.gc = options.gc;
+        let events = store.events.clone();
+        let store = Arc::new(RwLock::new(store));
 
-        Self { opts: options, store }
+        Self {
+            opts: options,
+            events,
+            store,
+        }
     }
 
     pub fn with_client(client_id: u64) -> Self {
         DocOptions::new().with_client_id(client_id).build()
     }
 
+    /// The client ID new structs are created with. It changes when a remote
+    /// update shows another client using it.
     pub fn client(&self) -> Client {
-        self.store.read().unwrap().client()
+        or_released(read_store(&self.store).map(|store| store.client()))
     }
 
     pub fn set_client(&mut self, client_id: u64) {
-        self.store.write().unwrap().set_client(client_id);
+        or_released(write_store(&self.store).map(|mut store| store.set_client(client_id)));
     }
 
     pub fn renew_client(&mut self) {
@@ -229,7 +239,7 @@ impl Doc {
     }
 
     pub fn clients(&self) -> Vec<u64> {
-        self.store.read().unwrap().clients()
+        or_released(read_store(&self.store).map(|store| store.clients()))
     }
 
     pub fn history(&self) -> StoreHistory {
@@ -240,7 +250,7 @@ impl Doc {
 
     #[cfg(feature = "debug")]
     pub fn store_status(&self) -> DocStoreStatus {
-        let store = self.store.read().unwrap();
+        let store = read_store_or_panic(&self.store);
 
         let mut status = DocStoreStatus {
             clients: store.items.len(),
@@ -260,8 +270,8 @@ impl Doc {
             types: store.total_types(),
             dangling_types: store.total_dangling_types(),
             pending_nodes: store.total_pending_nodes(),
-            changed_types: store.changed.len(),
-            changed_keys: store.changed.values().map(Vec::len).sum(),
+            changed_types: store.collector.changed.len(),
+            changed_keys: store.collector.changed.values().map(Vec::len).sum(),
         };
 
         for node in store.items.values().flatten() {
@@ -290,15 +300,15 @@ impl Doc {
 
     #[cfg(feature = "debug")]
     pub fn clear_change_tracking(&self) {
-        self.store.write().unwrap().changed.clear();
+        or_released(write_store(&self.store).map(|mut store| store.collector.changed.clear()));
     }
 
     pub fn store_compare(&self, other: &Doc) -> bool {
         if Arc::ptr_eq(&self.store, &other.store) {
             return true;
         }
-        let store = self.store.read().unwrap();
-        let other_store = other.store.read().unwrap();
+        let (store, other_store) =
+            transaction::read_store_pair(&self.store, &other.store).unwrap_or_else(|err| panic!("{err}"));
 
         store.deep_compare(&other_store)
     }
@@ -312,17 +322,17 @@ impl Doc {
     }
 
     pub fn has_pending_updates(&self) -> bool {
-        self.store.read().unwrap().pending.is_some()
+        or_released(read_store(&self.store).map(|store| store.pending.is_some()))
     }
 
     /// Whether a root has visible sequence content, without assigning its type.
     pub fn root_has_sequence_content(&self, name: &str) -> bool {
-        self.store
-            .read()
-            .unwrap()
-            .types
-            .get(name)
-            .is_some_and(|root| root.ty().is_some_and(|ty| ty.len > 0))
+        or_released(read_store(&self.store).map(|store| {
+            store
+                .types
+                .get(name)
+                .is_some_and(|root| root.ty().is_some_and(|ty| ty.len > 0))
+        }))
     }
 
     // TODO:
@@ -344,31 +354,131 @@ impl Doc {
         self.apply_update(update)
     }
 
+    /// Applies a remote update in a transaction of its own (not local, no
+    /// origin).
     pub fn apply_update(&mut self, update: Update) -> JwstCodecResult {
-        let mut store = self.store.write().unwrap();
-        // collect the types this update changes on their own
-        let changed_before = std::mem::take(&mut store.changed);
+        self.apply_update_with_origin(update, None)
+    }
 
-        let result = Self::integrate_update(&mut store, &self.store, update);
-        if result.is_ok() {
-            store.optimize(self.opts.gc);
-        }
+    /// Applies a remote update in a transaction of its own with `origin`.
+    pub fn apply_update_with_origin(&self, update: Update, origin: impl Into<Option<Origin>>) -> JwstCodecResult {
+        let store_ref = &self.store;
+        transact_mut_with(store_ref, origin.into(), false, |tx| {
+            // what the update itself declares, before pending structs join it
+            tx.incoming = Some(IncomingUpdate {
+                structs: update
+                    .structs
+                    .iter()
+                    .fold(DeleteSet::default(), |mut ranges, (client, nodes)| {
+                        for node in nodes.iter().filter(|node| !matches!(node, Node::Skip(_))) {
+                            ranges.add(*client, node.clock(), node.len());
+                        }
+                        ranges
+                    }),
+                delete_set: update.delete_set.clone(),
+            });
+            Self::integrate_update(tx.store_mut(), store_ref, update)
+        })
+    }
 
-        let changed = std::mem::replace(&mut store.changed, changed_before);
-        // Remote changes move items under the search markers of the types
-        // they touch, also when the update failed half way; Yjs drops those
-        // markers after a remote transaction (`AbstractType._callObserver`).
-        for (ty, keys) in changed {
-            // SAFETY: store write lock held, no type borrowed.
-            if let Some(mut ty) = unsafe { ty.ty_mut() }
-                && let Some(markers) = &mut ty.markers
-            {
-                markers.clear();
+    /// Runs `f` with a consistent read-only view of the document.
+    ///
+    /// The read lock is held until `f` returns. Calling other APIs of this
+    /// document from `f` fails with [JwstCodecError::Reentrant] (or panics,
+    /// for APIs without an error in their signature): read through `tx`.
+    /// Access to a different document from `f` fails with
+    /// [JwstCodecError::NestedDocumentBusy] if its lock is unavailable.
+    pub fn transact<R>(&self, f: impl FnOnce(&Transaction<'_>) -> R) -> JwstCodecResult<R> {
+        let tx = Transaction::begin(&self.store)?;
+        Ok(f(&tx))
+    }
+
+    /// Runs `f` in a write transaction and commits it as one change: one
+    /// commit event, one update, one step of history.
+    ///
+    /// The write lock is held until `f` returns; other threads block. Inside
+    /// `f`, go through `tx` (see [Doc::transact]). If `f` fails, the changes
+    /// it made stay and are committed like any other (there is no rollback)
+    /// and its error is returned. A panic inside `f` leaves the document
+    /// unusable ([JwstCodecError::DocPoisoned]).
+    /// Other documents can be used from `f` when their locks are available
+    /// immediately. Their commit events are deferred until this thread
+    /// releases its outermost document lock.
+    ///
+    /// ```
+    /// use std::sync::{Arc, Mutex};
+    ///
+    /// use y_octo::{Any, Doc, Origin, Value};
+    ///
+    /// let doc = Doc::new();
+    /// let text = doc.get_or_create_text("text").unwrap();
+    /// let meta = doc.get_or_create_map("meta").unwrap();
+    ///
+    /// // keep every commit's update, in commit order
+    /// let saved = Arc::new(Mutex::new(Vec::new()));
+    /// let sink = saved.clone();
+    /// let _subscription = doc.subscribe(move |event| {
+    ///     sink.lock().unwrap().push(event.update.clone());
+    /// });
+    ///
+    /// // several changes, one commit
+    /// doc.transact_mut(Origin::new("editor"), |tx| {
+    ///     tx.text(&text)?.insert(0, "Hello")?;
+    ///     tx.map(&meta)?.insert("title".into(), "Greeting")?;
+    ///     Ok(())
+    /// })
+    /// .unwrap();
+    ///
+    /// // single calls are transactions of their own
+    /// text.clone().insert(5, " world").unwrap();
+    ///
+    /// // a consistent read of several types
+    /// let (title, body) = doc
+    ///     .transact(|tx| (tx.map(&meta).unwrap().get("title"), tx.text(&text).unwrap().to_string()))
+    ///     .unwrap();
+    /// assert_eq!(title, Some(Value::Any(Any::String("Greeting".into()))));
+    /// assert_eq!(body, "Hello world");
+    ///
+    /// // the saved updates rebuild the document
+    /// assert_eq!(saved.lock().unwrap().len(), 2);
+    /// let mut copy = Doc::new();
+    /// for update in saved.lock().unwrap().iter() {
+    ///     copy.apply_update_from_binary_v1(update).unwrap();
+    /// }
+    /// assert_eq!(copy.get_or_create_text("text").unwrap().to_string(), "Hello world");
+    /// ```
+    pub fn transact_mut<R>(
+        &self,
+        origin: impl Into<Option<Origin>>,
+        f: impl FnOnce(&mut TransactionMut<'_>) -> JwstCodecResult<R>,
+    ) -> JwstCodecResult<R> {
+        transact_mut_with(&self.store, origin.into(), true, f)
+    }
+
+    /// Calls `callback` after every commit that changed the document, in
+    /// commit order and outside of the document lock. Commits made from the
+    /// callback are delivered after the current event. If a callback panics,
+    /// delivery continues through the ready events before the first panic
+    /// resumes on the delivering thread. An event uses the subscriptions in
+    /// effect when it was enqueued. Dropping the returned [Subscription]
+    /// excludes future events and leaves deliveries already enqueued intact.
+    pub fn subscribe(&self, callback: impl Fn(&CommitEvent) + Send + Sync + 'static) -> Subscription {
+        self.events.subscribe(Arc::new(callback))
+    }
+
+    /// Like [Doc::subscribe], for the commits that change the type `ty` or
+    /// anything nested in it ([CommitSummary::touches_subtree]). Takes the
+    /// place of Yjs `observeDeep`.
+    pub fn subscribe_subtree(
+        &self,
+        ty: TypeIdentity,
+        callback: impl Fn(&CommitEvent) + Send + Sync + 'static,
+    ) -> Subscription {
+        self.subscribe(move |event| {
+            if event.touches_subtree(&ty) {
+                callback(event)
             }
-            store.changed.entry(ty).or_default().extend(keys);
-        }
-
-        result
+        })
     }
 
     fn integrate_update(store: &mut DocStore, store_ref: &StoreRef, mut update: Update) -> JwstCodecResult {
@@ -444,8 +554,7 @@ impl Doc {
     }
 
     pub fn keys(&self) -> Vec<String> {
-        let store = self.store.read().unwrap();
-        store.types.keys().cloned().collect()
+        or_released(read_store(&self.store).map(|store| store.types.keys().cloned().collect()))
     }
 
     pub fn get_or_create_text<S: AsRef<str>>(&self, name: S) -> JwstCodecResult<Text> {
@@ -509,7 +618,7 @@ impl Doc {
     pub fn encode_state_as_update_v1(&self, sv: &StateVector) -> JwstCodecResult<Vec<u8>> {
         // The diff shares items with the store, so it is encoded under the
         // same read lock.
-        let store = self.store.read().unwrap();
+        let store = read_store(&self.store)?;
         let update = store.diff_state_vector(sv, true)?;
 
         let mut encoder = RawEncoder::default();
@@ -527,18 +636,18 @@ impl Doc {
     }
 
     pub fn get_state_vector(&self) -> StateVector {
-        self.store.read().unwrap().get_state_vector()
+        or_released(read_store(&self.store).map(|store| store.get_state_vector()))
     }
 
     pub fn get_delete_sets(&self) -> DeleteSet {
-        self.store.read().unwrap().get_delete_sets()
+        or_released(read_store(&self.store).map(|store| store.get_delete_sets()))
     }
 
     /// Garbage-collects every deleted struct and merges the whole store.
     /// Updates already collect what they delete; this is the explicit full
     /// pass.
     pub fn gc(&self) -> JwstCodecResult<()> {
-        self.store.write().unwrap().optimize_all();
+        write_store(&self.store)?.optimize_all();
         Ok(())
     }
 }

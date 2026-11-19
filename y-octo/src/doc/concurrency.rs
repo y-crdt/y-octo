@@ -6,6 +6,8 @@
 
 use super::*;
 use crate::sync::thread;
+#[cfg(loom)]
+use crate::sync::{Arc, Mutex};
 
 const BEFORE: &str = "abcdef";
 const AFTER: &str = "acXYdef";
@@ -39,24 +41,27 @@ fn fixture() -> (Doc, Doc, Vec<u8>) {
 /// preemptions.
 fn model(body: fn()) {
     #[cfg(loom)]
-    {
-        let mut builder = loom::model::Builder::new();
-        builder.preemption_bound = Some(2);
-        // every refcount update of a shared item is a loom atomic
-        builder.max_branches = 1 << 20;
-        builder.check(move || {
-            // the model body needs more than loom's default 4 KiB stack
-            loom::thread::Builder::new()
-                .stack_size(256 << 10)
-                .spawn(body)
-                .unwrap()
-                .join()
-                .unwrap();
-        });
-    }
-
+    run_loom_model(body, None);
     #[cfg(not(loom))]
-    body()
+    body();
+}
+
+#[cfg(loom)]
+fn run_loom_model(body: fn(), max_permutations: Option<usize>) {
+    let mut builder = loom::model::Builder::new();
+    builder.preemption_bound = Some(2);
+    builder.max_permutations = max_permutations.or(builder.max_permutations);
+    // Every refcount update of a shared item is a Loom atomic.
+    builder.max_branches = 1 << 20;
+    builder.check(move || {
+        // The model body needs more than Loom's default 4 KiB stack.
+        thread::Builder::new()
+            .stack_size(256 << 10)
+            .spawn(body)
+            .unwrap()
+            .join()
+            .unwrap();
+    });
 }
 
 #[test]
@@ -295,4 +300,175 @@ fn preliminary_mount_is_atomic_with_readers_and_child_edits() {
         );
         assert_eq!(peer.get_state_vector(), doc.get_state_vector());
     });
+}
+
+#[cfg(loom)]
+#[test]
+fn concurrent_and_reentrant_commits_deliver_in_sequence() {
+    run_loom_model(
+        || {
+            let doc = Doc::with_client(1);
+            let text = doc.get_or_create_text("text").unwrap();
+            let seen = Arc::new(Mutex::new(Vec::new()));
+            let sink = seen.clone();
+            let callback_text = text.clone();
+            let _subscription = doc.subscribe(move |event| {
+                sink.lock().unwrap().push(event.seq);
+                if event.seq == 1 {
+                    callback_text.clone().insert(0, "r").unwrap();
+                }
+            });
+            let writers = (0..2)
+                .map(|_| {
+                    let mut text = text.clone();
+                    thread::spawn(move || text.insert(0, "a").unwrap())
+                })
+                .collect::<Vec<_>>();
+            for writer in writers {
+                writer.join().unwrap();
+            }
+            assert_eq!(*seen.lock().unwrap(), vec![1, 2, 3]);
+            assert_eq!(text.len(), 3);
+        },
+        Some(3000),
+    );
+}
+
+#[cfg(loom)]
+#[test]
+fn nested_commit_delivery_waits_for_outer_read_lock() {
+    run_loom_model(
+        || {
+            let outer = Doc::with_client(1);
+            let inner = Doc::with_client(2);
+            let mut text = inner.get_or_create_text("text").unwrap();
+            let seen = Arc::new(Mutex::new(Vec::new()));
+            let sink = seen.clone();
+            let callback_outer = outer.clone();
+            let _subscription = inner.subscribe(move |event| {
+                callback_outer.transact(|_| ()).unwrap();
+                sink.lock().unwrap().push(event.seq);
+            });
+            outer
+                .transact(|_| {
+                    text.insert(0, "a").unwrap();
+                    let mut other = text.clone();
+                    thread::spawn(move || other.insert(0, "b").unwrap()).join().unwrap();
+                    assert!(seen.lock().unwrap().is_empty());
+                })
+                .unwrap();
+            assert_eq!(*seen.lock().unwrap(), vec![1, 2]);
+        },
+        Some(3000),
+    );
+}
+
+#[cfg(loom)]
+fn ordered_documents<const N: usize>() -> [Doc; N] {
+    let mut docs = std::array::from_fn(|_| Doc::with_client(1));
+    docs.sort_by_key(|doc| Arc::as_ptr(&doc.store).addr());
+    docs
+}
+
+#[cfg(loom)]
+#[test]
+fn ordered_store_comparison_waits_for_concurrent_writer() {
+    run_loom_model(
+        || {
+            let [low, high] = ordered_documents();
+            let low_text = low.get_or_create_text("text").unwrap();
+            low_text.clone().insert(0, "ready").unwrap();
+            let high_text = high.get_or_create_text("text").unwrap();
+            let (locked, wait_until_locked) = loom::sync::mpsc::channel();
+            let writer_doc = high.clone();
+            let writer = thread::spawn(move || {
+                writer_doc
+                    .transact_mut(None, |tx| {
+                        locked.send(()).unwrap();
+                        thread::yield_now();
+                        tx.text(&high_text)?.insert(0, "ready")
+                    })
+                    .unwrap();
+            });
+            wait_until_locked.recv().unwrap();
+            assert!(high.store_compare(&low));
+            writer.join().unwrap();
+        },
+        Some(3000),
+    );
+}
+
+#[cfg(loom)]
+#[test]
+fn mixed_order_nesting_checks_every_held_document() {
+    run_loom_model(
+        || {
+            let [low, middle, high] = ordered_documents();
+            let (locked, wait_until_locked) = loom::sync::mpsc::channel();
+            let (checked, wait_until_checked) = loom::sync::mpsc::channel();
+            let writer_doc = middle.clone();
+            let writer = thread::spawn(move || {
+                writer_doc
+                    .transact_mut(None, |_| {
+                        locked.send(()).unwrap();
+                        wait_until_checked.recv().unwrap();
+                        Ok(())
+                    })
+                    .unwrap();
+            });
+            wait_until_locked.recv().unwrap();
+            high.transact(|_| {
+                low.transact(|_| {
+                    // The most recent lock is below middle, but high is
+                    // still held. A request for middle must return promptly.
+                    assert_eq!(middle.transact(|_| ()), Err(JwstCodecError::NestedDocumentBusy));
+                    assert_eq!(
+                        middle.transact_mut(None, |_| Ok(())),
+                        Err(JwstCodecError::NestedDocumentBusy)
+                    );
+                    assert_eq!(high.transact(|_| ()), Err(JwstCodecError::Reentrant));
+                })
+                .unwrap();
+            })
+            .unwrap();
+            checked.send(()).unwrap();
+            writer.join().unwrap();
+        },
+        Some(3000),
+    );
+}
+
+#[cfg(loom)]
+#[test]
+fn contended_nested_read_does_not_wait_across_a_thread_join() {
+    run_loom_model(
+        || {
+            let [low, high] = ordered_documents();
+            let (low_locked, wait_for_low) = loom::sync::mpsc::channel();
+            let (high_locked, wait_for_high) = loom::sync::mpsc::channel();
+            let first_low = low.clone();
+            let first_high = high.clone();
+            let first = thread::spawn(move || {
+                first_low
+                    .transact_mut(None, |_| {
+                        low_locked.send(()).unwrap();
+                        wait_for_high.recv().unwrap();
+                        // Ascending document order cannot account for the
+                        // other transaction's wait on its child thread.
+                        assert_eq!(first_high.transact(|_| ()), Err(JwstCodecError::NestedDocumentBusy));
+                        Ok(())
+                    })
+                    .unwrap();
+            });
+            high.transact_mut(None, |_| {
+                high_locked.send(()).unwrap();
+                wait_for_low.recv().unwrap();
+                thread::spawn(move || low.transact(|_| ()).unwrap()).join().unwrap();
+                Ok(())
+            })
+            .unwrap();
+            first.join().unwrap();
+        },
+        Some(3000),
+    );
 }

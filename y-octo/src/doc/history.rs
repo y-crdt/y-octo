@@ -56,7 +56,7 @@ impl StoreHistory {
     }
 
     pub fn resolve(&self) {
-        let store = self.store.read().unwrap();
+        let store = read_store_or_panic(&self.store);
         self.resolve_with_store(&store);
     }
 
@@ -80,7 +80,7 @@ impl StoreHistory {
 
     pub fn parse_update(&self, update: &Update) -> Vec<History> {
         // the parent chains point into the store
-        let store = self.store.read().unwrap();
+        let store = read_store_or_panic(&self.store);
         let store_items = SortedNodes::new(update.structs.iter().collect::<Vec<_>>())
             .filter_map(|n| n.as_item().get().cloned())
             .collect::<Vec<_>>();
@@ -97,7 +97,7 @@ impl StoreHistory {
         old_sets: &ClientMap<OrderRange>,
         new_sets: &ClientMap<OrderRange>,
     ) -> Vec<History> {
-        let store = self.store.read().unwrap();
+        let store = read_store_or_panic(&self.store);
         let deleted_items = new_sets
             .iter()
             .filter_map(|(id, new_range)| {
@@ -124,7 +124,7 @@ impl StoreHistory {
     }
 
     pub fn parse_store(&self, options: HistoryOptions) -> Vec<History> {
-        let store = self.store.read().unwrap();
+        let store = read_store_or_panic(&self.store);
         let store_items = {
             let client = options
                 .client

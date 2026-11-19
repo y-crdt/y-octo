@@ -43,6 +43,7 @@ arbitrary     = { workspace = true }
 ordered-float = { workspace = true, features = ["arbitrary"] }
 
 [target.'cfg(loom)'.dependencies]
+indexmap = "2"
 loom = { workspace = true }
 # override the dev-dependencies feature
 async-lock = { workspace = true }

@@ -329,7 +329,7 @@ impl Doc {
         rpos: &RelativePosition,
         follow_undone_deletions: bool,
     ) -> Option<AbsolutePosition> {
-        let store = self.store.read().unwrap();
+        let store = read_store_or_panic(&self.store);
         rpos.resolve(&store, follow_undone_deletions)
     }
 }

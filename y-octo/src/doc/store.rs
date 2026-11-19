@@ -10,7 +10,40 @@ use crate::{
     sync::{Arc, RwLock, Weak},
 };
 
+#[cfg(not(loom))]
 pub type ChangedTypeRefs = HashMap<YTypeRef, Vec<SmolStr>>;
+// Type references hash by address. Keep insertion order under Loom so
+// iteration and refcount decrements replay in the same order every time.
+#[cfg(loom)]
+pub type ChangedTypeRefs = indexmap::IndexMap<YTypeRef, Vec<SmolStr>>;
+
+/// What one transaction changed, collected by the store's mutation paths.
+#[derive(Debug, Default)]
+pub(crate) struct Collector {
+    /// changed item's parent, value is the parent's sub key if exists
+    pub changed: ChangedTypeRefs,
+    /// Ranges deleted for the first time: the only ranges GC looks at.
+    pub deleted: DeleteSet,
+    /// Merge candidates besides `deleted` and the new structs: right halves
+    /// of split structs, already deleted children of deleted types, and
+    /// children replaced by GC structs.
+    pub merges: Vec<Id>,
+    /// Subdocument items integrated by this transaction, with their GUIDs.
+    pub subdocs_added: Vec<(Id, String)>,
+    /// GUIDs of subdocument items integrated before this transaction and
+    /// deleted by it.
+    pub subdocs_removed: Vec<String>,
+}
+
+impl Collector {
+    pub fn is_empty(&self) -> bool {
+        self.changed.is_empty()
+            && self.deleted.is_empty()
+            && self.merges.is_empty()
+            && self.subdocs_added.is_empty()
+            && self.subdocs_removed.is_empty()
+    }
+}
 
 #[derive(Default, Debug)]
 pub(crate) struct DocStore {
@@ -26,21 +59,20 @@ pub(crate) struct DocStore {
     pub dangling_types: HashMap<usize, YTypeRef>,
     pub pending: Option<Update>,
     pub last_optimized_state: StateVector,
-    // changed item's parent, value is the parent's sub key if exists
-    pub changed: ChangedTypeRefs,
     // local redo mapping, old id range -> recreated id range
     pub redone: RedoMap,
-    /// Ranges that became deleted since the last [DocStore::optimize]: the
-    /// only ranges the next optimize garbage-collects and merges around.
-    pub gc_pending: DeleteSet,
-    /// Merge candidates outside of `gc_pending` and the newly added structs:
-    /// right halves of structs split since the last [DocStore::optimize],
-    /// already deleted children of types deleted since then, and children
-    /// replaced by GC structs.
-    pub merge_pending: Vec<Id>,
+    /// What the running transaction changed; empty between transactions.
+    pub collector: Collector,
     /// ID ranges garbage collection must keep. Owned by
     /// the history layer; empty until it is wired up.
     pub retained: DeleteSet,
+    /// Whether commits garbage-collect deleted content.
+    pub gc: bool,
+    /// Sequence number of the last commit.
+    pub commit_seq: u64,
+    pub events: Arc<EventHub>,
+    /// History stage of the commit pipeline.
+    pub history_hook: Option<Box<dyn CommitHook>>,
 }
 
 pub(crate) type StoreRef = Arc<RwLock<DocStore>>;
@@ -215,7 +247,7 @@ impl DocStore {
             && let Some(idx) = Self::get_node_index(items, id.clock)
         {
             let (left, right) = Self::split_node_at(items, idx, diff)?;
-            self.merge_pending.push(right.id());
+            self.collector.merges.push(right.id());
             return Ok((left, right));
         }
 
@@ -277,7 +309,7 @@ impl DocStore {
             let offset = id.clock - item.clock();
             if offset > 0 && item.is_item() {
                 let (_, right) = Self::split_node_at(items, index, offset)?;
-                self.merge_pending.push(right.id());
+                self.collector.merges.push(right.id());
                 return Ok(right);
             } else {
                 return Ok(item);
@@ -296,7 +328,7 @@ impl DocStore {
             let offset = id.clock - item.clock();
             if offset != item.len() - 1 && !item.is_gc() {
                 let (left, right) = Self::split_node_at(items, index, offset + 1)?;
-                self.merge_pending.push(right.id());
+                self.collector.merges.push(right.id());
                 return Ok(left);
             } else {
                 return Ok(item);
@@ -627,6 +659,12 @@ impl DocStore {
                     }
                     this.right = right.clone();
 
+                    // Yjs `ContentDoc.integrate`, before a deletion below can
+                    // take it back
+                    if let Content::Doc { guid, .. } = &this.content {
+                        self.collector.subdocs_added.push((this.id, guid.clone()));
+                    }
+
                     // should delete
                     if parent_deleted || this.parent_sub.is_some() && this.right.is_some() {
                         self.delete_node(&Node::Item(item_owner_ref.clone()), Some(parent));
@@ -638,7 +676,7 @@ impl DocStore {
                     }
 
                     // mark changed item's parent
-                    Self::mark_changed(&mut self.changed, ty.clone(), this.parent_sub.clone());
+                    Self::mark_changed(&mut self.collector.changed, ty.clone(), this.parent_sub.clone());
                 } else {
                     // Preserve the integrated clock range when the parent is
                     // missing or collected.
@@ -677,28 +715,21 @@ impl DocStore {
 
     pub fn delete_item(&mut self, item: &Item, parent: Option<&mut YType>) {
         let mut pending_delete_sets = HashMap::new();
-        Self::delete_item_inner(
-            &mut pending_delete_sets,
-            &mut self.merge_pending,
-            &mut self.changed,
-            item,
-            parent,
-        );
+        Self::delete_item_inner(&mut pending_delete_sets, &mut self.collector, item, parent);
         self.add_deleted(pending_delete_sets);
     }
 
     /// Records ranges deleted for the first time.
     fn add_deleted(&mut self, ranges: HashMap<u64, Vec<Range<u64>>>) {
         for (client, ranges) in ranges {
-            self.gc_pending.batch_add_ranges(client, ranges.clone());
+            self.collector.deleted.batch_add_ranges(client, ranges.clone());
             self.delete_set.batch_add_ranges(client, ranges);
         }
     }
 
     fn delete_item_inner(
         delete_set: &mut HashMap<u64, Vec<Range<u64>>>,
-        merges: &mut Vec<Id>,
-        changed: &mut ChangedTypeRefs,
+        collector: &mut Collector,
         item: &Item,
         parent: Option<&mut YType>,
     ) {
@@ -745,9 +776,9 @@ impl DocStore {
                     let mut item_ref = ty.start.clone();
                     while let Some(item) = item_ref.get() {
                         if !item.deleted() {
-                            Self::delete_item_inner(delete_set, merges, changed, item, Some(&mut ty));
+                            Self::delete_item_inner(delete_set, collector, item, Some(&mut ty));
                         } else {
-                            merges.push(item.id);
+                            collector.merges.push(item.id);
                         }
 
                         item_ref = item.right.clone();
@@ -757,23 +788,29 @@ impl DocStore {
                     for item in map_values {
                         if let Some(item) = item.get() {
                             if !item.deleted() {
-                                Self::delete_item_inner(delete_set, merges, changed, item, Some(&mut ty));
+                                Self::delete_item_inner(delete_set, collector, item, Some(&mut ty));
                             } else {
-                                merges.push(item.id);
+                                collector.merges.push(item.id);
                             }
                         }
                     }
                 }
             }
-            Content::Doc { .. } => {
-                // TODO: remove subdoc
+            // Yjs `ContentDoc.delete`: a subdocument added by this
+            // transaction is no longer added, any other one is removed
+            Content::Doc { guid, .. } => {
+                if let Some(pos) = collector.subdocs_added.iter().position(|(id, _)| *id == item.id) {
+                    collector.subdocs_added.swap_remove(pos);
+                } else {
+                    collector.subdocs_removed.push(guid.clone());
+                }
             }
             _ => {}
         }
 
         // mark deleted item's parent
         if let Some(Parent::Type(ty)) = &item.parent {
-            Self::mark_changed(changed, ty.clone(), item.parent_sub.clone());
+            Self::mark_changed(&mut collector.changed, ty.clone(), item.parent_sub.clone());
         }
     }
 
@@ -800,7 +837,7 @@ impl DocStore {
 
                 if !node.deleted() && id.clock < start {
                     let (_, right) = DocStore::split_node_at(items, idx, start - id.clock)?;
-                    self.merge_pending.push(right.id());
+                    self.collector.merges.push(right.id());
                     idx += 1;
                 }
             };
@@ -817,20 +854,14 @@ impl DocStore {
                         //           ^end
                         if end < id.clock + node.len() {
                             let (_, right) = DocStore::split_node_at(items, idx, end - id.clock)?;
-                            self.merge_pending.push(right.id());
+                            self.collector.merges.push(right.id());
                         }
 
                         // borrow after the split: split_node_at mutates the
                         // item in place and would
                         // invalidate a guard acquired earlier
                         if let Some(item) = node.as_item().get() {
-                            Self::delete_item_inner(
-                                &mut pending_delete_sets,
-                                &mut self.merge_pending,
-                                &mut self.changed,
-                                item,
-                                None,
-                            );
+                            Self::delete_item_inner(&mut pending_delete_sets, &mut self.collector, item, None);
                         }
                     }
                 } else {
@@ -902,10 +933,13 @@ impl DocStore {
 
     #[cfg(test)]
     pub fn get_changed(&mut self) -> ChangedTypeRefs {
-        mem::replace(&mut self.changed, HashMap::new())
+        mem::take(&mut self.collector.changed)
     }
 
-    fn diff_structs(map: &ClientMap<VecDeque<Node>>, sv: &StateVector) -> JwstCodecResult<ClientMap<VecDeque<Node>>> {
+    pub(crate) fn diff_structs(
+        map: &ClientMap<VecDeque<Node>>,
+        sv: &StateVector,
+    ) -> JwstCodecResult<ClientMap<VecDeque<Node>>> {
         let local_state_vector = Self::items_as_state_vector(map);
         let diff = Self::diff_state_vectors(&local_state_vector, sv);
         let mut update_structs = ClientMap::new();
@@ -965,13 +999,13 @@ impl DocStore {
     /// recorded split points (`_mergeStructs`). The cost follows the size of
     /// the change, not of the document.
     pub fn optimize(&mut self, gc: bool) {
-        let deleted = mem::take(&mut self.gc_pending);
+        let deleted = mem::take(&mut self.collector.deleted);
 
         if gc {
             self.gc_delete_set(&deleted);
         }
         // includes the children GC just replaced
-        let merges = mem::take(&mut self.merge_pending);
+        let merges = mem::take(&mut self.collector.merges);
         self.merge_delete_set(&deleted);
         self.make_continuous();
         self.merge_split_points(&merges);
@@ -979,7 +1013,7 @@ impl DocStore {
 
     /// Full GC and merge over the whole delete set and every struct.
     pub fn optimize_all(&mut self) {
-        self.gc_pending.merge(&self.delete_set.clone());
+        self.collector.deleted.merge(&self.delete_set.clone());
         self.last_optimized_state = StateVector::default();
         self.optimize(true)
     }
@@ -1044,7 +1078,7 @@ impl DocStore {
             // Overwritten map values are neither in this delete set nor queued
             // by `delete_item_inner`, so Yjs leaves their GC structs unmerged;
             // queue every replaced child instead.
-            self.merge_pending.push(id);
+            self.collector.merges.push(id);
         } else {
             // SAFETY: GC runs under the store write lock with nothing borrowed.
             let mut item = unsafe { item_ref.get_mut_unchecked() };
@@ -1457,50 +1491,52 @@ mod tests {
         loom_model!({
             let doc = DocOptions::new().with_client_id(1).build();
 
-            let mut arr = doc.get_or_create_array("arr").unwrap();
-            let mut text = doc.create_text().unwrap();
-            let mut map = doc.create_map().unwrap();
+            let arr = doc.get_or_create_array("arr").unwrap();
+            let text = doc.create_text().unwrap();
+            let map = doc.create_map().unwrap();
 
-            arr.insert(0, Value::from(text.clone())).unwrap();
-            arr.insert(1, Value::from(map.clone())).unwrap();
-            {
-                let changed = doc.store.write().unwrap().get_changed();
+            // what the transaction collected so far
+            fn collected(tx: &mut TransactionMut<'_>) -> ChangedTypeRefs {
+                tx.store_mut().get_changed()
+            }
+
+            doc.transact_mut(None, |tx| {
+                tx.array(&arr)?.insert(0, Value::from(text.clone()))?;
+                tx.array(&arr)?.insert(1, Value::from(map.clone()))?;
+                let changed = collected(tx);
                 // for array, we will only record the type ref itself
                 assert_eq!(changed.len(), 1);
                 assert_eq!(changed.get(&arr.0), Some(&vec![]));
-            }
 
-            text.insert(0, "hello world").unwrap();
-            text.remove(5, 6).unwrap();
-            {
-                let changed = doc.store.write().unwrap().get_changed();
+                tx.text(&text)?.insert(0, "hello world")?;
+                tx.text(&text)?.remove(5, 6)?;
+                let changed = collected(tx);
                 assert_eq!(changed.len(), 1);
                 assert_eq!(changed.get(&text.0), Some(&vec![]));
-            }
 
-            map.insert("key".into(), 123).unwrap();
-            {
-                let changed = doc.store.write().unwrap().get_changed();
+                tx.map(&map)?.insert("key".into(), 123)?;
+                let changed = collected(tx);
                 assert_eq!(changed.len(), 1);
                 assert_eq!(changed.get(&map.0), Some(&vec!["key".into()]));
-            }
 
-            map.remove("key");
-            {
-                let changed = doc.store.write().unwrap().get_changed();
+                tx.map(&map)?.remove("key");
+                let changed = collected(tx);
                 assert_eq!(changed.len(), 1);
                 assert_eq!(changed.get(&map.0), Some(&vec!["key".into()]));
-            }
 
-            arr.remove(0, 1).unwrap();
-            {
-                let changed = doc.store.write().unwrap().get_changed();
+                tx.array(&arr)?.remove(0, 1)?;
+                let changed = collected(tx);
                 assert_eq!(changed.len(), 2);
                 // text's children mark parent(text) changed
                 assert_eq!(changed.get(&text.0), Some(&vec![]));
                 // text mark parent(arr) changed
                 assert_eq!(changed.get(&arr.0), Some(&vec![]));
-            }
+                Ok(())
+            })
+            .unwrap();
+
+            // the collector is per transaction
+            assert!(doc.store.read().unwrap().collector.is_empty());
         });
     }
 
@@ -1558,15 +1594,10 @@ mod tests {
                 &Content::Deleted(1)
             );
 
-            assert_eq!(
-                store.get_node((1, 1)).unwrap(), // "hello" GCd
-                Node::new_gc((1, 1).into(), 5)
-            );
-
-            assert_eq!(
-                store.get_node((1, 7)).unwrap(), // " world" GCd
-                Node::new_gc((1, 6).into(), 6)
-            );
+            // "hello" and " world" GCd, and merged by the commit
+            let children = store.get_node((1, 7)).unwrap();
+            assert_eq!(children, Node::new_gc((1, 1).into(), 11));
+            assert_eq!(children.len(), 11);
         });
     }
 
@@ -1698,12 +1729,8 @@ mod tests {
 
             assert_eq!(text.to_string(), "abc, hello");
 
-            {
-                let mut store = doc.store.write().unwrap();
-                assert_eq!(store.items.get(&1).unwrap().len(), 4);
-                store.make_continuous();
-                assert_eq!(store.items.get(&1).unwrap().len(), 1);
-            }
+            // every commit merges the structs it added
+            assert_eq!(doc.store.read().unwrap().items.get(&1).unwrap().len(), 1);
             assert_eq!(text.to_string(), "abc, hello");
         });
     }

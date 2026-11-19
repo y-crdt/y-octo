@@ -14,7 +14,7 @@ use std::{
 };
 
 pub use array::*;
-use list::*;
+pub(crate) use list::*;
 pub use map::*;
 pub use text::*;
 pub use value::*;
@@ -175,15 +175,25 @@ impl YTypeRef {
     /// Runs `f` under the owning store's read lock.
     pub fn read<R>(&self, f: impl FnOnce(&DocStore, &YType) -> R) -> JwstCodecResult<R> {
         let store_ref = self.store_ref()?;
-        let store = store_ref.read().unwrap();
+        let store = read_store(&store_ref)?;
         let ty = self.ty().ok_or(JwstCodecError::DocReleased)?;
         Ok(f(&store, ty))
     }
 
-    /// Runs `f` under the owning store's write lock.
+    /// Runs `f` in an implicit write transaction of the owning document.
     pub fn write<R>(&self, f: impl FnOnce(&mut DocStore, &mut YType) -> JwstCodecResult<R>) -> JwstCodecResult<R> {
         let store_ref = self.store_ref()?;
-        let mut store = store_ref.write().unwrap();
+        transact_mut_with(&store_ref, None, true, |tx| self.write_locked(tx.store_mut(), f))
+    }
+
+    /// Runs an edit under the owning document's write lock. Edits before
+    /// mounting use the private store and do not enter the document's
+    /// collector.
+    pub(in crate::doc) fn write_locked<R>(
+        &self,
+        store: &mut DocStore,
+        f: impl FnOnce(&mut DocStore, &mut YType) -> JwstCodecResult<R>,
+    ) -> JwstCodecResult<R> {
         if let Some(root) = self.preliminary_root()? {
             // Move the staging store out while editing so it cannot alias the
             // mutable type data passed to f (the type may itself be the root).
@@ -206,7 +216,7 @@ impl YTypeRef {
             // SAFETY: we hold the store write lock and this is the only
             // reference to the type handed out under it.
             let mut ty = unsafe { self.ty_mut() }.ok_or(JwstCodecError::DocReleased)?;
-            f(&mut store, &mut ty)
+            f(store, &mut ty)
         }
     }
 }
@@ -256,7 +266,7 @@ impl YTypeBuilder {
 
     pub fn build_exists<T: FromTypeRef>(self) -> JwstCodecResult<T> {
         let kind = self.kind;
-        let store = self.store.write().unwrap();
+        let store = write_store(&self.store)?;
         let ty = if let Some(root_name) = &self.root_name {
             match store.types.get(root_name) {
                 Some(ty) => ty.clone(),
@@ -291,7 +301,7 @@ impl YTypeBuilder {
 
     pub fn build<T: FromTypeRef>(self) -> JwstCodecResult<T> {
         let kind = self.kind;
-        let mut store = self.store.write().unwrap();
+        let mut store = write_store(&self.store)?;
         let ty = if let Some(root_name) = self.root_name {
             match store.types.entry(root_name.clone()) {
                 Entry::Occupied(e) => e.get().clone(),
@@ -435,10 +445,11 @@ macro_rules! impl_type {
             type Error = $crate::JwstCodecError;
 
             fn try_from(value: super::YTypeRef) -> Result<Self, Self::Error> {
-                value
-                    .write(|_, inner| inner.set_kind(super::YTypeKind::$name))
-                    .map_err(|_| $crate::JwstCodecError::TypeCastError(std::stringify!($name)))?;
-                Ok($name::new(value))
+                match value.write(|_, inner| inner.set_kind(super::YTypeKind::$name)) {
+                    Ok(()) => Ok($name::new(value)),
+                    Err(err @ ($crate::JwstCodecError::Reentrant | $crate::JwstCodecError::DocPoisoned)) => Err(err),
+                    Err(_) => Err($crate::JwstCodecError::TypeCastError(std::stringify!($name))),
+                }
             }
         }
 

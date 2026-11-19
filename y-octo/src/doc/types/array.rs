@@ -4,6 +4,32 @@ impl_type!(Array);
 
 impl ListType for Array {}
 
+/// The value at `index` of the array type `parent` (data `ty`). The caller
+/// holds the store lock.
+pub(crate) fn array_get(parent: &YTypeRef, ty: &YType, index: u64) -> Option<Value> {
+    let (item, offset) = item_at(parent, ty, index)?;
+    item.get().and_then(|item| {
+        // TODO: rewrite to content.read(&mut [Any])
+        match &item.content {
+            Content::Any(any) => any.get(offset as usize).map(|any| Value::Any(any.clone())),
+            _ => Some(Value::from(&item.content)),
+        }
+    })
+}
+
+/// The values of an array type. The caller holds the store lock while
+/// iterating.
+pub(crate) fn array_values(ty: &YType) -> impl Iterator<Item = Value> + '_ {
+    ListIterator::new(ty)
+        .filter(|item| item.countable())
+        .flat_map(|item| -> Box<dyn Iterator<Item = Value> + '_> {
+            match &item.content {
+                Content::Any(any) if !any.is_empty() => Box::new(any.iter().cloned().map(Value::Any)),
+                content => Box::new(std::iter::once(Value::from(content))),
+            }
+        })
+}
+
 impl Array {
     #[inline(always)]
     pub fn id(&self) -> Option<Id> {
@@ -22,43 +48,21 @@ impl Array {
 
     pub fn get(&self, index: u64) -> Option<Value> {
         let parent = self.as_inner();
-        parent
-            .read(|_, ty| {
-                let (item, offset) = item_at(parent, ty, index)?;
-                item.get().and_then(|item| {
-                    // TODO: rewrite to content.read(&mut [Any])
-                    match &item.content {
-                        Content::Any(any) => any.get(offset as usize).map(|any| Value::Any(any.clone())),
-                        _ => Some(Value::from(&item.content)),
-                    }
-                })
-            })
-            .ok()
-            .flatten()
+        or_released(parent.read(|_, ty| array_get(parent, ty, index)))
     }
 
     /// A snapshot of the values, taken under one store read lock.
     pub fn iter(&self) -> std::vec::IntoIter<Value> {
-        self.as_inner()
-            .read(|_, ty| {
-                let mut values = Vec::with_capacity(ty.len as usize);
-                for item in ListIterator::new(ty) {
-                    if !item.countable() {
-                        continue;
-                    }
-                    match &item.content {
-                        Content::Any(any) if !any.is_empty() => values.extend(any.iter().cloned().map(Value::Any)),
-                        _ => values.push(Value::from(&item.content)),
-                    }
-                }
-                values
-            })
-            .unwrap_or_default()
-            .into_iter()
+        or_released(self.as_inner().read(|_, ty| array_values(ty).collect::<Vec<_>>())).into_iter()
     }
 
     pub fn push<V: Into<Value>>(&mut self, val: V) -> JwstCodecResult {
-        self.push_back(val.into().into())
+        let parent = self.as_inner();
+        let content: Content = val.into().into();
+        parent.write(|store, ty| {
+            let len = ty.len;
+            list_insert(parent, store, ty, len, content)
+        })
     }
 
     pub fn insert<V: Into<Value>>(&mut self, idx: u64, val: V) -> JwstCodecResult {

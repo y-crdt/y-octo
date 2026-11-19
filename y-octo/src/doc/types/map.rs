@@ -9,88 +9,93 @@ impl_type!(Map);
 
 pub(crate) trait MapType: AsInner<Inner = YTypeRef> {
     fn _id(&self) -> Option<Id> {
-        self.as_inner()
-            .read(|_, ty| {
-                if ty.is_preliminary() {
-                    None
-                } else {
-                    ty.item.get().map(|item| item.id)
-                }
-            })
-            .ok()
-            .flatten()
+        or_released(self.as_inner().read(|_, ty| ty.id()))
     }
 
     fn _insert<V: Into<Value>>(&mut self, key: String, value: V) -> JwstCodecResult {
         let parent = self.as_inner();
         let content: Content = value.into().into();
-        parent.write(|store, ty| {
-            check_insertable(parent, ty, &content)?;
-            let key = SmolStr::new(key);
-            let left = ty.map.get(&key).cloned();
-
-            let item = store.create_item(
-                content,
-                left.unwrap_or(Somr::none()),
-                Somr::none(),
-                Some(Parent::Type(parent.clone())),
-                Some(key),
-            );
-            store.integrate(Node::Item(item), 0, Some(ty))
-        })
+        parent.write(|store, ty| map_insert(parent, store, ty, key, content))
     }
 
     fn _get(&self, key: &str) -> Option<Value> {
-        self.as_inner()
-            .read(|_, ty| map_value(ty, key).map(|item| Value::from(&item.content)))
-            .ok()
-            .flatten()
+        or_released(
+            self.as_inner()
+                .read(|_, ty| map_value(ty, key).map(|item| Value::from(&item.content))),
+        )
     }
 
     fn _contains_key(&self, key: &str) -> bool {
-        self.as_inner()
-            .read(|_, ty| map_value(ty, key).is_some())
-            .unwrap_or(false)
+        or_released(self.as_inner().read(|_, ty| map_value(ty, key).is_some()))
     }
 
     fn _remove(&mut self, key: &str) {
-        let _ = self.as_inner().write(|store, ty| {
-            if let Some(item) = ty.map.get(key).cloned()
-                && let Some(item) = item.get()
-            {
-                store.delete_item(item, Some(ty));
-            }
+        let result = self.as_inner().write(|store, ty| {
+            map_remove(store, ty, key);
             Ok(())
         });
+        if result != Err(JwstCodecError::InvalidParent) {
+            or_released(result);
+        }
     }
 
     fn _len(&self) -> u64 {
-        self.as_inner()
-            .read(|_, ty| map_entries(ty).count() as u64)
-            .unwrap_or(0)
+        or_released(self.as_inner().read(|_, ty| map_entries(ty).count() as u64))
     }
 
     /// A snapshot of the visible entries, taken under one store read lock.
     fn _entries(&self) -> Vec<(String, Value)> {
-        self.as_inner()
-            .read(|_, ty| {
-                map_entries(ty)
-                    .map(|(k, item)| (k.to_string(), Value::from(&item.content)))
-                    .collect()
-            })
-            .unwrap_or_default()
+        or_released(self.as_inner().read(|_, ty| {
+            map_entries(ty)
+                .map(|(k, item)| (k.to_string(), Value::from(&item.content)))
+                .collect()
+        }))
     }
 
     fn _keys(&self) -> Vec<String> {
-        self.as_inner()
-            .read(|_, ty| map_entries(ty).map(|(k, _)| k.to_string()).collect())
-            .unwrap_or_default()
+        or_released(
+            self.as_inner()
+                .read(|_, ty| map_entries(ty).map(|(k, _)| k.to_string()).collect()),
+        )
     }
 
     fn _values(&self) -> Vec<Value> {
-        self.as_inner()
-            .read(|_, ty| map_entries(ty).map(|(_, item)| Value::from(&item.content)).collect())
-            .unwrap_or_default()
+        or_released(
+            self.as_inner()
+                .read(|_, ty| map_entries(ty).map(|(_, item)| Value::from(&item.content)).collect()),
+        )
+    }
+}
+
+/// Sets `key` of the map type `parent` (data `ty`). The caller holds the
+/// store write lock.
+pub(crate) fn map_insert(
+    parent: &YTypeRef,
+    store: &mut DocStore,
+    ty: &mut YType,
+    key: String,
+    content: Content,
+) -> JwstCodecResult {
+    check_insertable(parent, ty, &content)?;
+    let key = SmolStr::new(key);
+    let left = ty.map.get(&key).cloned();
+
+    let item = store.create_item(
+        content,
+        left.unwrap_or(Somr::none()),
+        Somr::none(),
+        Some(Parent::Type(parent.clone())),
+        Some(key),
+    );
+    store.integrate(Node::Item(item), 0, Some(ty))
+}
+
+/// Deletes `key` of a map type. The caller holds the store write lock.
+pub(crate) fn map_remove(store: &mut DocStore, ty: &mut YType, key: &str) {
+    if let Some(item) = ty.map.get(key).cloned()
+        && let Some(item) = item.get()
+    {
+        store.delete_item(item, Some(ty));
     }
 }
 

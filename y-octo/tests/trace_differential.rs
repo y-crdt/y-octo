@@ -86,12 +86,41 @@ fn offline_array_marker_regression() {
     )
     .unwrap();
 }
+
+fn check_commit_event_updates(oracle: &mut Oracle, version: &str) {
+    use std::sync::{Arc, Mutex};
+
+    let doc = y_octo::Doc::with_client(1);
+    let mut text = doc.get_or_create_text("text").unwrap();
+    for i in 0..20 {
+        text.insert(0, format!("{i},")).unwrap();
+        if i % 2 == 0 {
+            text.remove(1, 2).unwrap();
+        }
+    }
+    let history = doc.encode_update_v1().unwrap();
+    let updates = Arc::new(Mutex::new(Vec::new()));
+    let sink = updates.clone();
+    let _subscription = doc.subscribe(move |event| sink.lock().unwrap().push(event.update.clone()));
+
+    text.remove(0, 1).unwrap();
+    text.insert(3, "x").unwrap();
+    let updates = updates.lock().unwrap();
+    assert_eq!(updates.len(), 2);
+
+    let trace = serde_json::json!({"replicas":[1],"roots":{"text":"text"}});
+    let wire = std::iter::once(history.as_slice()).chain(updates.iter().map(Vec::as_slice));
+    let actual = oracle.replay_updates(&trace, version, wire).unwrap();
+    assert_eq!(actual, trace::snapshot(&doc, &trace).unwrap(), "Yjs {version}");
+}
+
 #[test]
 #[ignore = "Requires Node and npm ci --prefix y-octo/tests/oracle"]
 fn online_yjs_differential() {
     let mut oracle = Oracle::start().unwrap();
     let mut failures = Vec::new();
     for version in ["13.6.21", "13.6.33"] {
+        check_commit_event_updates(&mut oracle, version);
         for trace in traces().iter().filter(|t| t["known_issue"].is_null()) {
             if matches!(
                 trace["check"]["kind"].as_str(),

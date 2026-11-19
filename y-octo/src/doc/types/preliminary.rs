@@ -6,6 +6,14 @@ impl YType {
     pub(crate) fn is_preliminary(&self) -> bool {
         !self.published
     }
+
+    pub(super) fn id(&self) -> Option<Id> {
+        if self.is_preliminary() {
+            None
+        } else {
+            self.item.get().map(|item| item.id)
+        }
+    }
 }
 
 impl YTypeRef {

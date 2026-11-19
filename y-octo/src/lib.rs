@@ -6,11 +6,13 @@ mod sync;
 
 pub use codec::*;
 pub use doc::{
-    AbsolutePosition, Any, Awareness, AwarenessEvent, Client, ClientMap, Clock, CrdtRead, CrdtReader, CrdtWrite,
-    CrdtWriter, Doc, DocOptions, HashMap as AHashMap, HashMapExt, History, HistoryOptions, Id, RawDecoder, RawEncoder,
+    AbsolutePosition, Any, ArrayRead, ArrayWrite, Awareness, AwarenessEvent, ChangedType, Client, ClientMap, Clock,
+    CommitEvent, CommitSummary, CrdtRead, CrdtReader, CrdtWrite, CrdtWriter, Doc, DocOptions, HashMap as AHashMap,
+    HashMapExt, History, HistoryOptions, Id, IncomingUpdate, MapRead, MapWrite, Origin, RawDecoder, RawEncoder,
     ReadAny, ReadArray, ReadDoc, ReadError, ReadLimits, ReadMap, ReadText, ReadTextRun, ReadValue, RelativePosition,
-    StateVector, StoreHistory, TextAttributes, TextDelta, TextDeltaOp, TextIdentityRun, TextInsert, TypeIdentity,
-    Update, Value, YTypeKind, encode_awareness_as_message, encode_update_as_message, merge_updates_v1,
+    StateVector, StoreHistory, Subscription, TextAttributes, TextDelta, TextDeltaOp, TextIdentityRun, TextInsert,
+    TextRead, TextWrite, Transaction, TransactionMut, TypeIdentity, Update, Value, YTypeKind,
+    encode_awareness_as_message, encode_update_as_message, merge_updates_v1,
     types::{array::Array, map::Map, text::Text},
 };
 pub(crate) use doc::{Content, Item};
@@ -67,6 +69,12 @@ pub enum JwstCodecError {
     ForeignType,
     #[error("Type has already been inserted into a document")]
     TypeAlreadyInserted,
+    #[error("The document is already locked by this thread: inside a transaction, go through the transaction")]
+    Reentrant,
+    #[error("Another document is busy while this thread holds a document lock")]
+    NestedDocumentBusy,
+    #[error("A panic inside a transaction left the document half changed")]
+    DocPoisoned,
     #[error("Unexpected type, expect {0}")]
     UnexpectedType(&'static str),
 }

@@ -12,6 +12,9 @@ mod read;
 mod redo;
 mod relative_position;
 mod store;
+mod transaction;
+#[cfg(all(test, not(loom)))]
+mod transaction_tests;
 pub(crate) mod types;
 mod utils;
 
@@ -40,6 +43,13 @@ pub(crate) use redo::RedoMap;
 pub use relative_position::{AbsolutePosition, RelativePosition};
 use smol_str::SmolStr;
 pub(crate) use store::DocStore;
+pub use transaction::{
+    ArrayRead, ArrayWrite, ChangedType, CommitEvent, CommitSummary, IncomingUpdate, MapRead, MapWrite, Origin,
+    Subscription, TextRead, TextWrite, Transaction, TransactionMut,
+};
+pub(crate) use transaction::{
+    CommitHook, EventHub, or_released, read_store, read_store_or_panic, transact_mut_with, write_store,
+};
 pub use types::*;
 pub use utils::*;
 

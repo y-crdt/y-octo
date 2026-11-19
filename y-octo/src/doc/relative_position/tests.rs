@@ -321,8 +321,8 @@ fn split_and_merge_keep_resolution() {
     let original = resolve_all(&doc, &positions);
     assert_eq!(original, [0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6].map(Some).to_vec());
 
-    // what an undo followed by a redo does: delete the content and recreate
-    // it under new ids, here as three items (1,6..8) (1,8..10) (1,10..12)
+    // Recreate the deleted content under new ids. The commits merge the
+    // adjacent inserts into a single item at (1,6..12).
     text.remove(0, 6).unwrap();
     text.insert(0, "ab").unwrap();
     text.insert(2, "cd").unwrap();
@@ -332,15 +332,17 @@ fn split_and_merge_keep_resolution() {
         .write()
         .unwrap()
         .register_redone(Id::new(1, 0), 6, Id::new(1, 6));
-    assert_eq!(nodes(&doc, 1), 4);
+    assert_eq!(nodes(&doc, 1), 2);
     assert_eq!(resolve_all(&doc, &positions), original);
 
-    // split the old item twice and a recreated item once
+    // Add splits inside both the source and destination of the redo range.
     {
         let mut store = doc.store.write().unwrap();
         store.split_node(Id::new(1, 0), 2).unwrap();
         store.split_node(Id::new(1, 4), 1).unwrap();
+        store.split_node(Id::new(1, 6), 2).unwrap();
         store.split_node(Id::new(1, 8), 1).unwrap();
+        store.split_node(Id::new(1, 9), 1).unwrap();
     }
     assert_eq!(nodes(&doc, 1), 7);
     assert_eq!(resolve_all(&doc, &positions), original);

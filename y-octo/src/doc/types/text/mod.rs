@@ -2,6 +2,7 @@ mod identity;
 use std::{collections::BTreeMap, fmt::Display};
 
 pub use identity::TextIdentityRun;
+pub(crate) use identity::identity_runs;
 
 use super::{
     AsInner, Id,
@@ -67,7 +68,7 @@ impl Text {
     }
 
     pub fn to_delta(&self) -> TextDelta {
-        self.as_inner().read(|_, ty| text_delta(ty)).unwrap_or_default()
+        crate::doc::or_released(self.as_inner().read(|_, ty| text_delta(ty)))
     }
 
     pub fn apply_delta(&mut self, delta: &[TextDeltaOp]) -> JwstCodecResult {
@@ -116,7 +117,12 @@ pub(crate) fn text_delta(ty: &YType) -> TextDelta {
     ops
 }
 
-fn apply_text_delta(parent: &YTypeRef, store: &mut DocStore, ty: &mut YType, delta: &[TextDeltaOp]) -> JwstCodecResult {
+pub(crate) fn apply_text_delta(
+    parent: &YTypeRef,
+    store: &mut DocStore,
+    ty: &mut YType,
+    delta: &[TextDeltaOp],
+) -> JwstCodecResult {
     {
         let mut pos = TextPosition::new(parent.clone(), ty.start.clone());
 
@@ -161,7 +167,7 @@ fn apply_text_delta(parent: &YTypeRef, store: &mut DocStore, ty: &mut YType, del
 
 impl Display for Text {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.as_inner().read(|_, ty| text_string(ty)).unwrap_or_default())
+        f.write_str(&crate::doc::or_released(self.as_inner().read(|_, ty| text_string(ty))))
     }
 }
 

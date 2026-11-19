@@ -25,7 +25,7 @@ impl Text {
 }
 
 /// The caller holds the store lock.
-fn identity_runs(ty: &YType) -> JwstCodecResult<Vec<TextIdentityRun>> {
+pub(crate) fn identity_runs(ty: &YType) -> JwstCodecResult<Vec<TextIdentityRun>> {
     {
         let mut runs = Vec::new();
         let mut attributes = TextAttributes::new();

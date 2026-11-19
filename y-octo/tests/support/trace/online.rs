@@ -100,6 +100,25 @@ impl Oracle {
             None => Err(RequestError::Protocol(format!("invalid oracle response: {response}"))),
         }
     }
+    pub fn replay_updates<'a>(
+        &mut self,
+        trace: &Json,
+        version: &str,
+        updates: impl IntoIterator<Item = &'a [u8]>,
+    ) -> Result<Json> {
+        self.request(json!({"kind":"reset","trace":trace,"version":version}))
+            .map_err(|e| e.context(version, None, "setup", "reset").to_string())?;
+
+        let mut snapshot = Json::Null;
+        for (index, update) in updates.into_iter().enumerate() {
+            let response = self
+                .request(json!({"kind":"cross","at":0,"update":encode_hex(update)}))
+                .map_err(|e| e.context(version, Some(index), "Rust->Yjs", "apply update").to_string())?;
+            snapshot = response["snapshot"].clone();
+        }
+        Ok(snapshot)
+    }
+
     /// Native lanes author independently; cross mirrors consume actual bytes.
     pub fn compare(&mut self, trace: &Json, version: &str) -> std::result::Result<(), Failure> {
         self.request(json!({"kind":"reset","trace":trace,"version":version}))

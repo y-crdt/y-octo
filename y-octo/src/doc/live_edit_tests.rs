@@ -100,6 +100,9 @@ fn partial_remote_apply_preserves_changes_and_invalidates_only_touched_markers()
 
     let mut map = doc.get_or_create_map("map").unwrap();
     map.insert("local".into(), 1).unwrap();
+    let commits = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sink = commits.clone();
+    let _subscription = doc.subscribe(move |event| sink.lock().unwrap().push(event.clone()));
     let state = doc.get_state_vector();
     let mut peer = Doc::with_client(2);
     sync(&doc, &mut peer);
@@ -132,9 +135,22 @@ fn partial_remote_apply_preserves_changes_and_invalidates_only_touched_markers()
     assert_eq!(map.get("local"), Some(Value::Any(Any::Integer(1))));
     assert_eq!(map.get("remote"), Some(Value::Any(Any::Integer(2))));
 
-    let store = doc.store.read().unwrap();
-    assert!(store.changed.contains_key(&untouched.0));
-    assert_eq!(store.changed.get(&map.0), Some(&vec!["local".into(), "remote".into()]));
+    let commits = commits.lock().unwrap();
+    assert_eq!(commits.len(), 1);
+    let event = &commits[0];
+    assert!(!event.local);
+    assert_eq!(event.changed.len(), 2);
+    assert!(event.touches_subtree(&TypeIdentity::Root("text".into())));
+    assert_eq!(
+        event
+            .changed
+            .iter()
+            .find(|entry| entry.identity == TypeIdentity::Root("map".into())),
+        Some(&ChangedType {
+            identity: TypeIdentity::Root("map".into()),
+            keys: vec!["remote".into()],
+        })
+    );
 }
 
 /// Local index edits interleaved with remote inserts and deletes: the local
