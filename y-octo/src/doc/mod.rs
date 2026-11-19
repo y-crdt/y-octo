@@ -1,27 +1,17 @@
 mod awareness;
-#[cfg(all(test, not(loom), not(feature = "random")))]
-mod client_identity_tests;
 mod codec;
 mod common;
-#[cfg(test)]
-mod concurrency;
 mod document;
-#[cfg(all(test, not(loom)))]
-mod hardening_tests;
 mod hasher;
 mod history;
-#[cfg(all(test, not(loom)))]
-mod live_edit_tests;
-#[cfg(all(test, not(loom)))]
-mod local_update_tests;
 mod read;
 mod redo;
 mod relative_position;
 mod retention;
 mod store;
+#[cfg(test)]
+mod tests;
 mod transaction;
-#[cfg(all(test, not(loom)))]
-mod transaction_tests;
 pub(crate) mod types;
 mod undo;
 mod utils;

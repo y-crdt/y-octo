@@ -976,6 +976,11 @@ fn missing_dependencies(update: &Update, state: StateVector) -> StateVector {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(all(not(loom), not(feature = "random")))]
+    mod client_identity;
+    #[cfg(not(loom))]
+    mod local_update;
+
     use super::*;
 
     #[test]
@@ -1523,11 +1528,11 @@ mod tests {
     #[cfg_attr(any(miri, loom), ignore)]
     fn test_apply_update() {
         let updates = [
-            include_bytes!("../fixtures/basic.bin").to_vec(),
-            include_bytes!("../fixtures/database.bin").to_vec(),
-            include_bytes!("../fixtures/large.bin").to_vec(),
-            include_bytes!("../fixtures/with-subdoc.bin").to_vec(),
-            include_bytes!("../fixtures/edge-case-left-right-same-node.bin").to_vec(),
+            include_bytes!("../../fixtures/basic.bin").to_vec(),
+            include_bytes!("../../fixtures/database.bin").to_vec(),
+            include_bytes!("../../fixtures/large.bin").to_vec(),
+            include_bytes!("../../fixtures/with-subdoc.bin").to_vec(),
+            include_bytes!("../../fixtures/edge-case-left-right-same-node.bin").to_vec(),
         ];
 
         for update in updates {

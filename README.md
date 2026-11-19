@@ -31,6 +31,10 @@ The default decoder accepts `Any` nesting up to 128 levels. For trusted inputs, 
 
 ## Who are using
 
+<a href="https://affine.pro"><img src="./assets/affine.svg" /></a>
+
+[AFFiNE](https://affine.pro) is using y-octo in production. There are [Electron](https://affine.pro/download) app and [Node.js server](https://github.com/toeverything/AFFiNE/tree/canary/packages/backend/native) using y-octo in production.
+
 <a href="https://www.mysc.app/"><img src="https://www.mysc.app/images/logo_blk.webp" width="120px" /></a>
 
 [Mysc](https://www.mysc.app/) is using y-octo in the Rust server, and the iOS/Android client via the Swift/Kotlin bindings (Official bindings coming soon).
@@ -47,6 +51,8 @@ The default decoder accepts `Any` nesting up to 128 levels. For trusted inputs, 
 | parallel applying automerge edits | 57192.59 ± 464.50 ms | 10216.50 ± 120.33 ms | 96.83 ± 0.37 ms | 1157.47 ± 14.51 ms | 5416.23 ± 54.97 ms |
 
 The parallel workload applies the full Automerge trace to two replicas in random batches of 1–1000 local edits, synchronizes after each pair of batches, and verifies replica convergence.
+
+Ref: https://github.com/darkskygit/crdt-bench-native
 
 ## Features
 

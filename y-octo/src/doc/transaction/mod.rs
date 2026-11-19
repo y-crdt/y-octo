@@ -15,6 +15,9 @@
 //!
 //! and 7., after unlocking, delivers queued events in commit order.
 
+#[cfg(all(test, not(loom)))]
+mod tests;
+
 use std::{
     any::{Any as StdAny, TypeId, type_name},
     cell::RefCell,
