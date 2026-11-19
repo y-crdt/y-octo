@@ -1,0 +1,35 @@
+name: ClusterFuzzLite continuous builds
+
+# Builds and uploads fuzzers on every push to main. PR fuzzing uses these
+# builds to tell newly introduced crashes from pre-existing ones.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions: read-all
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: continuous fuzzer build
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        sanitizer: [address]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build fuzzers (${{ matrix.sanitizer }})
+        id: build
+        uses: google/clusterfuzzlite/actions/build_fuzzers@v1
+        with:
+          language: rust
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          sanitizer: ${{ matrix.sanitizer }}
+          upload-build: true

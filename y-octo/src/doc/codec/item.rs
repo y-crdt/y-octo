@@ -14,6 +14,8 @@ pub(crate) enum Parent {
 #[cfg_attr(all(test, not(loom)), derive(proptest_derive::Arbitrary))]
 pub(crate) struct Item {
     pub id: Id,
+    #[cfg_attr(all(test, not(loom)), proptest(value = "0"))]
+    pub(crate) len: u64,
     pub origin_left_id: Option<Id>,
     pub origin_right_id: Option<Id>,
     #[cfg_attr(all(test, not(loom)), proptest(value = "Somr::none()"))]
@@ -36,6 +38,8 @@ impl PartialEq for Item {
         self.id == other.id
     }
 }
+
+impl Eq for Item {}
 
 impl std::fmt::Debug for Item {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -77,6 +81,7 @@ impl Default for Item {
     fn default() -> Self {
         Self {
             id: Id::default(),
+            len: 0,
             origin_left_id: None,
             origin_right_id: None,
             left: Somr::none(),
@@ -98,6 +103,7 @@ impl Item {
         parent: Option<Parent>,
         parent_sub: Option<SmolStr>,
     ) -> Self {
+        let len = content.clock_len();
         let flags = ItemFlag::from(if content.countable() {
             item_flags::ITEM_COUNTABLE
         } else {
@@ -106,6 +112,7 @@ impl Item {
 
         Self {
             id,
+            len,
             origin_left_id: left.get().map(|left| left.last_id()),
             left,
             origin_right_id: right.get().map(|right| right.id),
@@ -138,7 +145,18 @@ impl Item {
     }
 
     pub fn len(&self) -> u64 {
-        self.content.clock_len()
+        self.len
+    }
+
+    pub(crate) fn replace_content(&mut self, content: Content) {
+        let len = content.clock_len();
+        self.replace_content_with_len(content, len);
+    }
+
+    pub(crate) fn replace_content_with_len(&mut self, content: Content, len: u64) {
+        debug_assert_eq!(content.clock_len(), len);
+        self.content = content;
+        self.len = len;
     }
 
     pub fn deleted(&self) -> bool {
@@ -170,43 +188,28 @@ impl Item {
     pub fn last_id(&self) -> Id {
         let Id { client, clock } = self.id;
 
-        Id::new(client, clock + self.len() - 1)
+        // degenerate zero-length structs are accepted on decode; avoid
+        // underflowing when computing their last id
+        Id::new(client, clock + self.len().saturating_sub(1))
     }
 
     pub fn split_at(&self, offset: u64) -> JwstCodecResult<(Self, Self)> {
-        debug_assert!(offset > 0 && self.len() > 1 && offset < self.len());
-        let id = self.id;
-        let right_id = Id::new(id.client, id.clock + offset);
+        debug_assert!(offset > 0 && offset < self.len());
         let (left_content, right_content) = self.content.split(offset)?;
-
-        let left_item = Item::new(
-            id,
-            left_content,
-            // let caller connect left <-> node <-> right
-            Somr::none(),
-            Somr::none(),
-            self.parent.clone(),
-            self.parent_sub.clone(),
-        );
-
-        let right_item = Item::new(
-            right_id,
-            right_content,
-            // let caller connect left <-> node <-> right
-            Somr::none(),
-            Somr::none(),
-            self.parent.clone(),
-            self.parent_sub.clone(),
-        );
-
-        if left_item.deleted() {
-            left_item.flags.set_deleted();
-        }
-        if left_item.keep() {
-            left_item.flags.set_keep();
-        }
-
-        Ok((left_item, right_item))
+        // Keep flags and wire origins, but detach links for the caller to
+        // reconnect. Copying the items also keeps raw merge/SV slicing from
+        // mutating shared inputs.
+        let mut left = self.clone();
+        let mut right = self.clone();
+        left.left = Somr::none();
+        left.right = Somr::none();
+        left.replace_content_with_len(left_content, offset);
+        right.id.clock += offset;
+        right.origin_left_id = Some(Id::new(self.id.client, right.id.clock - 1));
+        right.left = Somr::none();
+        right.right = Somr::none();
+        right.replace_content_with_len(right_content, self.len() - offset);
+        Ok((left, right))
     }
 
     fn get_info(&self) -> u8 {
@@ -225,71 +228,10 @@ impl Item {
         info
     }
 
+    #[cfg(test)]
     pub fn is_valid(&self) -> bool {
         let has_id = self.origin_left_id.is_some() || self.origin_right_id.is_some();
         !has_id && self.parent.is_some() || has_id && self.parent.is_none() && self.parent_sub.is_none()
-    }
-
-    pub fn read<R: CrdtReader>(decoder: &mut R, id: Id, info: u8, first_5_bit: u8) -> JwstCodecResult<Self> {
-        let flags: ItemFlag = info.into();
-        let has_left_id = flags.check(item_flags::ITEM_HAS_LEFT_ID);
-        let has_right_id = flags.check(item_flags::ITEM_HAS_RIGHT_ID);
-        let has_parent_sub = flags.check(item_flags::ITEM_HAS_PARENT_SUB);
-        let has_not_sibling = flags.not(item_flags::ITEM_HAS_SIBLING);
-
-        // NOTE: read order must keep the same as the order in yjs
-        // TODO: this data structure design will break the cpu OOE, need to be optimized
-        let item = Self {
-            id,
-            origin_left_id: if has_left_id {
-                Some(decoder.read_item_id()?)
-            } else {
-                None
-            },
-            origin_right_id: if has_right_id {
-                Some(decoder.read_item_id()?)
-            } else {
-                None
-            },
-            parent: {
-                if has_not_sibling {
-                    let has_parent = decoder.read_var_u64()? == 1;
-                    Some(if has_parent {
-                        Parent::String(SmolStr::new(decoder.read_var_string()?))
-                    } else {
-                        Parent::Id(decoder.read_item_id()?)
-                    })
-                } else {
-                    None
-                }
-            },
-            parent_sub: if has_not_sibling && has_parent_sub {
-                Some(SmolStr::new(decoder.read_var_string()?))
-            } else {
-                None
-            },
-            content: {
-                // tag must not GC or Skip, this must process in parse_struct
-                debug_assert_ne!(first_5_bit, 0);
-                debug_assert_ne!(first_5_bit, 10);
-                Content::read(decoder, first_5_bit)?
-            },
-            left: Somr::none(),
-            right: Somr::none(),
-            flags: ItemFlag::from(0),
-        };
-
-        if item.content.countable() {
-            item.flags.set_countable();
-        }
-
-        if matches!(item.content, Content::Deleted(_)) {
-            item.flags.set_deleted();
-        }
-
-        debug_assert!(item.is_valid());
-
-        Ok(item)
     }
 
     pub fn write<W: CrdtWriter>(&self, encoder: &mut W) -> JwstCodecResult {
@@ -317,14 +259,15 @@ impl Item {
                         encoder.write_item_id(id)?;
                     }
                     Parent::Type(ty) => {
-                        if let Some(ty) = ty.ty() {
-                            if let Some(item) = ty.item.get() {
-                                encoder.write_var_u64(0)?;
-                                encoder.write_item_id(&item.id)?;
-                            } else if let Some(name) = &ty.root_name {
-                                encoder.write_var_u64(1)?;
-                                encoder.write_var_string(name)?;
-                            }
+                        let ty = ty.ty().ok_or(JwstCodecError::InvalidParent)?;
+                        if let Some(item) = ty.item.get() {
+                            encoder.write_var_u64(0)?;
+                            encoder.write_item_id(&item.id)?;
+                        } else if let Some(name) = &ty.root_name {
+                            encoder.write_var_u64(1)?;
+                            encoder.write_var_string(name)?;
+                        } else {
+                            return Err(JwstCodecError::InvalidParent);
                         }
                     }
                 }
@@ -400,7 +343,11 @@ mod tests {
 
     #[cfg(not(loom))]
     fn item_round_trip(item: &mut Item) -> JwstCodecResult {
+        item.len = item.content.clock_len();
         if !item.is_valid() {
+            return Ok(());
+        }
+        if item.content.clock_len() == 0 || item.id.clock.checked_add(item.content.clock_len()).is_none() {
             return Ok(());
         }
 
@@ -408,17 +355,15 @@ mod tests {
             item.flags.set_countable();
         }
 
-        let mut encoder = RawEncoder::default();
-        item.write(&mut encoder)?;
+        let mut update = Update::default();
+        update.structs.insert(item.id.client, [Node::from(item.clone())].into());
+        let decoded = Update::decode_v1(update.encode_v1()?)?;
+        let decoded_item = match decoded.structs.get(&item.id.client).unwrap().front().unwrap() {
+            Node::Item(item) => item.get().unwrap(),
+            _ => unreachable!(),
+        };
 
-        let update = encoder.into_inner();
-        let mut decoder = RawDecoder::new(&update);
-
-        let info = decoder.read_info()?;
-        let first_5_bit = info & 0b11111;
-        let decoded_item = Item::read(&mut decoder, item.id, info, first_5_bit)?;
-
-        assert_eq!(item, &decoded_item);
+        assert_eq!(item, decoded_item);
 
         Ok(())
     }

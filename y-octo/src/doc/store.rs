@@ -11,6 +11,7 @@ use crate::{
 };
 
 pub type ChangedTypeRefs = HashMap<YTypeRef, Vec<SmolStr>>;
+type PendingTypes = HashMap<Id, YTypeRef>;
 
 unsafe impl Send for DocStore {}
 unsafe impl Sync for DocStore {}
@@ -24,7 +25,8 @@ pub(crate) struct DocStore {
     // following fields are only used in memory
     pub types: HashMap<String, YTypeRef>,
     // types created from this store but with no names,
-    // we store it here to keep the ownership inside store without being released.
+    // we store it here to keep the ownership inside store without being
+    // released.
     pub dangling_types: HashMap<usize, YTypeRef>,
     pub pending: Option<Update>,
     pub last_optimized_state: StateVector,
@@ -93,7 +95,7 @@ impl DocStore {
             if let Some(last_struct) = structs.back() {
                 last_struct.clock() + last_struct.len()
             } else {
-                warn!("client {} has no struct info", client);
+                warn!("client {client} has no struct info");
                 0
             }
         } else {
@@ -115,7 +117,7 @@ impl DocStore {
             if let Some(last_struct) = structs.back() {
                 state.insert(*client, last_struct.clock() + last_struct.len());
             } else {
-                warn!("client {} has no struct info", client);
+                warn!("client {client} has no struct info");
             }
         }
         state
@@ -147,28 +149,9 @@ impl DocStore {
 
     /// binary search struct info on a sorted array
     pub fn get_node_index(items: &VecDeque<Node>, clock: Clock) -> Option<usize> {
-        let mut left = 0;
-        let mut right = items.len() - 1;
-        let middle = &items[right];
-        let middle_clock = middle.clock();
-        if middle_clock == clock {
-            return Some(right);
-        }
-        let mut middle_index = (clock / (middle_clock + middle.len() - 1)) as usize * right;
-        while left <= right {
-            let middle = &items[middle_index];
-            let middle_clock = middle.clock();
-            if middle_clock <= clock {
-                if clock < middle_clock + middle.len() {
-                    return Some(middle_index);
-                }
-                left = middle_index + 1;
-            } else {
-                right = middle_index - 1;
-            }
-            middle_index = (left + right) / 2;
-        }
-        None
+        find_clock_segment(items.len(), clock, |index| {
+            items.get(index).map(|node| (node.clock(), node.len()))
+        })
     }
 
     pub fn create_item(
@@ -235,11 +218,13 @@ impl DocStore {
 
             // SAFETY:
             // we make sure store is the only entry of mutating an item,
-            // and we already hold mutable reference of store, so it's safe to do so
+            // and we already hold mutable reference of store, so it's safe to
+            // do so
             unsafe {
                 let mut left_item = item_ref.get_mut_unchecked();
                 let mut right_item = right_ref.get_mut_unchecked();
-                left_item.content = left_ref.get_unchecked().content.clone();
+                left_item
+                    .replace_content_with_len(left_ref.get_unchecked().content.clone(), left_ref.get_unchecked().len());
 
                 // we had the correct left/right content
                 // now build the references
@@ -346,7 +331,7 @@ impl DocStore {
     ///       `doc.get_or_create_text("content")`)
     ///     - [Parent::Id] for type as item (e.g `doc.create_text()`)
     ///     - [None] means borrow left.parent or right.parent
-    pub fn repair(&mut self, item: &mut Item, store_ref: StoreRef) -> JwstCodecResult {
+    pub fn repair(&mut self, item: &mut Item, store_ref: StoreRef, pending_types: &PendingTypes) -> JwstCodecResult {
         if let Some(left_id) = item.origin_left_id {
             if let Node::Item(left_ref) = self.split_at_and_get_left(left_id)? {
                 item.origin_left_id = left_ref.get().map(|left| left.last_id());
@@ -392,8 +377,12 @@ impl DocStore {
                         }
                     }
                     _ => {
-                        // GC & Skip are not valid parent, take it.
-                        item.parent.take();
+                        if let Some(ty) = pending_types.get(parent_id) {
+                            item.parent.replace(Parent::Type(ty.clone()));
+                        } else {
+                            // GC & Skip are not valid parent, take it.
+                            item.parent.take();
+                        }
                     }
                 }
             }
@@ -410,12 +399,13 @@ impl DocStore {
             _ => {}
         };
 
-        // assign store in ytype to ensure store exists if a ytype not has any children
+        // assign store in ytype to ensure store exists if a ytype not has any
+        // children
         if let Content::Type(ty) = &mut item.content {
             ty.store = Arc::downgrade(&store_ref);
 
-            // we keep ty owner in dangling_types so the delete of any type will not make it
-            // dropped
+            // we keep ty owner in dangling_types so the delete of any type will
+            // not make it dropped
             if ty.inner.is_owned() {
                 let owned_inner = ty.inner.swap_take();
                 self.dangling_types.insert(
@@ -444,7 +434,8 @@ impl DocStore {
                 // SAFETY:
                 // before we integrate struct into store,
                 // the struct => Arc<Item> is owned reference actually,
-                // no one else refer to such item yet, we can safely mutable refer to it now.
+                // no one else refer to such item yet, we can safely mutable
+                // refer to it now.
                 let this = &mut *unsafe { item_owner_ref.get_mut_unchecked() };
 
                 if offset > 0 {
@@ -455,10 +446,46 @@ impl DocStore {
                         this.origin_left_id = left_ref.get().map(|left| left.last_id());
                         this.left = left_ref;
                     }
-                    this.content = this.content.split(offset)?.1;
+                    let right_content = this.content.split(offset)?.1;
+                    this.replace_content_with_len(right_content, this.len - offset);
                 }
 
                 if let Some(Parent::Type(ty)) = &this.parent {
+                    // Corrupt updates may nest a type into itself or one of its
+                    // own descendants. Deleting items of such cyclic types
+                    // would re-lock an already held type lock and deadlock the
+                    // thread, so reject the cycle here instead.
+                    if let Content::Type(inner) = &this.content {
+                        if inner == ty {
+                            return Err(JwstCodecError::InvalidParent);
+                        }
+                        // When integrating from an update no type lock is held
+                        // yet, so the ancestry can be walked safely with read
+                        // locks. Mutation callers already hold the parent lock
+                        // and can only create direct loops, checked above.
+                        if parent.is_none() {
+                            let next_ancestor = |current: &YTypeRef| {
+                                current.ty().and_then(|t| {
+                                    t.item.get().and_then(|item| match &item.parent {
+                                        Some(Parent::Type(parent_ty)) => Some(parent_ty.clone()),
+                                        _ => None,
+                                    })
+                                })
+                            };
+                            let mut visited = HashSet::new();
+                            let mut ancestor = next_ancestor(ty);
+                            while let Some(current) = ancestor {
+                                if !visited.insert(current.clone()) {
+                                    break;
+                                }
+                                if current == *inner {
+                                    return Err(JwstCodecError::InvalidParent);
+                                }
+                                ancestor = next_ancestor(&current);
+                            }
+                        }
+                    }
+
                     let mut parent_lock: Option<RwLockWriteGuard<YType>> = None;
                     let parent = if let Some(p) = parent {
                         p
@@ -485,61 +512,52 @@ impl DocStore {
                     // conflicts
                     if left.is_none() && right_is_null_or_has_left || left_has_other_right_than_self {
                         // set the first conflicting item
-                        let mut conflict = if let Some(left) = left.get() {
+                        let conflict = if let Some(left) = left.get() {
                             left.right.clone()
                         } else if let Some(parent_sub) = &this.parent_sub {
-                            parent.map.get(parent_sub).cloned().unwrap_or(Somr::none())
+                            // The map stores the winning tail; conflict
+                            // scanning without a left neighbor must start at
+                            // the chain head.
+                            parent
+                                .map
+                                .get(parent_sub)
+                                .map(|item| Node::Item(item.clone()).head().as_item())
+                                .unwrap_or_else(Somr::none)
                         } else {
                             parent.start.clone()
                         };
 
-                        let mut conflicting_items = HashSet::new();
-                        let mut items_before_origin = HashSet::new();
-
-                        while conflict.is_some() {
-                            if conflict == right {
-                                break;
-                            }
-                            if let Some(conflict_item) = conflict.get() {
-                                let conflict_id = conflict_item.id;
-
-                                items_before_origin.insert(conflict_id);
-                                conflicting_items.insert(conflict_id);
-
-                                if this.origin_left_id == conflict_item.origin_left_id {
-                                    // case 1
-                                    if conflict_id.client < this.id.client {
-                                        left = conflict.clone();
-                                        conflicting_items.clear();
-                                    } else if this.origin_right_id == conflict_item.origin_right_id {
-                                        // `this` and `c` are conflicting and point to the same
-                                        // integration points. The id decides which item comes first.
-                                        // Since `this` is to the left of `c`, we can break here.
-                                        break;
-                                    }
-                                } else if let Some(conflict_item_left) = conflict_item.origin_left_id {
-                                    if items_before_origin.contains(&conflict_item_left)
-                                        && !conflicting_items.contains(&conflict_item_left)
-                                    {
-                                        left = conflict.clone();
-                                        conflicting_items.clear();
-                                    }
-                                } else {
-                                    break;
-                                }
-
-                                conflict = conflict_item.right.clone();
-                            } else {
-                                break;
-                            }
-                        }
+                        left = find_conflict_left(
+                            ConflictItem {
+                                id: this.id,
+                                origin_left: this.origin_left_id,
+                                origin_right: this.origin_right_id,
+                            },
+                            left.is_some().then(|| left.clone()),
+                            conflict.is_some().then(|| conflict.clone()),
+                            right.is_some().then(|| right.clone()),
+                            |item| {
+                                item.get().map(|item| ConflictItem {
+                                    id: item.id,
+                                    origin_left: item.origin_left_id,
+                                    origin_right: item.origin_right_id,
+                                })
+                            },
+                            |item| {
+                                item.get()
+                                    .and_then(|item| item.right.is_some().then(|| item.right.clone()))
+                            },
+                            |id| self.get_node(id).map(|node| node.id()),
+                        )
+                        .unwrap_or_else(Somr::none);
                     }
 
                     // reconnect left/right
                     // has left, connect left <-> self <-> left.right
                     if left.is_some() {
                         unsafe {
-                            // SAFETY: we get store write lock, no way the left get dropped by owner
+                            // SAFETY: we get store write lock, no way the left
+                            // get dropped by owner
                             let mut left = left.get_mut_unchecked();
                             right = left.right.clone();
                             left.right = item_owner_ref.clone();
@@ -558,7 +576,8 @@ impl DocStore {
                     // has right, connect
                     if right.is_some() {
                         unsafe {
-                            // SAFETY: we get store write lock, no way the left get dropped by owner
+                            // SAFETY: we get store write lock, no way the left
+                            // get dropped by owner
                             let mut right = right.get_mut_unchecked();
                             right.left = item_owner_ref.clone();
                         }
@@ -593,7 +612,8 @@ impl DocStore {
                 } else {
                     // if parent not exists, integrate GC node instead
                     // don't delete it because it may referenced by other nodes
-                    // if all nodes that reference it are deleted, it will merged into one gc node
+                    // if all nodes that reference it are deleted, it will
+                    // merged into one gc node
                     node = Node::new_gc(node.id(), node.len());
                 }
             }
@@ -716,9 +736,7 @@ impl DocStore {
                 let id = node.id();
 
                 if id.clock < end {
-                    if !node.deleted()
-                        && let Some(item) = node.as_item().get()
-                    {
+                    if !node.deleted() && node.is_item() {
                         // need to split the item
                         // -----item-----
                         //           ^end
@@ -726,7 +744,12 @@ impl DocStore {
                             DocStore::split_node_at(items, idx, end - id.clock)?;
                         }
 
-                        Self::delete_item_inner(&mut pending_delete_sets, &mut self.changed, item, None);
+                        // borrow after the split: split_node_at mutates the
+                        // item in place and would
+                        // invalidate a guard acquired earlier
+                        if let Some(item) = node.as_item().get() {
+                            Self::delete_item_inner(&mut pending_delete_sets, &mut self.changed, item, None);
+                        }
                     }
                 } else {
                     break;
@@ -770,7 +793,11 @@ impl DocStore {
         };
 
         if with_pending && let Some(pending) = &self.pending {
-            Update::merge_into(&mut update, [pending.clone()])
+            let mut pending = pending.clone();
+            // Pending does not mean unknown to the recipient. Apply its SV to
+            // these ranges too, while retaining deletions for missing targets.
+            pending.structs = Self::diff_structs(&pending.structs, sv)?;
+            Update::merge_into(&mut update, [pending]);
         }
 
         Ok(update)
@@ -810,9 +837,12 @@ impl DocStore {
                 let clock = items.front().unwrap().id().clock.max(clock);
                 if let Some(index) = Self::get_node_index(items, clock) {
                     let first_block = items.get(index).unwrap();
-                    let offset = first_block.clock() - clock;
+                    // The recipient clock may fall inside a compacted struct;
+                    // split a detached copy so generating a diff leaves the
+                    // store unchanged.
+                    let offset = clock - first_block.clock();
                     if offset != 0 {
-                        vec_struct_info.push_back(first_block.clone().split_at(offset)?.1);
+                        vec_struct_info.push_back(first_block.split_at(offset)?.1);
                     } else {
                         vec_struct_info.push_back(first_block.clone());
                     }
@@ -844,8 +874,8 @@ impl DocStore {
     pub fn optimize(&mut self) -> JwstCodecResult {
         //  1. gc delete set
         self.gc_delete_set()?;
-        //  2. merge delete set (in our delete set impl, which is based on `OrderRange`
-        //     has already have auto-merge functionality), pass
+        //  2. merge delete set (in our delete set impl, which is based on
+        //     `OrderRange` has already have auto-merge functionality), pass
         //  3. merge same content siblings, e.g contentString + ContentString
         self.make_continuous();
         Ok(())
@@ -867,17 +897,7 @@ impl DocStore {
                             }
 
                             if !item.keep() {
-                                let parent_gced = matches!(&item.parent, Some(p) if {
-                                    if let Parent::Type(ty) = p {
-                                        if let Some(ty) = ty.ty() {
-                                            (ty.start.is_none() && ty.map.is_empty()) || ty.item.get().map(|item|item.deleted()).unwrap_or(false)
-                                        } else {
-                                            false
-                                        }
-                                    } else {
-                                        false
-                                    }
-                                });
+                                let parent_gced = Self::parent_is_gced(item);
                                 Self::gc_item(items, idx, parent_gced)?;
                             }
                         }
@@ -888,7 +908,44 @@ impl DocStore {
             }
         }
 
+        loop {
+            let mut replaced = 0usize;
+            for items in self.items.values_mut() {
+                for idx in 0..items.len() {
+                    let should_gc = match &items[idx] {
+                        Node::Item(item_ref) => item_ref
+                            .get()
+                            .is_some_and(|item| !item.keep() && Self::parent_is_gced(item)),
+                        _ => false,
+                    };
+                    if should_gc {
+                        Self::gc_item(items, idx, true)?;
+                        replaced += 1;
+                    }
+                }
+            }
+            if replaced == 0 {
+                break;
+            }
+        }
+
         Ok(())
+    }
+
+    fn parent_is_gced(item: &Item) -> bool {
+        let Some(Parent::Type(parent)) = &item.parent else {
+            return false;
+        };
+        let Some(parent) = parent.ty() else {
+            return true;
+        };
+
+        (parent.start.is_none() && parent.map.is_empty())
+            || parent
+                .item
+                .get()
+                .map(|item| item.deleted())
+                .unwrap_or(parent.root_name.is_none())
     }
 
     fn gc_item(items: &mut VecDeque<Node>, idx: usize, replace: bool) -> JwstCodecResult {
@@ -907,7 +964,8 @@ impl DocStore {
                 let _ = mem::replace(&mut items[idx], Node::new_gc(item.id, item.len()));
             } else {
                 let mut item = unsafe { item_ref.get_mut_unchecked() };
-                item.content = Content::Deleted(item.len());
+                let len = item.len();
+                item.replace_content(Content::Deleted(len));
                 item.flags.clear_countable();
                 debug_assert!(!item.flags.countable());
             }
@@ -1127,6 +1185,51 @@ mod tests {
 
             assert_eq!(doc_store.get_node(Id::new(1, 35)), None);
         });
+
+        loom_model!({
+            let mut failures: Vec<&'static str> = Vec::new();
+
+            {
+                let mut doc_store = DocStore::with_client(1);
+                let struct_info = Node::new_gc(Id::new(1, 0), 1);
+                doc_store.add_node(struct_info).unwrap();
+
+                let items = doc_store.items.get(&1).unwrap();
+                let result =
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| DocStore::get_node_index(items, 1)));
+
+                match result {
+                    Ok(index) if index.is_none() => {}
+                    Ok(_) => failures.push("len=1 clock beyond end should return None"),
+                    Err(_) => failures.push("len=1 clock beyond end should not panic"),
+                }
+            }
+
+            {
+                let mut doc_store = DocStore::with_client(1);
+                let struct_info1 = Node::new_gc(Id::new(1, 0), 1);
+                let struct_info2 = Node::new_gc(Id::new(1, 1), 1);
+                doc_store.add_node(struct_info1).unwrap();
+                doc_store.add_node(struct_info2).unwrap();
+
+                let items = doc_store.items.get(&1).unwrap();
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    DocStore::get_node_index(items, u64::MAX)
+                }));
+
+                match result {
+                    Ok(index) if index.is_none() => {}
+                    Ok(_) => failures.push("huge clock should return None"),
+                    Err(_) => failures.push("huge clock should not panic"),
+                }
+            }
+
+            assert!(
+                failures.is_empty(),
+                "get_node_index edge cases failed: {}",
+                failures.join(", ")
+            );
+        });
     }
 
     #[test]
@@ -1181,8 +1284,8 @@ mod tests {
             let left = doc_store.split_at_and_get_left((1, 1)).unwrap();
             assert_eq!(left.len(), 2); // octo => oc_to
 
-            // s1 used to be (1, 4), but it actually ref of first item in store, so now it
-            // should be (1, 2)
+            // s1 used to be (1, 4), but it actually ref of first item in store,
+            // so now it should be (1, 2)
             assert_eq!(s1, left, "doc internal mutation should not modify the pointer");
             let right = doc_store.split_at_and_get_right((1, 5)).unwrap();
             assert_eq!(right.len(), 3); // base => b_ase
@@ -1302,6 +1405,25 @@ mod tests {
                 store.get_node((1, 7)).unwrap(), // " world" GCd
                 Node::new_gc((1, 6).into(), 6)
             );
+
+            let parent = YTypeRef::new(YTypeKind::Array, None);
+            let item = Somr::new(
+                ItemBuilder::new()
+                    .id((2, 8).into())
+                    .parent(Some(Parent::Type(parent.clone())))
+                    .content(Content::Any(vec![Any::Integer(1); 8]))
+                    .build(),
+            );
+            item.get().unwrap().delete();
+            parent.ty_mut().unwrap().start = item.clone();
+
+            let mut orphan_store = DocStore::with_client(2);
+            orphan_store.add_node(Node::new_gc((2, 0).into(), 8)).unwrap();
+            orphan_store.add_node(Node::Item(item)).unwrap();
+            orphan_store.delete_set.add_range(2, 0..8);
+            orphan_store.gc_delete_set().unwrap();
+
+            assert_eq!(orphan_store.get_node((2, 8)).unwrap(), Node::new_gc((2, 8).into(), 8));
         });
     }
 

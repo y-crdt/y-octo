@@ -70,7 +70,7 @@ impl From<&Content> for Value {
                     .collect::<Vec<_>>(),
             )),
             Content::Binary(buf) => Value::Any(Any::Binary(buf.clone())),
-            Content::Embed(v) => Value::Any(v.clone()),
+            Content::Embed(v) => Value::Any(v.as_ref().clone()),
             Content::Type(ty) => match ty.ty().unwrap().kind {
                 YTypeKind::Array => Value::Array(Array::from_unchecked(ty.clone())),
                 YTypeKind::Map => Value::Map(Map::from_unchecked(ty.clone())),
@@ -82,9 +82,12 @@ impl From<&Content> for Value {
                 // actually unreachable
                 YTypeKind::Unknown => Value::Any(Any::Undefined),
             },
-            Content::Doc { guid: _, opts } => Value::Doc(
-                DocOptions::try_from(opts.clone())
+            Content::Doc { guid, opts } => Value::Doc(
+                DocOptions::try_from(opts.as_ref().clone())
                     .expect("Failed to parse doc options")
+                    // The GUID lives outside opts on the wire; projecting a subdoc
+                    // must preserve its identity instead of generating a new one.
+                    .with_guid(guid.clone())
                     .build(),
             ),
             Content::Format { .. } => unimplemented!(),
@@ -100,7 +103,7 @@ impl From<Value> for Content {
             Value::Any(any) => Content::from(any),
             Value::Doc(doc) => Content::Doc {
                 guid: doc.guid().to_owned(),
-                opts: Any::from(doc.options().clone()),
+                opts: Box::new(Any::from(doc.options().clone())),
             },
             Value::Array(v) => Content::Type(v.0),
             Value::Map(v) => Content::Type(v.0),
@@ -128,8 +131,8 @@ impl From<Doc> for Value {
 impl Display for Value {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Value::Any(any) => write!(f, "{}", any),
-            Value::Text(text) => write!(f, "{}", text),
+            Value::Any(any) => write!(f, "{any}"),
+            Value::Text(text) => write!(f, "{text}"),
             _ => write!(f, ""),
         }
     }
@@ -145,11 +148,13 @@ impl serde::Serialize for Value {
             Self::Array(array) => array.serialize(serializer),
             Self::Map(map) => map.serialize(serializer),
             Self::Text(text) => text.serialize(serializer),
-            // Self::XMLElement(xml_element) => xml_element.serialize(serializer),
-            // Self::XMLFragment(xml_fragment) => xml_fragment.serialize(serializer),
-            // Self::XMLHook(xml_hook) => xml_hook.serialize(serializer),
-            // Self::XMLText(xml_text) => xml_text.serialize(serializer),
-            // Self::Doc(doc) => doc.serialize(serializer),
+            // Self::XMLElement(xml_element) =>
+            // xml_element.serialize(serializer),
+            // Self::XMLFragment(xml_fragment) =>
+            // xml_fragment.serialize(serializer), Self::XMLHook(xml_hook) =>
+            // xml_hook.serialize(serializer), Self::XMLText(xml_text) =>
+            // xml_text.serialize(serializer), Self::Doc(doc) =>
+            // doc.serialize(serializer),
             _ => serializer.serialize_none(),
         }
     }

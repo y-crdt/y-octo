@@ -99,13 +99,13 @@ impl DocPublisher {
 
                                 let mut encoder = RawEncoder::default();
                                 if let Err(e) = update.write(&mut encoder) {
-                                    warn!("Failed to encode document: {}", e);
+                                    warn!("Failed to encode document: {e}");
                                     continue;
                                 }
                                 (encoder.into_inner(), history)
                             }
                             Err(e) => {
-                                warn!("Failed to diff document: {}", e);
+                                warn!("Failed to diff document: {e}");
                                 continue;
                             }
                         };
@@ -120,7 +120,7 @@ impl DocPublisher {
                                 cb(&binary, &history);
                             }))
                             .unwrap_or_else(|e| {
-                                warn!("Failed to call subscriber: {:?}", e);
+                                warn!("Failed to call subscriber: {e:?}");
                             });
                         }
                     } else {
@@ -206,7 +206,8 @@ mod tests {
                 let ret = ret[cycle].clone();
                 for (i, h) in history.iter().enumerate() {
                     println!("history change by {} at {}: {}", h.id, h.parent.join("."), h.content);
-                    // lost first update by unknown reason in asan test, skip it if asan enabled
+                    // lost first update by unknown reason in asan test, skip it
+                    // if asan enabled
                     if option_env!("ASAN_OPTIONS").is_none() {
                         let ret = &ret[i];
                         assert_eq!(h.id, ret[0]);

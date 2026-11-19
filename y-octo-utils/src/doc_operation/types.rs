@@ -1,4 +1,4 @@
-use yrs::{ArrayRef, MapRef, TextRef, XmlElementRef, XmlFragmentRef, XmlTextRef};
+use yrs::{ArrayRef, MapRef, TextRef, XmlFragmentRef, XmlTextRef};
 
 pub const NEST_DATA_INSERT: &str = "insert";
 pub const NEST_DATA_DELETE: &str = "delete";
@@ -57,7 +57,7 @@ pub enum YrsNestType {
     ArrayType(ArrayRef),
     MapType(MapRef),
     TextType(TextRef),
-    XMLElementType(XmlElementRef),
+    XMLElementType(XmlFragmentRef),
     XMLFragmentType(XmlFragmentRef),
     XMLTextType(XmlTextRef),
 }

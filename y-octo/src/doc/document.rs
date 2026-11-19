@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 #[cfg(feature = "events")]
 use publisher::DocPublisher;
 
@@ -11,13 +9,74 @@ use super::{
 use crate::sync::{Arc, RwLock};
 
 #[cfg(feature = "debug")]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct DocStoreStatus {
+    pub clients: usize,
     pub nodes: usize,
+    pub items: usize,
+    pub gc_nodes: usize,
+    pub skip_nodes: usize,
+    pub deleted_items: usize,
+    pub type_contents: usize,
+    pub any_contents: usize,
+    pub string_contents: usize,
+    pub json_contents: usize,
+    pub binary_contents: usize,
+    pub deleted_contents: usize,
+    pub other_contents: usize,
     pub delete_sets: usize,
     pub types: usize,
     pub dangling_types: usize,
     pub pending_nodes: usize,
+    pub changed_types: usize,
+    pub changed_keys: usize,
+}
+
+#[cfg(feature = "debug")]
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct DocMemoryLayout {
+    pub id: usize,
+    pub option_id: usize,
+    pub parent: usize,
+    pub content: usize,
+    pub any: usize,
+    pub item: usize,
+    pub item_ref: usize,
+    pub item_allocation: usize,
+    pub node: usize,
+    pub node_len: usize,
+    pub y_type: usize,
+    pub y_type_ref: usize,
+}
+
+#[cfg(feature = "debug")]
+pub fn memory_layout() -> DocMemoryLayout {
+    use std::mem::size_of;
+
+    DocMemoryLayout {
+        id: size_of::<Id>(),
+        option_id: size_of::<Option<Id>>(),
+        parent: size_of::<Parent>(),
+        content: size_of::<Content>(),
+        any: size_of::<Any>(),
+        item: size_of::<Item>(),
+        item_ref: size_of::<ItemRef>(),
+        item_allocation: size_of::<SomrInner<Item>>(),
+        node: size_of::<Node>(),
+        node_len: size_of::<NodeLen>(),
+        y_type: size_of::<YType>(),
+        y_type_ref: size_of::<YTypeRef>(),
+    }
+}
+
+#[cfg(feature = "debug")]
+pub fn reset_profiling_counters() {
+    reset_clock_len_counters();
+}
+
+#[cfg(feature = "debug")]
+pub fn profiling_counters() -> (u64, u64, u64) {
+    clock_len_counters()
 }
 
 /// [DocOptions] used to create a new [Doc]
@@ -85,10 +144,10 @@ impl DocOptions {
 
 impl From<DocOptions> for Any {
     fn from(value: DocOptions) -> Self {
-        Any::Object(HashMap::from_iter([
+        Any::Object(Box::new(HashMap::from_iter([
             ("gc".into(), value.gc.into()),
             ("guid".into(), value.guid.into()),
-        ]))
+        ])))
     }
 }
 
@@ -99,7 +158,7 @@ impl TryFrom<Any> for DocOptions {
         match value {
             Any::Object(map) => {
                 let mut options = DocOptions::default();
-                for (key, value) in map {
+                for (key, value) in *map {
                     match key.as_str() {
                         "gc" => {
                             options.gc = bool::try_from(value)?;
@@ -194,13 +253,55 @@ impl Doc {
     pub fn store_status(&self) -> DocStoreStatus {
         let store = self.store.read().unwrap();
 
-        DocStoreStatus {
+        let mut status = DocStoreStatus {
+            clients: store.items.len(),
             nodes: store.total_nodes(),
+            items: 0,
+            gc_nodes: 0,
+            skip_nodes: 0,
+            deleted_items: 0,
+            type_contents: 0,
+            any_contents: 0,
+            string_contents: 0,
+            json_contents: 0,
+            binary_contents: 0,
+            deleted_contents: 0,
+            other_contents: 0,
             delete_sets: store.total_delete_sets(),
             types: store.total_types(),
             dangling_types: store.total_dangling_types(),
             pending_nodes: store.total_pending_nodes(),
+            changed_types: store.changed.len(),
+            changed_keys: store.changed.values().map(Vec::len).sum(),
+        };
+
+        for node in store.items.values().flatten() {
+            match node {
+                Node::GC(_) => status.gc_nodes += 1,
+                Node::Skip(_) => status.skip_nodes += 1,
+                Node::Item(item) => {
+                    status.items += 1;
+                    let item = unsafe { item.get_unchecked() };
+                    status.deleted_items += usize::from(item.deleted());
+                    match &item.content {
+                        Content::Type(_) => status.type_contents += 1,
+                        Content::Any(_) => status.any_contents += 1,
+                        Content::String(_) => status.string_contents += 1,
+                        Content::Json(_) => status.json_contents += 1,
+                        Content::Binary(_) => status.binary_contents += 1,
+                        Content::Deleted(_) => status.deleted_contents += 1,
+                        _ => status.other_contents += 1,
+                    }
+                }
+            }
         }
+
+        status
+    }
+
+    #[cfg(feature = "debug")]
+    pub fn clear_change_tracking(&self) {
+        self.store.write().unwrap().changed.clear();
     }
 
     pub(crate) fn get_changed(&self) -> ChangedTypeRefs {
@@ -220,6 +321,20 @@ impl Doc {
 
     pub fn guid(&self) -> &str {
         self.opts.guid.as_str()
+    }
+
+    pub fn has_pending_updates(&self) -> bool {
+        self.store.read().unwrap().pending.is_some()
+    }
+
+    /// Whether a root has visible sequence content, without assigning its type.
+    pub fn root_has_sequence_content(&self, name: &str) -> bool {
+        self.store
+            .read()
+            .unwrap()
+            .types
+            .get(name)
+            .is_some_and(|root| root.ty().is_some_and(|ty| ty.len > 0))
     }
 
     // TODO:
@@ -244,12 +359,29 @@ impl Doc {
     pub fn apply_update(&mut self, mut update: Update) -> JwstCodecResult {
         let mut store = self.store.write().unwrap();
         let mut retry = false;
+
         loop {
+            // clone every time to avoid ref count issue
+            let pending_types = update
+                .structs
+                .values()
+                .flatten()
+                .filter_map(|n| {
+                    if let Node::Item(item_ref) = n
+                        && let Some(item) = item_ref.get()
+                        && let Content::Type(ty) = &item.content
+                    {
+                        Some((item.id, ty.clone()))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
             for (mut s, offset) in update.iter(store.get_state_vector()) {
                 if let Node::Item(item) = &mut s {
                     debug_assert!(item.is_owned());
                     let mut item = unsafe { item.get_mut_unchecked() };
-                    store.repair(&mut item, self.store.clone())?;
+                    store.repair(&mut item, self.store.clone(), &pending_types)?;
                 }
                 store.integrate(s, offset, None)?;
             }
@@ -264,18 +396,25 @@ impl Doc {
                     .iter()
                     .any(|(client, clock)| *clock < store.get_state(*client))
                 {
-                    // new update has been applied to the doc, need to re-integrate
+                    // new update has been applied to the doc, need to
+                    // re-integrate
                     retry = true;
                 }
 
                 for (client, range) in pending_update.delete_set_iter(store.get_state_vector()) {
                     store.delete_range(client, range)?;
                 }
+                // The iterator moves unavailable deletion tails into
+                // pending_delete_set. Carry them into the next merge even if
+                // this update was unrelated; their target structs may arrive in
+                // a later batch.
+                pending_update.delete_set = std::mem::take(&mut pending_update.pending_delete_set);
 
                 if update.is_pending_empty() {
                     update = pending_update;
                 } else {
-                    // drain all pending state to pending update for later iteration
+                    // drain all pending state to pending update for later
+                    // iteration
                     update.drain_pending_state();
                     Update::merge_into(&mut update, [pending_update]);
                 }
@@ -287,7 +426,8 @@ impl Doc {
                 if update.is_pending_empty() {
                     break;
                 } else {
-                    // need to turn all pending state into update for later iteration
+                    // need to turn all pending state into update for later
+                    // iteration
                     update.drain_pending_state();
                     retry = false;
                 };
@@ -417,10 +557,10 @@ mod tests {
 
     #[test]
     fn test_encode_state_as_update() {
-        let yrs_options_left = Options::default();
-        let yrs_options_right = Options::default();
+        loom_model!(64 << 10, {
+            let yrs_options_left = Options::default();
+            let yrs_options_right = Options::default();
 
-        loom_model!({
             let (binary, binary_new) = if cfg!(miri) {
                 let doc = Doc::new();
 
@@ -463,6 +603,154 @@ mod tests {
 
             assert_eq!(doc.encode_update_v1().unwrap(), doc_new.encode_update_v1().unwrap());
         });
+
+        for (value, prefixes, tails) in [
+            ("abcd", ["", "a", "ab", "abc", "abcd"], ["abcd", "bcd", "cd", "d", ""]),
+            (
+                "a😀b",
+                ["", "a", "a\u{FFFD}", "a😀", "a😀b"],
+                ["a😀b", "😀b", "\u{FFFD}b", "b", ""],
+            ),
+        ] {
+            for clock in 0..=5 {
+                loom_model!({
+                    let source = Doc::with_client(1);
+                    source.get_or_create_text("text").unwrap().insert(0, value).unwrap();
+                    let original = source.encode_update_v1().unwrap();
+                    let bytes = source
+                        .encode_state_as_update_v1(&StateVector::from([(1, clock)]))
+                        .unwrap();
+                    assert_eq!(source.encode_update_v1().unwrap(), original);
+                    let diff = Update::decode_v1(&bytes).unwrap();
+                    if clock < 4 {
+                        let node = &diff.structs[&1][0];
+                        assert_eq!(node.clock(), clock);
+                        assert_eq!(node.len(), 4 - clock);
+                        let item = node.as_item();
+                        let item = item.get().unwrap();
+                        assert_eq!(item.origin_left_id, clock.checked_sub(1).map(|clock| Id::new(1, clock)));
+                        assert_eq!(item.content, Content::String(tails[clock as usize].into()));
+                    } else {
+                        assert!(diff.structs.is_empty());
+                    }
+                    let mut target = Doc::with_client(1);
+                    let prefix = prefixes[clock.min(4) as usize];
+                    target.get_or_create_text("text").unwrap().insert(0, prefix).unwrap();
+                    target.apply_update_from_binary_v1(&bytes).unwrap();
+                    assert_eq!(
+                        target.get_or_create_text("text").unwrap().to_string(),
+                        format!("{prefix}{}", tails[clock.min(4) as usize])
+                    );
+                    assert_eq!(target.get_state_vector(), source.get_state_vector());
+                });
+            }
+        }
+
+        loom_model!({
+            let source = Doc::with_client(1);
+            source
+                .get_or_create_text("text")
+                .unwrap()
+                .insert(0, "abcdefghij")
+                .unwrap();
+            let mut pending = Doc::with_client(2);
+            pending
+                .apply_update_from_binary_v1(source.encode_state_as_update_v1(&StateVector::from([(1, 6)])).unwrap())
+                .unwrap();
+            let mut deletion = Update::default();
+            deletion.delete_set.add(1, 8, 2);
+            pending.apply_update(deletion).unwrap();
+            for clock in [0, 4, 6, 7, 10, 11] {
+                let diff = Update::decode_v1(
+                    pending
+                        .encode_state_as_update_v1(&StateVector::from([(1, clock)]))
+                        .unwrap(),
+                )
+                .unwrap();
+                if clock < 10 {
+                    let node = &diff.structs[&1][0];
+                    assert_eq!(node.clock(), clock.max(6));
+                    assert_eq!(node.len(), 10 - clock.max(6));
+                } else {
+                    assert!(diff.structs.is_empty());
+                }
+                assert_eq!(diff.delete_set.get(&1), Some(&OrderRange::from(8..10)));
+            }
+
+            let prefix = Doc::with_client(1);
+            prefix.get_or_create_text("text").unwrap().insert(0, "abcd").unwrap();
+            pending
+                .apply_update_from_binary_v1(prefix.encode_state_as_update_v1(&StateVector::from([(1, 2)])).unwrap())
+                .unwrap();
+            let diff =
+                Update::decode_v1(pending.encode_state_as_update_v1(&StateVector::from([(1, 5)])).unwrap()).unwrap();
+            assert_eq!(diff.structs[&1][0].clock(), 6);
+            assert_eq!(diff.structs[&1][0].len(), 4);
+            assert_eq!(diff.delete_set.get(&1), Some(&OrderRange::from(8..10)));
+        });
+
+        loom_model!({
+            let source = Doc::with_client(1);
+            source
+                .get_or_create_text("text")
+                .unwrap()
+                .insert(0, "abcdefgh")
+                .unwrap();
+            let mut delete_only = Doc::with_client(2);
+            let mut deletion = Update::default();
+            deletion.delete_set.add(1, 5, 3);
+            delete_only.apply_update(deletion).unwrap();
+            assert!(delete_only.has_pending_updates());
+            let unrelated = Doc::with_client(3);
+            unrelated
+                .get_or_create_map("map")
+                .unwrap()
+                .insert("value".into(), 42)
+                .unwrap();
+            delete_only
+                .apply_update_from_binary_v1(unrelated.encode_update_v1().unwrap())
+                .unwrap();
+            assert!(delete_only.has_pending_updates());
+            let saved = delete_only
+                .encode_state_as_update_v1(&StateVector::from([(3, 1)]))
+                .unwrap();
+            let mut restored = Doc::try_from_binary_v1(saved).unwrap();
+            restored
+                .apply_update_from_binary_v1(source.encode_update_v1().unwrap())
+                .unwrap();
+            assert!(!restored.has_pending_updates());
+            assert_eq!(restored.get_or_create_text("text").unwrap().to_string(), "abcde");
+        });
+
+        loom_model!({
+            let source = Doc::with_client(1);
+            source
+                .get_or_create_text("text")
+                .unwrap()
+                .insert(0, "abcdefgh")
+                .unwrap();
+            let mut partial = Doc::with_client(2);
+            partial.get_or_create_text("local").unwrap().insert(0, "abcd").unwrap();
+            partial
+                .apply_update_from_binary_v1(source.encode_state_as_update_v1(&StateVector::from([(1, 6)])).unwrap())
+                .unwrap();
+            let mut deletion = Update::default();
+            deletion.delete_set.add(1, 5, 3);
+            partial.apply_update(deletion).unwrap();
+            assert!(partial.has_pending_updates());
+
+            let diff = partial.encode_state_as_update_v1(&StateVector::from([(2, 2)])).unwrap();
+            let mut restored = Doc::with_client(2);
+            restored.get_or_create_text("local").unwrap().insert(0, "ab").unwrap();
+            restored.apply_update_from_binary_v1(diff).unwrap();
+            assert!(restored.has_pending_updates());
+            restored
+                .apply_update_from_binary_v1(source.encode_update_v1().unwrap())
+                .unwrap();
+            assert!(!restored.has_pending_updates());
+            assert_eq!(restored.get_or_create_text("local").unwrap().to_string(), "abcd");
+            assert_eq!(restored.get_or_create_text("text").unwrap().to_string(), "abcde");
+        });
     }
 
     #[test]
@@ -493,41 +781,75 @@ mod tests {
             assert_json_diff::assert_json_matches!(array.to_json(&doc.transact()), json, config);
         };
 
-        let binary = {
-            let doc = Doc::new();
-            let mut array = doc.get_or_create_array("abc").unwrap();
-            array.insert(0, 42).unwrap();
-            array.insert(1, -42).unwrap();
-            array.insert(2, true).unwrap();
-            array.insert(3, false).unwrap();
-            array.insert(4, "hello").unwrap();
-            array.insert(5, "world").unwrap();
+        {
+            let binary = {
+                let doc = Doc::new();
+                let mut array = doc.get_or_create_array("abc").unwrap();
+                array.insert(0, 42).unwrap();
+                array.insert(1, -42).unwrap();
+                array.insert(2, true).unwrap();
+                array.insert(3, false).unwrap();
+                array.insert(4, "hello").unwrap();
+                array.insert(5, "world").unwrap();
 
-            let mut sub_array = doc.create_array().unwrap();
-            array.insert(6, sub_array.clone()).unwrap();
-            // FIXME: array need insert first to compatible with yrs
-            sub_array.insert(0, 1).unwrap();
+                let mut sub_array = doc.create_array().unwrap();
+                array.insert(6, sub_array.clone()).unwrap();
+                // FIXME: array need insert first to compatible with yrs
+                sub_array.insert(0, 1).unwrap();
 
-            doc.encode_update_v1().unwrap()
-        };
+                doc.encode_update_v1().unwrap()
+            };
 
-        let ydoc = yrs::Doc::with_options(yrs_options);
-        let array = ydoc.get_or_insert_array("abc");
-        let mut trx = ydoc.transact_mut();
-        trx.apply_update(yrs::Update::decode_v1(&binary).unwrap()).unwrap();
+            let ydoc = yrs::Doc::with_options(yrs_options);
+            let array = ydoc.get_or_insert_array("abc");
+            let mut trx = ydoc.transact_mut();
+            trx.apply_update(yrs::Update::decode_v1(&binary).unwrap()).unwrap();
 
-        let config = assert_json_diff::Config::new(assert_json_diff::CompareMode::Strict)
-            .numeric_mode(assert_json_diff::NumericMode::AssumeFloat);
-        assert_json_diff::assert_json_matches!(array.to_json(&trx), json, config);
+            let config = assert_json_diff::Config::new(assert_json_diff::CompareMode::Strict)
+                .numeric_mode(assert_json_diff::NumericMode::AssumeFloat);
+            assert_json_diff::assert_json_matches!(array.to_json(&trx), json, config);
 
-        let mut doc = Doc::new();
-        let array = doc.get_or_create_array("abc").unwrap();
-        doc.apply_update_from_binary_v1(binary).unwrap();
+            let mut doc = Doc::new();
+            let array = doc.get_or_create_array("abc").unwrap();
+            doc.apply_update_from_binary_v1(binary).unwrap();
 
-        let list = array.iter().collect::<Vec<_>>();
+            let list = array.iter().collect::<Vec<_>>();
 
-        assert!(list.len() == 7);
-        assert!(matches!(list[6], Value::Array(_)));
+            assert!(list.len() == 7);
+            assert!(matches!(list[6], Value::Array(_)));
+        }
+
+        {
+            let binary_detached = {
+                let doc = Doc::new();
+                let mut array = doc.get_or_create_array("abc").unwrap();
+                array.insert(0, 42).unwrap();
+                array.insert(1, -42).unwrap();
+                array.insert(2, true).unwrap();
+                array.insert(3, false).unwrap();
+                array.insert(4, "hello").unwrap();
+                array.insert(5, "world").unwrap();
+
+                let mut sub_array = doc.create_array().unwrap();
+                sub_array.insert(0, 1).unwrap();
+                array.insert(6, sub_array.clone()).unwrap();
+
+                doc.encode_update_v1().unwrap()
+            };
+
+            let detached_doc = Doc::try_from_binary_v1(binary_detached).unwrap();
+            assert!(detached_doc.root_has_sequence_content("abc"));
+            assert!(!detached_doc.root_has_sequence_content("missing"));
+            let mut metadata = detached_doc.get_or_create_map("metadata").unwrap();
+            metadata.insert("key".into(), "value").unwrap();
+            assert!(!detached_doc.root_has_sequence_content("metadata"));
+            let detached_array = detached_doc.get_or_create_array("abc").unwrap();
+            let detached_sub_array = match detached_array.get(6).unwrap() {
+                Value::Array(arr) => arr,
+                _ => panic!("expected array at index 6"),
+            };
+            assert_eq!(detached_sub_array.get(0).unwrap(), Value::Any(1.0.into()));
+        }
     }
 
     #[test]
@@ -563,10 +885,10 @@ mod tests {
     #[test]
     fn test_repeated_applied_pending_update() {
         // generate a pending update
-        // update: [1, 1, 1, 0, 39, 1, 4, 116, 101, 115, 116, 3, 109, 97, 112, 1, 0]
-        // update: [1, 1, 1, 1, 40, 0, 1, 0, 11, 115, 117, 98, 95, 109, 97, 112, 95,
-        // 107, 101, 121, 1, 119, 13, 115, 117, 98, 95, 109, 97, 112, 95, 118, 97, 108,
-        // 117, 101, 0]
+        // update: [1, 1, 1, 0, 39, 1, 4, 116, 101, 115, 116, 3, 109, 97, 112,
+        // 1, 0] update: [1, 1, 1, 1, 40, 0, 1, 0, 11, 115, 117, 98, 95,
+        // 109, 97, 112, 95, 107, 101, 121, 1, 119, 13, 115, 117, 98,
+        // 95, 109, 97, 112, 95, 118, 97, 108, 117, 101, 0]
         // {
         //     let doc1 = Doc::default();
 
@@ -593,6 +915,7 @@ mod tests {
                 98, 95, 109, 97, 112, 95, 118, 97, 108, 117, 101, 0,
             ])
             .unwrap();
+            assert!(doc.has_pending_updates());
 
             let pending_size = doc
                 .store
@@ -630,11 +953,16 @@ mod tests {
 
     #[test]
     fn test_update_from_vec_ref() {
-        loom_model!({
+        loom_model!(64 << 10, {
             let doc = Doc::new();
 
             let mut text = doc.get_or_create_text("text").unwrap();
             text.insert(0, "hello world").unwrap();
+
+            let mut root = doc.get_or_create_map("root").unwrap();
+            let mut child = doc.create_map().unwrap();
+            child.insert("k".to_string(), "v").unwrap();
+            root.insert("child".to_string(), child.clone()).unwrap();
 
             let update = doc.encode_update_v1().unwrap();
 
@@ -642,6 +970,16 @@ mod tests {
             let text = doc.get_or_create_text("text").unwrap();
 
             assert_eq!(&text.to_string(), "hello world");
+
+            let root = doc.get_or_create_map("root").unwrap();
+            if let Some(Value::Map(child)) = root.get("child") {
+                assert!(
+                    matches!(child.get("k"), Some(Value::Any(Any::String(s))) if s == "v"),
+                    "expected nested map value to survive apply_update"
+                );
+            } else {
+                panic!("expected nested map to survive apply_update");
+            }
         });
     }
 
@@ -660,5 +998,25 @@ mod tests {
             let mut doc = Doc::new();
             doc.apply_update_from_binary_v1(&update).unwrap();
         }
+    }
+
+    #[test]
+    #[cfg_attr(loom, ignore)]
+    fn test_reject_cyclic_type_nesting() {
+        // found by fuzzing (decode_doc_update): this corrupt update nests a
+        // type into its own descendant. The unified wire decoder rejects it
+        // even earlier than the cyclic-parent check, on a zero-length
+        // struct; wire-valid cyclic updates are covered by the read-only
+        // differential tests.
+        let update = [
+            0x01, 0x07, 0x00, 0x00, 0x27, 0x07, 0x00, 0x00, 0x00, 0x00, 0x83, 0x00, 0x00, 0x00, 0x01, 0x73, 0x00, 0x00,
+            0x74, 0x00, 0x00, 0x61, 0x00, 0x01, 0x20, 0x01, 0x00, 0x00, 0x80, 0x00, 0x07, 0x01, 0x80, 0x00, 0x00, 0x00,
+            0x09, 0x00,
+        ];
+
+        assert!(matches!(
+            Doc::try_from_binary_v1(update),
+            Err(JwstCodecError::IncompleteDocument(message)) if message == "zero-length struct"
+        ));
     }
 }

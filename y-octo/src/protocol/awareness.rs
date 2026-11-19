@@ -1,4 +1,4 @@
-use nom::multi::count;
+use nom::{Parser, multi::count};
 
 use super::*;
 
@@ -77,7 +77,7 @@ pub type AwarenessStates = HashMap<u64, AwarenessState>;
 
 pub fn read_awareness(input: &[u8]) -> IResult<&[u8], AwarenessStates> {
     let (tail, len) = read_var_u64(input)?;
-    let (tail, messages) = count(read_awareness_state, len as usize)(tail)?;
+    let (tail, messages) = count(read_awareness_state, len as usize).parse(tail)?;
 
     Ok((tail, messages.into_iter().collect()))
 }

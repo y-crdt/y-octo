@@ -1,7 +1,11 @@
-use std::{collections::VecDeque, ops::Range};
+use std::{
+    cmp::Reverse,
+    collections::{BTreeMap, VecDeque},
+    ops::Range,
+};
 
 use super::*;
-use crate::doc::StateVector;
+use crate::doc::{StateVector, codec::decoder::v1 as decoder, find_missing_dependency};
 
 #[derive(Debug, Default, Clone)]
 pub struct Update {
@@ -18,61 +22,297 @@ pub struct Update {
     pub(crate) pending_delete_set: DeleteSet,
 }
 
-impl<R: CrdtReader> CrdtRead<R> for Update {
-    fn read(decoder: &mut R) -> JwstCodecResult<Self> {
-        let num_of_clients = decoder.read_var_u64()? as usize;
-
-        // See: [HASHMAP_SAFE_CAPACITY]
-        let mut map = ClientMap::with_capacity(num_of_clients.min(HASHMAP_SAFE_CAPACITY));
-        for _ in 0..num_of_clients {
-            let num_of_structs = decoder.read_var_u64()? as usize;
-            let client = decoder.read_var_u64()?;
-            let mut clock = decoder.read_var_u64()?;
-
-            // same reason as above
-            let mut structs = VecDeque::with_capacity(num_of_structs.min(HASHMAP_SAFE_CAPACITY));
-
-            for _ in 0..num_of_structs {
-                let struct_info = Node::read(decoder, Id::new(client, clock))?;
-                clock += struct_info.len();
-                structs.push_back(struct_info);
+impl<'a> CrdtRead<RawDecoder<'a>> for Update {
+    fn read(decoder: &mut RawDecoder<'a>) -> JwstCodecResult<Self> {
+        let update = decoder::decode(
+            decoder.rest_ref(),
+            OwnedUpdateSink::default(),
+            decoder::DecodeLimits::UNRESTRICTED,
+        )
+        .map_err(|error| match error {
+            decoder::Error::Codec(error) => error,
+            decoder::Error::Resource(name) => {
+                JwstCodecError::IncompleteDocument(format!("{name} exceeds platform size"))
             }
+        })?;
+        decoder.consume_rest();
+        Ok(update)
+    }
+}
 
-            structs.shrink_to_fit();
-            map.insert(client, structs);
+#[derive(Default)]
+struct OwnedUpdateSink {
+    update: Update,
+    json: Vec<Option<String>>,
+    content_any: Vec<Any>,
+    any_stack: Vec<AnyFrame>,
+    any_root: Option<Any>,
+}
+
+enum AnyFrame {
+    Object(HashMap<String, Any>, Option<String>),
+    Array(Vec<Any>),
+}
+
+impl OwnedUpdateSink {
+    fn push_any(&mut self, value: Any) -> decoder::Result<()> {
+        match self.any_stack.last_mut() {
+            Some(AnyFrame::Array(values)) => values.push(value),
+            Some(AnyFrame::Object(values, key)) => {
+                let key = key.take().ok_or_else(|| {
+                    decoder::Error::Codec(JwstCodecError::IncompleteDocument(
+                        "Any object value without key".into(),
+                    ))
+                })?;
+                values.insert(key, value);
+            }
+            None if self.any_root.is_none() => self.any_root = Some(value),
+            None => {
+                return Err(decoder::Error::Codec(JwstCodecError::IncompleteDocument(
+                    "multiple Any roots".into(),
+                )));
+            }
         }
+        Ok(())
+    }
+}
 
-        map.shrink_to_fit();
+impl<'a> decoder::Sink<'a> for OwnedUpdateSink {
+    type Output = Update;
+    type Content = Content;
+    type Any = Any;
 
-        let delete_set = DeleteSet::read(decoder)?;
+    fn begin_client(&mut self, client: u64, count: usize) -> decoder::Result<()> {
+        self.update
+            .structs
+            .insert(client, VecDeque::with_capacity(count.min(HASHMAP_SAFE_CAPACITY)));
+        Ok(())
+    }
 
-        if !decoder.is_empty() {
-            return Err(JwstCodecError::UpdateNotFullyConsumed(decoder.len() as usize));
+    fn gc(&mut self, id: Id, len: u64) -> decoder::Result<()> {
+        self.update
+            .structs
+            .get_mut(&id.client)
+            .unwrap()
+            .push_back(Node::new_gc(id, len));
+        Ok(())
+    }
+
+    fn skip(&mut self, id: Id, len: u64) -> decoder::Result<()> {
+        self.update
+            .structs
+            .get_mut(&id.client)
+            .unwrap()
+            .push_back(Node::new_skip(id, len));
+        Ok(())
+    }
+
+    fn item(&mut self, id: Id, len: u64, meta: decoder::ItemMeta<'a>, content: Content) -> decoder::Result<()> {
+        let parent = match meta.parent {
+            decoder::WireParent::Root(name) => Some(Parent::String(SmolStr::new(name.value))),
+            decoder::WireParent::Item(id) => Some(Parent::Id(id)),
+            decoder::WireParent::Inherit => None,
+        };
+        let item = Somr::new(Item {
+            id,
+            len,
+            origin_left_id: meta.origin_left,
+            origin_right_id: meta.origin_right,
+            left: Somr::none(),
+            right: Somr::none(),
+            parent,
+            parent_sub: meta.parent_sub.map(|value| SmolStr::new(value.value)),
+            flags: ItemFlag::from(if content.countable() {
+                item_flags::ITEM_COUNTABLE
+            } else {
+                0
+            }),
+            content,
+        });
+        if matches!(item.get().unwrap().content, Content::Deleted(_)) {
+            item.get().unwrap().flags.set_deleted();
         }
+        if let Content::Type(ty) = &item.get().unwrap().content
+            && let Some(mut ty) = ty.ty_mut()
+        {
+            ty.item = item.clone();
+        }
+        self.update
+            .structs
+            .get_mut(&id.client)
+            .unwrap()
+            .push_back(Node::Item(item));
+        Ok(())
+    }
 
-        Ok(Update {
-            structs: map,
-            delete_set,
-            ..Update::default()
+    fn content_atom(&mut self, atom: decoder::ContentAtom<'a>) -> decoder::Result<Content> {
+        Ok(match atom {
+            decoder::ContentAtom::Deleted(len) => Content::Deleted(len),
+            decoder::ContentAtom::Binary(value) => Content::Binary(value.value.to_vec()),
+            decoder::ContentAtom::String(value) => Content::String(value.value.to_string()),
+            decoder::ContentAtom::Embed(value) => Content::Embed(Box::new(
+                serde_json::from_str(value.value)
+                    .map_err(|_| decoder::Error::Codec(JwstCodecError::DamagedDocumentJson))?,
+            )),
+            decoder::ContentAtom::Format { key, value } => Content::Format {
+                key: key.value.to_string(),
+                value: Box::new(
+                    serde_json::from_str(value.value)
+                        .map_err(|_| decoder::Error::Codec(JwstCodecError::DamagedDocumentJson))?,
+                ),
+            },
+            decoder::ContentAtom::Type { kind, tag } => Content::Type(YTypeRef::new(
+                YTypeKind::from(kind),
+                tag.map(|value| value.value.to_string()),
+            )),
         })
+    }
+
+    fn json_start(&mut self, count: usize) -> decoder::Result<()> {
+        self.json = Vec::with_capacity(count.min(HASHMAP_SAFE_CAPACITY));
+        Ok(())
+    }
+
+    fn json_value(&mut self, value: decoder::WireStr<'a>) -> decoder::Result<()> {
+        self.json
+            .push((value.value != "undefined").then(|| value.value.to_string()));
+        Ok(())
+    }
+
+    fn json_finish(&mut self) -> decoder::Result<Content> {
+        Ok(Content::Json(std::mem::take(&mut self.json)))
+    }
+
+    fn any_content_start(&mut self, count: usize) -> decoder::Result<()> {
+        self.content_any = Vec::with_capacity(count.min(HASHMAP_SAFE_CAPACITY));
+        Ok(())
+    }
+
+    fn any_content_value(&mut self, value: Any) -> decoder::Result<()> {
+        self.content_any.push(value);
+        Ok(())
+    }
+
+    fn any_content_finish(&mut self) -> decoder::Result<Content> {
+        Ok(Content::Any(std::mem::take(&mut self.content_any)))
+    }
+
+    fn doc_content(&mut self, guid: decoder::WireStr<'a>, options: Any) -> decoder::Result<Content> {
+        Ok(Content::Doc {
+            guid: guid.value.to_string(),
+            opts: Box::new(options),
+        })
+    }
+
+    fn any_start(&mut self) -> decoder::Result<()> {
+        self.any_stack.clear();
+        self.any_root = None;
+        Ok(())
+    }
+
+    fn any_event(&mut self, event: decoder::AnyEvent<'a>) -> decoder::Result<()> {
+        match event {
+            decoder::AnyEvent::Undefined => self.push_any(Any::Undefined),
+            decoder::AnyEvent::Null => self.push_any(Any::Null),
+            decoder::AnyEvent::Integer(value) => self.push_any(Any::Integer(value)),
+            decoder::AnyEvent::Float32(value) => self.push_any(Any::Float32(value.into())),
+            decoder::AnyEvent::Float64(value) => self.push_any(Any::Float64(value.into())),
+            decoder::AnyEvent::BigInt64(value) => self.push_any(Any::BigInt64(value)),
+            decoder::AnyEvent::False => self.push_any(Any::False),
+            decoder::AnyEvent::True => self.push_any(Any::True),
+            decoder::AnyEvent::String(value) => self.push_any(Any::String(value.value.to_string())),
+            decoder::AnyEvent::Binary(value) => self.push_any(Any::Binary(value.value.to_vec())),
+            decoder::AnyEvent::BeginObject(count) => {
+                self.any_stack.push(AnyFrame::Object(
+                    HashMap::with_capacity(count.min(HASHMAP_SAFE_CAPACITY)),
+                    None,
+                ));
+                Ok(())
+            }
+            decoder::AnyEvent::ObjectKey(value) => match self.any_stack.last_mut() {
+                Some(AnyFrame::Object(_, key)) => {
+                    *key = Some(value.value.to_string());
+                    Ok(())
+                }
+                _ => Err(decoder::Error::Codec(JwstCodecError::IncompleteDocument(
+                    "Any object key outside object".into(),
+                ))),
+            },
+            decoder::AnyEvent::BeginArray(count) => {
+                self.any_stack
+                    .push(AnyFrame::Array(Vec::with_capacity(count.min(HASHMAP_SAFE_CAPACITY))));
+                Ok(())
+            }
+            decoder::AnyEvent::EndContainer => {
+                let frame = self.any_stack.pop().ok_or_else(|| {
+                    decoder::Error::Codec(JwstCodecError::IncompleteDocument(
+                        "Any container end without start".into(),
+                    ))
+                })?;
+                let value = match frame {
+                    AnyFrame::Object(values, None) => Any::Object(Box::new(values)),
+                    AnyFrame::Object(_, Some(_)) => {
+                        return Err(decoder::Error::Codec(JwstCodecError::IncompleteDocument(
+                            "Any object key without value".into(),
+                        )));
+                    }
+                    AnyFrame::Array(values) => Any::Array(values),
+                };
+                self.push_any(value)
+            }
+        }
+    }
+
+    fn any_finish(&mut self, _range: Range<usize>) -> decoder::Result<Any> {
+        if !self.any_stack.is_empty() {
+            return Err(decoder::Error::Codec(JwstCodecError::IncompleteDocument(
+                "unterminated Any container".into(),
+            )));
+        }
+        self.any_root
+            .take()
+            .ok_or_else(|| decoder::Error::Codec(JwstCodecError::IncompleteDocument("missing Any value".into())))
+    }
+
+    fn delete_range(&mut self, client: u64, range: Range<u64>) -> decoder::Result<()> {
+        self.update.delete_set.add_range(client, range);
+        Ok(())
+    }
+
+    fn finish(mut self) -> decoder::Result<Update> {
+        for structs in self.update.structs.values_mut() {
+            structs.shrink_to_fit();
+        }
+        self.update.structs.shrink_to_fit();
+        Ok(self.update)
     }
 }
 
 impl<W: CrdtWriter> CrdtWrite<W> for Update {
     fn write(&self, encoder: &mut W) -> JwstCodecResult {
-        encoder.write_var_u64(self.structs.len() as u64)?;
-
         let mut clients = self.structs.keys().copied().collect::<Vec<_>>();
 
         // Descending
         clients.sort_by(|a, b| b.cmp(a));
 
-        for client in clients {
-            let structs = self.structs.get(&client).unwrap();
+        // Skip zero-length structs and clients left empty by that: they carry
+        // neither content nor deletions and apply() just drops them again, so
+        // emitting them would produce non-canonical updates.
+        let entries = clients
+            .into_iter()
+            .filter_map(|client| {
+                let structs = self.structs.get(&client).unwrap();
+                let structs = structs.iter().filter(|s| s.len() > 0).collect::<Vec<_>>();
+                (!structs.is_empty()).then_some((client, structs))
+            })
+            .collect::<Vec<_>>();
 
+        encoder.write_var_u64(entries.len() as u64)?;
+
+        for (client, structs) in entries {
             encoder.write_var_u64(structs.len() as u64)?;
             encoder.write_var_u64(client)?;
-            encoder.write_var_u64(structs.front().map(|s| s.clock()).unwrap_or(0))?;
+            encoder.write_var_u64(structs.first().map(|s| s.clock()).unwrap_or(0))?;
 
             for struct_info in structs {
                 struct_info.write(encoder)?;
@@ -121,68 +361,103 @@ impl Update {
         merged
     }
 
+    /// Union encoded material without integrating or garbage-collecting it.
+    /// Overlapping snapshots/tails must cover each client clock only once.
     pub fn merge_into<I: IntoIterator<Item = Update>>(target: &mut Update, updates: I) {
-        for update in updates {
-            target.delete_set.merge(&update.delete_set);
-
-            for (client, structs) in update.structs {
-                let iter = structs.into_iter().filter(|p| !p.is_skip());
-                if let Some(merged_structs) = target.structs.get_mut(&client) {
-                    merged_structs.extend(iter);
-                } else {
-                    target.structs.insert(client, iter.collect());
-                }
+        // Pending material still belongs on the wire even when its dependencies
+        // have not arrived; retain deletion ranges and the earliest missing
+        // clocks.
+        target.delete_set.merge(&std::mem::take(&mut target.pending_delete_set));
+        let target_structs = [
+            std::mem::take(&mut target.structs),
+            std::mem::take(&mut target.pending_structs),
+        ];
+        let mut sources: BTreeMap<_, VecDeque<_>> = BTreeMap::new();
+        for source in target_structs
+            .into_iter()
+            .chain(updates.into_iter().flat_map(|update| {
+                target.delete_set.merge(&update.delete_set);
+                target.delete_set.merge(&update.pending_delete_set);
+                target.missing_state.merge_with(&update.missing_state);
+                [update.structs, update.pending_structs]
+            }))
+            .map(|structs| {
+                let mut clients = structs.into_iter().collect::<Vec<_>>();
+                clients.sort_by(|(left, _), (right, _)| right.cmp(left));
+                clients
+                    .into_iter()
+                    .flat_map(|(_, structs)| structs)
+                    // Skip denotes an unknown interval, not content that can hide
+                    // another source. Rebuild only the gaps left by all real structs.
+                    .filter(|node| !node.is_skip() && node.len() > 0)
+                    .collect::<VecDeque<_>>()
+            })
+        {
+            if let Some(head) = source.front() {
+                sources
+                    .entry((Reverse(head.client()), head.clock()))
+                    .or_default()
+                    .push_back(source);
             }
         }
 
-        for structs in target.structs.values_mut() {
-            structs.make_contiguous().sort_by_key(|s| s.id().clock);
-
-            // insert [Node::Skip] if structs[index].id().clock + structs[index].len() <
-            // structs[index + 1].id().clock
-            let mut index = 0;
-            let mut merged_index = vec![];
-            while index < structs.len() - 1 {
-                let cur = &structs[index];
-                let next = &structs[index + 1];
-
-                let clock_end = cur.id().clock + cur.len();
-                let next_clock = next.id().clock;
-
-                if next_clock > clock_end {
-                    structs.insert(
-                        index + 1,
-                        Node::new_skip((cur.id().client, clock_end).into(), next_clock - clock_end),
-                    );
-                    index += 1;
-                } else if cur.id().clock == next_clock {
-                    if cur.deleted() == next.deleted()
-                        && cur.last_id() == next.last_id()
-                        && cur.left() == next.left()
-                        && cur.right() == next.right()
-                    {
-                        // merge two nodes, mark the index
-                        merged_index.push(index + 1);
-                    } else {
-                        debug!("merge failed: {:?} {:?}", cur, next)
-                    }
-                }
-
-                index += 1;
+        while let Some(mut entry) = sources.first_entry() {
+            let mut source = entry.get_mut().pop_front().unwrap();
+            if entry.get().is_empty() {
+                entry.remove();
             }
-
-            {
-                // prune the merged nodes
-                let mut new_structs = VecDeque::with_capacity(structs.len() - merged_index.len());
-                let mut next_remove_idx = 0;
-                for (idx, val) in structs.drain(..).enumerate() {
-                    if next_remove_idx < merged_index.len() && idx == merged_index[next_remove_idx] {
-                        next_remove_idx += 1;
-                    } else {
-                        new_structs.push_back(val);
+            'source: {
+                let mut node = source.pop_front().unwrap();
+                let client = node.client();
+                let merged = target.structs.entry(client).or_default();
+                if let Some(last) = merged.back() {
+                    let end = last.clock() + last.len();
+                    let mut covered = false;
+                    while node.clock() + node.len() <= end {
+                        covered = true;
+                        let Some(next) = source.pop_front() else {
+                            break 'source;
+                        };
+                        node = next;
+                        if node.client() != client {
+                            source.push_front(node);
+                            break 'source;
+                        }
+                    }
+                    // After consuming covered nodes, another source may fill
+                    // this gap. Compare source heads again before emitting a
+                    // Skip.
+                    if covered && node.clock() > end {
+                        source.push_front(node);
+                        break 'source;
+                    }
+                    if node.clock() > end {
+                        merged.push_back(Node::new_skip(Id::new(client, end), node.clock() - end));
+                    } else if node.clock() < end {
+                        // V1 infers subsequent clocks from lengths: emit only
+                        // the uncovered tail, or overlap would allocate extra
+                        // clocks.
+                        let offset = end - node.clock();
+                        node = node.split_at(offset).unwrap().1;
                     }
                 }
-                structs.extend(new_structs);
+                merged.push_back(node);
+                // Match Yjs's lazy reader: emit a source's contiguous run
+                // before comparing its next head with the other sources again.
+                while source.front().is_some_and(|next| {
+                    let last = merged.back().unwrap();
+                    next.client() == client && next.clock() == last.clock() + last.len()
+                }) {
+                    merged.push_back(source.pop_front().unwrap());
+                }
+            }
+            // The selected source preceded every remaining source in the last
+            // stable ordering, including sources matching its new head.
+            if let Some(head) = source.front() {
+                sources
+                    .entry((Reverse(head.client()), head.clock()))
+                    .or_default()
+                    .push_front(source);
             }
         }
     }
@@ -278,35 +553,13 @@ impl<'a> UpdateIterator<'a> {
     /// tell if current update's dependencies(left, right, parent) has already
     /// been consumed and recorded and return the client of them if not.
     fn get_missing_dep(&self, struct_info: &Node) -> Option<Client> {
-        if let Some(item) = struct_info.as_item().get() {
-            let id = item.id;
-            if let Some(left) = &item.origin_left_id
-                && left.client != id.client
-                && left.clock >= self.state.get(&left.client)
-            {
-                return Some(left.client);
-            }
-
-            if let Some(right) = &item.origin_right_id
-                && right.client != id.client
-                && right.clock >= self.state.get(&right.client)
-            {
-                return Some(right.client);
-            }
-
-            if let Some(parent) = &item.parent {
-                match parent {
-                    Parent::Id(parent_id)
-                        if parent_id.client != id.client && parent_id.clock >= self.state.get(&parent_id.client) =>
-                    {
-                        return Some(parent_id.client);
-                    }
-                    _ => {}
-                }
-            }
-        }
-
-        None
+        let owner = struct_info.as_item();
+        let item = owner.get()?;
+        let parent = match &item.parent {
+            Some(Parent::Id(parent_id)) => Some(*parent_id),
+            _ => None,
+        };
+        find_missing_dependency(item.id, item.origin_left_id, item.origin_right_id, parent, &self.state)
     }
 
     fn next_candidate(&mut self) -> Option<Node> {
@@ -316,8 +569,8 @@ impl<'a> UpdateIterator<'a> {
             cur.replace(self.stack.pop().unwrap());
         } else if let Some(client) = self.next_client() {
             // Safety:
-            // client index of updates and update length are both checked in next_client
-            // safe to use unwrap
+            // client index of updates and update length are both checked in
+            // next_client safe to use unwrap
             cur.replace(self.update.structs.get_mut(&client).unwrap().pop_front().unwrap());
         }
 
@@ -340,14 +593,16 @@ impl Iterator for UpdateIterator<'_> {
             } else if !self.state.contains(&id) {
                 // missing local state of same client
                 // can't apply the continuous updates from same client
-                // push into the stack and put tell all the items in stack are unapplicable
+                // push into the stack and put tell all the items in stack are
+                // unapplicable
                 self.stack.push(cur_update);
                 self.update_missing_state(id.client, id.clock - 1);
                 self.add_stack_to_rest();
             } else {
                 let id = cur_update.id();
                 let dep = self.get_missing_dep(&cur_update);
-                // some dependency is missing, we need to turn to iterate the dependency first.
+                // some dependency is missing, we need to turn to iterate the
+                // dependency first.
                 if let Some(dep) = dep {
                     self.stack.push(cur_update);
 
@@ -367,8 +622,9 @@ impl Iterator for UpdateIterator<'_> {
                 } else {
                     // we finally find the first applicable update
                     let local_state = self.state.get(&id.client);
-                    // we've already check the local state is greater or equal to current update's
-                    // clock so offset here will never be negative
+                    // we've already check the local state is greater or equal
+                    // to current update's clock so offset
+                    // here will never be negative
                     let offset = local_state - id.clock;
                     if offset == 0 || offset < cur_update.len() {
                         self.state.set_max(id.client, id.clock + cur_update.len());
@@ -624,7 +880,48 @@ mod tests {
     }
 
     #[test]
-    fn should_add_skip_when_clock_not_continuous() {
+    fn test_merge_updates() {
+        for case in 0..3 {
+            loom_model!({
+                let (sources, expected) = match case {
+                    0 => (
+                        [
+                            vec![Node::new_gc((0, 5).into(), 1)],
+                            vec![struct_item((0, 0), 1), struct_item((0, 5), 1)],
+                        ],
+                        vec![
+                            struct_item((0, 0), 1),
+                            Node::new_skip((0, 1).into(), 4),
+                            struct_item((0, 5), 1),
+                        ],
+                    ),
+                    1 => (
+                        [
+                            vec![Node::new_gc((0, 0).into(), 3), Node::new_gc((0, 5).into(), 1)],
+                            vec![struct_item((0, 0), 1), struct_item((0, 5), 1)],
+                        ],
+                        vec![
+                            Node::new_gc((0, 0).into(), 3),
+                            Node::new_skip((0, 3).into(), 2),
+                            struct_item((0, 5), 1),
+                        ],
+                    ),
+                    _ => (
+                        [
+                            vec![Node::new_gc((0, 1).into(), 1)],
+                            vec![struct_item((0, 0), 1), struct_item((0, 1), 1)],
+                        ],
+                        vec![struct_item((0, 0), 1), struct_item((0, 1), 1)],
+                    ),
+                };
+                let merged = Update::merge(sources.map(|nodes| Update {
+                    structs: ClientMap::from_iter([(0, nodes.into())]),
+                    ..Default::default()
+                }));
+                assert_eq!(merged.structs[&0], VecDeque::from(expected));
+            });
+        }
+
         loom_model!({
             let update = Update {
                 structs: ClientMap::from_iter([(
@@ -652,7 +949,204 @@ mod tests {
                     Node::new_gc((0, 20).into(), 10),
                 ])
             );
+            let fill = Update {
+                structs: ClientMap::from_iter([(
+                    0,
+                    VecDeque::from([
+                        Node::new_skip((0, 0).into(), 2),
+                        struct_item((0, 2), 8),
+                        Node::new_skip((0, 10).into(), 15),
+                        Node::new_gc((0, 25).into(), 10),
+                    ]),
+                )]),
+                ..Default::default()
+            };
+            let merged = Update::merge([merged, fill]);
+            assert_eq!(
+                merged.structs[&0]
+                    .iter()
+                    .map(|node| (node.clock(), node.len(), node.is_skip()))
+                    .collect::<Vec<_>>(),
+                [
+                    (0, 1, false),
+                    (1, 1, false),
+                    (2, 8, false),
+                    (10, 1, false),
+                    (11, 9, true),
+                    (20, 10, false),
+                    (30, 5, false)
+                ]
+            );
+            let pending = Update {
+                pending_structs: ClientMap::from_iter([(0, VecDeque::from([struct_item((0, 11), 9)]))]),
+                missing_state: StateVector::from([(0, 10), (1, 0)]),
+                pending_delete_set: DeleteSet::from([(0, vec![12..15])]),
+                ..Default::default()
+            };
+            let mut merged = Update::merge([merged, pending]);
+            assert!(!merged.structs[&0].iter().any(Node::is_skip));
+            assert_eq!(merged.missing_state, StateVector::from([(0, 10), (1, 0)]));
+            assert_eq!(merged.delete_set[&0].canonical_ranges(), vec![12..15]);
+            assert!(merged.is_pending_empty());
+            merged
+                .pending_structs
+                .insert(1, VecDeque::from([struct_item((1, 0), 1)]));
+            merged.pending_delete_set.add_range(1, 0..1);
+            Update::merge_into(
+                &mut merged,
+                [Update {
+                    missing_state: StateVector::from([(0, 5), (1, 1)]),
+                    ..Default::default()
+                }],
+            );
+            assert_eq!(merged.missing_state, StateVector::from([(0, 5), (1, 0)]));
+            assert_eq!(merged.structs[&1].len(), 1);
+            assert_eq!(merged.delete_set[&1].canonical_ranges(), vec![0..1]);
+            assert!(merged.is_pending_empty());
         });
+
+        // Full snapshots and tails produced by Yjs 13.6.21, client 1.
+        let cases: &[(&[u8], &[u8], &[u8], &str)] = &[
+            (
+                &[1, 1, 1, 0, 4, 1, 4, 116, 101, 120, 116, 4, 97, 98, 99, 100, 0],
+                &[
+                    1, 3, 1, 0, 4, 1, 4, 116, 101, 120, 116, 1, 97, 129, 1, 0, 1, 132, 1, 1, 2, 99, 100, 1, 1, 1, 1, 1,
+                ],
+                &[1, 1, 1, 2, 132, 1, 1, 2, 99, 100, 1, 1, 1, 1, 1],
+                "acd",
+            ),
+            (
+                &[
+                    1, 1, 1, 0, 4, 1, 4, 116, 101, 120, 116, 6, 97, 240, 159, 152, 128, 98, 0,
+                ],
+                &[
+                    1, 3, 1, 0, 4, 1, 4, 116, 101, 120, 116, 1, 97, 129, 1, 0, 1, 132, 1, 1, 4, 239, 191, 189, 98, 1,
+                    1, 1, 1, 1,
+                ],
+                &[1, 1, 1, 2, 132, 1, 1, 4, 239, 191, 189, 98, 1, 1, 1, 1, 1],
+                "a\u{fffd}b",
+            ),
+        ];
+        for &(full, segmented, tail, text) in cases {
+            for reverse in [false, true] {
+                loom_model!(64 << 10, {
+                    let inputs = if reverse { [segmented, full] } else { [full, segmented] };
+                    let merged = Update::merge(inputs.map(|bytes| Update::decode_v1(bytes).unwrap()));
+                    let structs = &merged.structs[&1];
+                    assert_eq!(structs.front().unwrap().clock(), 0);
+                    assert_eq!(structs.iter().map(Node::len).sum::<u64>(), 4);
+                    assert_eq!(merged.delete_set[&1].canonical_ranges(), vec![1..2]);
+                    let bytes = merged.encode_v1().unwrap();
+                    let expected = if reverse {
+                        segmented.to_vec()
+                    } else {
+                        let mut bytes = full[..full.len() - 1].to_vec();
+                        bytes.extend_from_slice(&[1, 1, 1, 1, 1]);
+                        bytes
+                    };
+                    assert_eq!(bytes, expected);
+                    let replay = Update::merge([
+                        Update::decode_v1(&bytes).unwrap(),
+                        Update::decode_v1(full).unwrap(),
+                        Update::decode_v1(segmented).unwrap(),
+                    ]);
+                    assert_eq!(replay.encode_v1().unwrap(), bytes);
+                    let doc = Doc::try_from_binary_v1(&bytes).unwrap();
+                    assert_eq!(doc.get_or_create_text("text").unwrap().to_string(), text);
+                    assert_eq!(doc.get_state_vector(), StateVector::from([(1, 4)]));
+
+                    let partial = Update::merge([
+                        Update::decode_v1(tail).unwrap(),
+                        Update::decode_v1(&[0, 1, 1, 1, 0, 3]).unwrap(),
+                    ]);
+                    let bytes = partial.encode_v1().unwrap();
+                    let partial = Update::decode_v1(&bytes).unwrap();
+                    assert_eq!(partial.delete_set[&1].canonical_ranges(), vec![0..3]);
+                    let mut doc = Doc::try_from_binary_v1(&bytes).unwrap();
+                    assert!(doc.has_pending_updates());
+                    doc.apply_update_from_binary_v1(full).unwrap();
+                    assert!(!doc.has_pending_updates());
+                    assert_eq!(
+                        doc.get_or_create_text("text").unwrap().to_string(),
+                        &text[text.len() - 1..]
+                    );
+                    let recovered = Update::merge([partial, Update::decode_v1(full).unwrap()]);
+                    assert_eq!(recovered.structs[&1].iter().map(Node::len).sum::<u64>(), 4);
+                    assert_eq!(recovered.delete_set[&1].canonical_ranges(), vec![0..3]);
+                });
+            }
+        }
+
+        loom_model!({
+            let prefix = [1, 1, 1, 0, 4, 1, 4, 116, 101, 120, 116, 2, 97, 98, 0];
+            let full = [1, 1, 1, 0, 4, 1, 4, 116, 101, 120, 116, 4, 97, 98, 99, 100, 0];
+            let expected = [
+                1, 2, 1, 0, 4, 1, 4, 116, 101, 120, 116, 2, 97, 98, 132, 1, 1, 2, 99, 100, 0,
+            ];
+            let full_update = Update::decode_v1(full).unwrap();
+            for _ in 0..2 {
+                let merged = Update::merge([Update::decode_v1(prefix).unwrap(), full_update.clone()]);
+                assert_eq!(merged.encode_v1().unwrap(), expected);
+                assert_eq!(full_update.encode_v1().unwrap(), full);
+            }
+        });
+
+        for reverse in [false, true] {
+            loom_model!({
+                let full = [
+                    1, 1, 1, 0, 4, 1, 4, 116, 101, 120, 116, 6, 97, 240, 159, 152, 128, 98, 0,
+                ];
+                let higher_client = [
+                    2, 1, 2, 0, 40, 1, 1, 109, 1, 120, 1, 125, 1, 3, 1, 0, 4, 1, 4, 116, 101, 120, 116, 1, 97, 129, 1,
+                    0, 1, 132, 1, 1, 4, 239, 191, 189, 98, 1, 1, 1, 1, 1,
+                ];
+                let inputs = if reverse {
+                    [higher_client.as_slice(), full.as_slice()]
+                } else {
+                    [full.as_slice(), higher_client.as_slice()]
+                };
+                let merged = Update::merge(inputs.map(|bytes| Update::decode_v1(bytes).unwrap()));
+                assert_eq!(merged.encode_v1().unwrap(), higher_client);
+            });
+        }
+        for count in 2..=4 {
+            for reverse in [false, true] {
+                loom_model!(64 << 10, {
+                    let live = [
+                        2, 1, 9, 0, 40, 0, 1, 0, 5, 118, 97, 108, 117, 101, 1, 119, 5, 99, 104, 105, 108, 100, 1, 1, 0,
+                        39, 1, 4, 114, 111, 111, 116, 6, 110, 101, 115, 116, 101, 100, 1, 0,
+                    ];
+                    let collected = [
+                        2, 1, 9, 0, 0, 1, 1, 1, 0, 33, 1, 4, 114, 111, 111, 116, 6, 110, 101, 115, 116, 101, 100, 1, 2,
+                        9, 1, 0, 1, 1, 1, 0, 1,
+                    ];
+                    let future = [
+                        1, 2, 15, 0, 40, 0, 1, 0, 6, 102, 117, 116, 117, 114, 101, 1, 125, 42, 40, 1, 4, 114, 111, 111,
+                        116, 6, 109, 97, 114, 107, 101, 114, 1, 125, 163, 1, 0,
+                    ];
+                    let expected = [
+                        3, 2, 15, 0, 0, 1, 40, 1, 4, 114, 111, 111, 116, 6, 109, 97, 114, 107, 101, 114, 1, 125, 163,
+                        1, 1, 9, 0, 0, 1, 1, 1, 0, 33, 1, 4, 114, 111, 111, 116, 6, 110, 101, 115, 116, 101, 100, 1, 3,
+                        15, 1, 0, 1, 9, 1, 0, 1, 1, 1, 0, 1,
+                    ];
+                    let merged = Update::merge((0..count).map(|index| {
+                        let bytes = if (index % 2 == 0) == reverse {
+                            live.as_slice()
+                        } else {
+                            collected.as_slice()
+                        };
+                        Update::decode_v1(bytes).unwrap()
+                    }));
+                    let mut doc = Doc::try_from_binary_v1(merged.encode_v1().unwrap()).unwrap();
+                    doc.apply_update_from_binary_v1(future).unwrap();
+                    assert!(!doc.has_pending_updates());
+                    assert_eq!(doc.get_state_vector(), StateVector::from([(1, 1), (9, 1), (15, 2)]));
+                    // Compare the official default-GC normal form, including
+                    // all struct facts and delete ranges, after a future edit.
+                    assert_eq!(doc.encode_update_v1().unwrap(), expected);
+                });
+            }
+        }
     }
 
     #[test]

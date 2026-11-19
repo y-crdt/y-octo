@@ -53,7 +53,7 @@ impl ItemBuilder {
     }
 
     pub fn content(mut self, content: Content) -> ItemBuilder {
-        self.item.content = content;
+        self.item.replace_content(content);
         self
     }
 

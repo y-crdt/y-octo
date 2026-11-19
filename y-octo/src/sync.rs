@@ -29,4 +29,20 @@ macro_rules! loom_model {
         #[cfg(not(loom))]
         $test
     };
+    // the model body runs on a 4 KiB coroutine stack; tests with deeper call
+    // chains move the body onto a spawned thread with an explicit stack size
+    ($stack_size:expr, $test:block) => {
+        #[cfg(loom)]
+        loom::model(move || {
+            loom::thread::Builder::new()
+                .stack_size($stack_size)
+                .spawn(move || $test)
+                .unwrap()
+                .join()
+                .unwrap();
+        });
+
+        #[cfg(not(loom))]
+        $test
+    };
 }

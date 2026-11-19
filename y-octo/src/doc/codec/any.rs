@@ -27,7 +27,7 @@ pub enum Any {
     String(String),
     // FIXME: due to macro's overflow evaluating, we can't use proptest here
     #[cfg_attr(test, proptest(skip))]
-    Object(HashMap<String, Any>),
+    Object(Box<HashMap<String, Any>>),
     #[cfg_attr(test, proptest(skip))]
     Array(Vec<Any>),
     Binary(Vec<u8>),
@@ -40,7 +40,16 @@ impl<R: CrdtReader> CrdtRead<R> for Any {
             0 => Ok(Any::Undefined),
             1 => Ok(Any::Null),
             // in yjs implementation, flag 2 only save 32bit integer
-            2 => Ok(Any::Integer(reader.read_var_i32()?)),       // Integer
+            2 => {
+                let (value, negative) = reader.read_var_i32_with_sign()?;
+                // Yjs can encode -0 with the integer tag; use a float to retain
+                // its sign.
+                Ok(if value == 0 && negative {
+                    Any::Float32((-0.0_f32).into())
+                } else {
+                    Any::Integer(value)
+                })
+            }
             3 => Ok(Any::Float32(reader.read_f32_be()?.into())), // Float32
             4 => Ok(Any::Float64(reader.read_f64_be()?.into())), // Float64
             5 => Ok(Any::BigInt64(reader.read_i64_be()?)),       // BigInt64
@@ -53,7 +62,7 @@ impl<R: CrdtReader> CrdtRead<R> for Any {
                     .map(|_| Self::read_key_value(reader))
                     .collect::<Result<Vec<_>, _>>()?;
 
-                Ok(Any::Object(object.into_iter().collect()))
+                Ok(Any::Object(Box::new(object.into_iter().collect())))
             } // Object
             10 => {
                 let len = reader.read_var_u64()?;
@@ -100,7 +109,7 @@ impl<W: CrdtWriter> CrdtWrite<W> for Any {
             Any::Object(value) => {
                 writer.write_u8(127 - 9)?;
                 writer.write_var_u64(value.len() as u64)?;
-                for (key, value) in value {
+                for (key, value) in value.iter() {
                     Self::write_key_value(writer, key, value)?;
                 }
             }
@@ -134,16 +143,6 @@ impl Any {
         value.write(writer)?;
 
         Ok(())
-    }
-
-    pub(crate) fn read_multiple<R: CrdtReader>(reader: &mut R) -> JwstCodecResult<Vec<Any>> {
-        let len = reader.read_var_u64()? as usize;
-        let mut vec = Vec::with_capacity(len);
-        for _ in 0..len {
-            vec.push(Any::read(reader)?);
-        }
-
-        Ok(vec)
     }
 
     pub(crate) fn write_multiple<W: CrdtWriter>(writer: &mut W, any: &[Any]) -> JwstCodecResult {
@@ -268,7 +267,7 @@ impl TryFrom<Any> for HashMap<String, Any> {
 
     fn try_from(value: Any) -> Result<Self, Self::Error> {
         match value {
-            Any::Object(map) => Ok(map),
+            Any::Object(map) => Ok(*map),
             _ => Err(JwstCodecError::UnexpectedType("Object")),
         }
     }
@@ -313,13 +312,13 @@ impl FromIterator<(String, Any)> for Any {
     fn from_iter<I: IntoIterator<Item = (String, Any)>>(iter: I) -> Self {
         let mut map = HashMap::new();
         map.extend(iter);
-        Self::Object(map)
+        Self::Object(Box::new(map))
     }
 }
 
 impl From<HashMap<String, Any>> for Any {
     fn from(value: HashMap<String, Any>) -> Self {
-        Self::Object(value)
+        Self::Object(Box::new(value))
     }
 }
 
@@ -365,7 +364,9 @@ impl From<serde_json::Value> for Any {
             }
             serde_json::Value::String(s) => Self::String(s),
             serde_json::Value::Array(vec) => Self::Array(vec.into_iter().map(|v| v.into()).collect::<Vec<_>>()),
-            serde_json::Value::Object(obj) => Self::Object(obj.into_iter().map(|(k, v)| (k, v.into())).collect()),
+            serde_json::Value::Object(obj) => {
+                Self::Object(Box::new(obj.into_iter().map(|(k, v)| (k, v.into())).collect()))
+            }
         }
     }
 }
@@ -463,9 +464,9 @@ impl<'de> serde::Deserialize<'de> for Any {
                             values.insert(key, value);
                         }
 
-                        Ok(Any::Object(values))
+                        Ok(Any::Object(Box::new(values)))
                     }
-                    None => Ok(Any::Object(HashMap::new())),
+                    None => Ok(Any::Object(Box::default())),
                 }
             }
         }
@@ -515,18 +516,18 @@ impl Display for Any {
         match self {
             Self::True => write!(f, "true"),
             Self::False => write!(f, "false"),
-            Self::String(s) => write!(f, "\"{}\"", s),
-            Self::Integer(i) => write!(f, "{}", i),
-            Self::Float32(v) => write!(f, "{}", v),
-            Self::Float64(v) => write!(f, "{}", v),
-            Self::BigInt64(v) => write!(f, "{}", v),
+            Self::String(s) => write!(f, "\"{s}\""),
+            Self::Integer(i) => write!(f, "{i}"),
+            Self::Float32(v) => write!(f, "{v}"),
+            Self::Float64(v) => write!(f, "{v}"),
+            Self::BigInt64(v) => write!(f, "{v}"),
             Self::Object(map) => {
                 write!(f, "{{")?;
                 for (i, (key, value)) in map.iter().enumerate() {
                     if i > 0 {
                         write!(f, ", ")?;
                     }
-                    write!(f, "{}: {}", key, value)?;
+                    write!(f, "{key}: {value}")?;
                 }
                 write!(f, "}}")
             }
@@ -536,11 +537,11 @@ impl Display for Any {
                     if i > 0 {
                         write!(f, ", ")?;
                     }
-                    write!(f, "{}", value)?;
+                    write!(f, "{value}")?;
                 }
                 write!(f, "]")
             }
-            Self::Binary(buf) => write!(f, "{:?}", buf),
+            Self::Binary(buf) => write!(f, "{buf:?}"),
             Self::Undefined => write!(f, "undefined"),
             Self::Null => write!(f, "null"),
         }
@@ -555,29 +556,32 @@ mod tests {
 
     #[test]
     fn test_any_codec() {
-        let any = Any::Object(
+        #[cfg(target_pointer_width = "64")]
+        assert_eq!(std::mem::size_of::<Any>(), 32);
+
+        let any = Any::Object(Box::new(
             vec![
                 ("name".to_string(), Any::String("Alice".to_string())),
                 ("age".to_string(), Any::Integer(25)),
                 (
                     "contacts".to_string(),
                     Any::Array(vec![
-                        Any::Object(
+                        Any::Object(Box::new(
                             vec![
                                 ("type".to_string(), Any::String("Mobile".to_string())),
                                 ("number".to_string(), Any::String("1234567890".to_string())),
                             ]
                             .into_iter()
                             .collect(),
-                        ),
-                        Any::Object(
+                        )),
+                        Any::Object(Box::new(
                             vec![
                                 ("type".to_string(), Any::String("Email".to_string())),
                                 ("address".to_string(), Any::String("alice@example.com".to_string())),
                             ]
                             .into_iter()
                             .collect(),
-                        ),
+                        )),
                         Any::Undefined,
                     ]),
                 ),
@@ -592,7 +596,7 @@ mod tests {
                         Any::BigInt64(-1145141919810),
                         Any::False,
                         Any::True,
-                        Any::Object(
+                        Any::Object(Box::new(
                             vec![
                                 ("name".to_string(), Any::String("tadokoro".to_string())),
                                 ("age".to_string(), Any::String("24".to_string())),
@@ -600,14 +604,14 @@ mod tests {
                             ]
                             .into_iter()
                             .collect(),
-                        ),
+                        )),
                         Any::Binary(vec![1, 2, 3, 4, 5]),
                     ]),
                 ),
             ]
             .into_iter()
             .collect(),
-        );
+        ));
 
         let mut encoder = RawEncoder::default();
         any.write(&mut encoder).unwrap();
@@ -617,6 +621,31 @@ mod tests {
         let decoded = Any::read(&mut decoder).unwrap();
 
         assert_eq!(any, decoded);
+
+        for bytes in [&[125, 64][..], &[124, 128, 0, 0, 0], &[123, 128, 0, 0, 0, 0, 0, 0, 0]] {
+            let decoded = Any::read(&mut RawDecoder::new(bytes)).unwrap();
+            assert!(match &decoded {
+                Any::Float32(value) => value.0 == 0.0 && value.0.is_sign_negative(),
+                Any::Float64(value) => value.0 == 0.0 && value.0.is_sign_negative(),
+                _ => false,
+            });
+            let mut encoder = RawEncoder::default();
+            decoded.write(&mut encoder).unwrap();
+            assert_eq!(encoder.into_inner()[1], 128);
+        }
+
+        loom_model!({
+            // Yjs 13.6.21 encodes this map's -0 as an integer with the sign
+            // bit.
+            let bytes = [1, 1, 1, 0, 40, 1, 1, 114, 1, 120, 1, 125, 64, 0];
+            let update = Update::decode_v1(bytes).unwrap();
+            let update = Update::decode_v1(Update::merge([update]).encode_v1().unwrap()).unwrap();
+            let item = update.structs[&1][0].as_item();
+            let Content::Any(values) = &item.get().unwrap().content else {
+                panic!("expected ContentAny");
+            };
+            assert!(matches!(&values[0], Any::Float32(value) if value.0 == 0.0 && value.0.is_sign_negative()));
+        });
     }
 
     proptest! {
@@ -682,7 +711,10 @@ mod tests {
 
         assert_eq!(
             vec![("key".to_string(), 10u64.into())].into_iter().collect::<Any>(),
-            Any::Object(HashMap::from_iter(vec![("key".to_string(), Any::Integer(10))]))
+            Any::Object(Box::new(HashMap::from_iter(vec![(
+                "key".to_string(),
+                Any::Integer(10)
+            )])))
         );
 
         let any: Any = 10u64.into();

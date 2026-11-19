@@ -64,6 +64,11 @@ jobs:
         env:
           CARGO_TERM_COLOR: always
 
+      - name: Lint fuzz targets
+        run: |
+          cargo +nightly fmt --manifest-path y-octo-utils/fuzz/Cargo.toml --check
+          RUSTFLAGS="--cfg fuzzing" cargo +nightly clippy --manifest-path y-octo-utils/fuzz/Cargo.toml --all-targets -- -D warnings
+
       - name: Upload analysis results to GitHub
         uses: github/codeql-action/upload-sarif@v2
         with:
@@ -90,7 +95,7 @@ jobs:
         uses: taiki-e/install-action@cargo-llvm-cov
 
       - name: Collect coverage data
-        run: cargo llvm-cov nextest --all-targets -E 'not kind(bench)' --test-threads=1 --lcov --output-path lcov.info
+        run: cargo llvm-cov nextest --all-targets --lcov --output-path lcov.info
       - name: Upload coverage data to codecov
         uses: codecov/codecov-action@v5
         with:
@@ -116,44 +121,6 @@ jobs:
       - name: Loom Thread Test
         run: |
           cargo nextest run -p y-octo --lib
-
-  fuzzing:
-    name: fuzzing
-    runs-on: ubuntu-latest
-    continue-on-error: true
-    env:
-      RUSTFLAGS: -D warnings
-      CARGO_TERM_COLOR: always
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Rust
-        uses: ./.github/actions/setup-rust
-        with:
-          toolchain: ${{ env.nightly }}
-
-      - name: fuzzing
-        working-directory: ./y-octo-utils
-        run: |
-          cargo install cargo-fuzz
-          cargo +${{ env.nightly }} fuzz run apply_update -- -max_total_time=30
-          cargo +${{ env.nightly }} fuzz run codec_doc_any_struct -- -max_total_time=30
-          cargo +${{ env.nightly }} fuzz run codec_doc_any -- -max_total_time=30
-          cargo +${{ env.nightly }} fuzz run decode_bytes -- -max_total_time=30
-          cargo +${{ env.nightly }} fuzz run i32_decode -- -max_total_time=30
-          cargo +${{ env.nightly }} fuzz run i32_encode -- -max_total_time=30
-          cargo +${{ env.nightly }} fuzz run ins_del_text -- -max_total_time=30
-          cargo +${{ env.nightly }} fuzz run sync_message -- -max_total_time=30
-          cargo +${{ env.nightly }} fuzz run u64_decode -- -max_total_time=30
-          cargo +${{ env.nightly }} fuzz run u64_encode -- -max_total_time=30
-          cargo +${{ env.nightly }} fuzz run apply_update -- -max_total_time=30
-
-      - name: upload fuzz artifacts
-        if: ${{ failure() }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: fuzz-artifact
-          path: ./y-octo-utils/fuzz/artifacts/**/*
 
   miri:
     name: miri code check

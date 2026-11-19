@@ -1,6 +1,9 @@
+mod identity;
 use std::{collections::BTreeMap, fmt::Display};
 
-use super::{AsInner, list::ListType};
+pub use identity::TextIdentityRun;
+
+use super::{AsInner, Id, list::ListType};
 use crate::{
     Any, Content, JwstCodecError, JwstCodecResult,
     doc::{DocStore, ItemRef, Node, Parent, Somr, YType, YTypeRef},
@@ -71,14 +74,14 @@ impl Text {
                         if is_nullish(value) {
                             attrs.remove(key.as_str());
                         } else {
-                            attrs.insert(key.to_string(), value.clone());
+                            attrs.insert(key.to_string(), value.as_ref().clone());
                         }
                     }
                     Content::String(text) => {
                         push_insert(&mut ops, TextInsert::Text(text.clone()), &attrs);
                     }
                     Content::Embed(embed) => {
-                        push_insert(&mut ops, TextInsert::Embed(vec![embed.clone()]), &attrs);
+                        push_insert(&mut ops, TextInsert::Embed(vec![embed.as_ref().clone()]), &attrs);
                     }
                     Content::Any(any) => {
                         push_insert(&mut ops, TextInsert::Embed(any.clone()), &attrs);
@@ -121,7 +124,7 @@ impl Text {
                                     &mut store,
                                     &mut ty,
                                     &mut pos,
-                                    Content::Embed(value.clone()),
+                                    Content::Embed(Box::new(value.clone())),
                                     attrs.clone(),
                                 )?;
                             }
@@ -193,7 +196,7 @@ impl TextPosition {
                     if is_nullish(value) {
                         self.attrs.remove(key.as_str());
                     } else {
-                        self.attrs.insert(key.to_string(), value.clone());
+                        self.attrs.insert(key.to_string(), value.as_ref().clone());
                     }
                 } else if right.countable() {
                     self.index += right.len();
@@ -266,11 +269,7 @@ fn advance_text_position(store: &mut DocStore, pos: &mut TextPosition, mut remai
 }
 
 fn minimize_attribute_changes(pos: &mut TextPosition, attrs: &TextAttributes) {
-    loop {
-        let Some(item) = pos.right.get() else {
-            break;
-        };
-
+    while let Some(item) = pos.right.get() {
         if item.deleted() {
             pos.forward();
             continue;
@@ -278,7 +277,7 @@ fn minimize_attribute_changes(pos: &mut TextPosition, attrs: &TextAttributes) {
 
         if let Content::Format { key, value } = &item.content {
             let attr = attrs.get(key.as_str()).cloned().unwrap_or(Any::Null);
-            if attr == *value {
+            if attr == **value {
                 pos.forward();
                 continue;
             }
@@ -331,7 +330,7 @@ fn insert_attributes(
             pos,
             Content::Format {
                 key: key.to_string(),
-                value: value.clone(),
+                value: Box::new(value.clone()),
             },
         )?;
     }
@@ -345,11 +344,7 @@ fn insert_negated_attributes(
     pos: &mut TextPosition,
     mut negated: TextAttributes,
 ) -> JwstCodecResult {
-    loop {
-        let Some(item) = pos.right.get() else {
-            break;
-        };
-
+    while let Some(item) = pos.right.get() {
         if item.deleted() {
             pos.forward();
             continue;
@@ -357,7 +352,7 @@ fn insert_negated_attributes(
 
         if let Content::Format { key, value } = &item.content
             && let Some(negated_value) = negated.get(key.as_str())
-            && negated_value == value
+            && negated_value == value.as_ref()
         {
             negated.remove(key.as_str());
             pos.forward();
@@ -374,7 +369,7 @@ fn insert_negated_attributes(
             pos,
             Content::Format {
                 key: key.to_string(),
-                value,
+                value: Box::new(value),
             },
         )?;
     }
@@ -430,10 +425,10 @@ fn format_text(
         match &item.content {
             Content::Format { key, value } => {
                 if let Some(attr) = attrs.get(key.as_str()) {
-                    if attr == value {
+                    if attr == value.as_ref() {
                         negated.remove(key.as_str());
                     } else {
-                        negated.insert(key.to_string(), value.clone());
+                        negated.insert(key.to_string(), value.as_ref().clone());
                     }
                     store.delete_item(item, Some(ty));
                     pos.forward();
@@ -498,7 +493,7 @@ fn delete_text(store: &mut DocStore, ty: &mut YType, pos: &mut TextPosition, mut
 
 #[cfg(test)]
 mod tests {
-    use rand::{Rng, SeedableRng};
+    use rand::{RngExt, SeedableRng};
     use rand_chacha::ChaCha20Rng;
     use yrs::{Options, Text, Transact};
 
@@ -530,8 +525,42 @@ mod tests {
 
     #[test]
     #[cfg(not(loom))]
+    fn test_insert_before_leading_tombstone_converges() {
+        fn sync(from: &Doc, to: &mut Doc) {
+            let sv = to.get_state_vector();
+            let update = from.encode_state_as_update_v1(&sv).unwrap();
+            to.apply_update_from_binary_v1(update).unwrap();
+        }
+
+        let c0 = Doc::with_client(0);
+        let mut t0 = c0.get_or_create_text("text").unwrap();
+        let mut c1 = Doc::with_client(1);
+        let mut t1 = c1.get_or_create_text("text").unwrap();
+        let mut c2 = Doc::with_client(2);
+        let mut t2 = c2.get_or_create_text("text").unwrap();
+
+        t0.insert(0, "a").unwrap();
+        sync(&c0, &mut c1);
+        t1.insert(1, "b").unwrap();
+
+        t0.insert(1, "c").unwrap();
+        t0.remove(0, 1).unwrap();
+
+        sync(&c0, &mut c2);
+        t2.insert(0, "d").unwrap();
+
+        sync(&c1, &mut c2);
+        sync(&c2, &mut c1);
+
+        let s1 = t1.to_string();
+        let s2 = t2.to_string();
+        assert_eq!(s1, s2, "c1 and c2 diverged: {s1:?} vs {s2:?}");
+    }
+
+    #[test]
+    #[cfg(not(loom))]
     fn test_parallel_insert_text() {
-        let seed = rand::thread_rng().r#gen();
+        let seed = rand::rng().random();
         let rand = ChaCha20Rng::seed_from_u64(seed);
         let mut handles = Vec::new();
 
@@ -550,7 +579,7 @@ mod tests {
 
                 handles.push(thread::spawn(move || {
                     for j in 0..10 {
-                        let pos = rand.gen_range(0..text.len());
+                        let pos = rand.random_range(0..text.len());
                         let string = format!("hello {}", i * j);
 
                         text.insert(pos, &string).unwrap();
@@ -571,7 +600,7 @@ mod tests {
                 handles.push(thread::spawn(move || {
                     let mut text = doc.get_or_create_text("test").unwrap();
                     for j in 0..10 {
-                        let pos = rand.gen_range(0..text.len());
+                        let pos = rand.random_range(0..text.len());
                         let string = format!("hello doc{}", i * j);
 
                         text.insert(pos, &string).unwrap();
@@ -609,7 +638,7 @@ mod tests {
                     let len = len.clone();
                     let mut text = text.clone();
                     let ins = i % 2 == 0;
-                    let pos = rand.gen_range(0..16);
+                    let pos = rand.random_range(0..16);
 
                     if ins {
                         let str = format!("hello {}", i * j);
@@ -644,9 +673,9 @@ mod tests {
 
     #[test]
     fn loom_parallel_ins_del_text() {
-        let seed = rand::thread_rng().r#gen();
+        let seed = rand::rng().random();
         let mut rand = ChaCha20Rng::seed_from_u64(seed);
-        let ranges = (0..20).map(|_| rand.gen_range(0..16)).collect::<Vec<_>>();
+        let ranges = (0..20).map(|_| rand.random_range(0..16)).collect::<Vec<_>>();
 
         loom_model!({
             let doc = Doc::new();
@@ -701,7 +730,7 @@ mod tests {
             };
             // in loom loop
             #[allow(clippy::needless_borrow)]
-            let doc = Doc::try_from_binary_v1(binary).unwrap();
+            let doc = Doc::try_from_binary_v1(&binary).unwrap();
             let mut text = doc.get_or_create_text("greating").unwrap();
 
             assert_eq!(text.to_string(), "hello world");
@@ -824,9 +853,60 @@ mod tests {
                 text.to_delta(),
                 vec![TextDeltaOp::Insert {
                     insert: TextInsert::Text("😀".to_string()),
-                    format: Some(attrs),
+                    format: Some(attrs.clone()),
                 }]
             );
+            let runs = text.identity_runs().unwrap();
+            assert_eq!(runs.len(), 1);
+            assert_eq!(runs[0].attributes, attrs);
+            assert_eq!(runs[0].insert, TextInsert::Text("😀".into()));
+            assert_eq!(text.identity().unwrap(), crate::TypeIdentity::Root("text".into()));
+            let mut decoded = Doc::with_client(77);
+            decoded
+                .apply_update_from_binary_v1(doc.encode_update_v1().unwrap())
+                .unwrap();
+            let restored = decoded.get_or_create_text("text").unwrap();
+            assert_eq!(restored.identity().unwrap(), text.identity().unwrap());
+            assert_eq!(restored.identity_runs().unwrap(), runs);
+            text.insert(2, "tail").unwrap();
+            let tail = text.identity_runs().unwrap().last().unwrap().id;
+            text.remove(2, 1).unwrap();
+            doc.gc().unwrap();
+            let surviving = text.identity_runs().unwrap();
+            assert_eq!(surviving[0].id, runs[0].id);
+            assert_eq!(surviving[1].id, tail + 1);
+            assert_eq!(
+                doc.get_delete_sets()
+                    .iter()
+                    .any(|(client, ranges)| *client == tail.client && ranges.contains(tail.clock)),
+                true
+            );
+        });
+        loom_model!({
+            let doc = Doc::new();
+            let mut parent = doc.get_or_create_map("parent").unwrap();
+            let nested = doc.create_text().unwrap();
+            parent
+                .insert("text".into(), crate::Value::Text(nested.clone()))
+                .unwrap();
+            let old_identity = nested.identity().unwrap();
+            let replacement = doc.create_text().unwrap();
+            parent
+                .insert("text".into(), crate::Value::Text(replacement.clone()))
+                .unwrap();
+            assert_ne!(old_identity, replacement.identity().unwrap());
+            let mut decoded = Doc::with_client(78);
+            decoded
+                .apply_update_from_binary_v1(doc.encode_update_v1().unwrap())
+                .unwrap();
+            let restored = decoded
+                .get_map("parent")
+                .unwrap()
+                .get("text")
+                .unwrap()
+                .to_text()
+                .unwrap();
+            assert_eq!(restored.identity().unwrap(), replacement.identity().unwrap());
         });
     }
 }

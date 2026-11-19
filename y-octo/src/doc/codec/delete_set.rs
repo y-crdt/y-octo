@@ -1,18 +1,10 @@
 use std::{
-    collections::{VecDeque, hash_map::Entry},
+    collections::hash_map::Entry,
     ops::{Deref, DerefMut, Range},
 };
 
 use super::*;
 use crate::doc::OrderRange;
-
-impl<R: CrdtReader> CrdtRead<R> for Range<u64> {
-    fn read(decoder: &mut R) -> JwstCodecResult<Self> {
-        let clock = decoder.read_var_u64()?;
-        let len = decoder.read_var_u64()?;
-        Ok(clock..clock + len)
-    }
-}
 
 impl<W: CrdtWriter> CrdtWrite<W> for Range<u64> {
     fn write(&self, encoder: &mut W) -> JwstCodecResult {
@@ -22,36 +14,14 @@ impl<W: CrdtWriter> CrdtWrite<W> for Range<u64> {
     }
 }
 
-impl<R: CrdtReader> CrdtRead<R> for OrderRange {
-    fn read(decoder: &mut R) -> JwstCodecResult<Self> {
-        let num_of_deletes = decoder.read_var_u64()? as usize;
-        if num_of_deletes == 1 {
-            Ok(OrderRange::Range(Range::<u64>::read(decoder)?))
-        } else {
-            let mut deletes = VecDeque::with_capacity(num_of_deletes);
-
-            for _ in 0..num_of_deletes {
-                deletes.push_back(Range::<u64>::read(decoder)?);
-            }
-
-            Ok(OrderRange::Fragment(deletes))
-        }
-    }
-}
-
 impl<W: CrdtWriter> CrdtWrite<W> for OrderRange {
     fn write(&self, encoder: &mut W) -> JwstCodecResult {
-        match self {
-            OrderRange::Range(range) => {
-                encoder.write_var_u64(1)?;
-                range.write(encoder)?;
-            }
-            OrderRange::Fragment(ranges) => {
-                encoder.write_var_u64(ranges.len() as u64)?;
-                for range in ranges {
-                    range.write(encoder)?;
-                }
-            }
+        // canonicalize like yjs' sortAndMergeDeleteSet so the wire format is
+        // stable no matter how the ranges were inserted or decoded
+        let ranges = self.canonical_ranges();
+        encoder.write_var_u64(ranges.len() as u64)?;
+        for range in ranges {
+            range.write(encoder)?;
         }
 
         Ok(())
@@ -131,30 +101,21 @@ impl DeleteSet {
     }
 }
 
-impl<R: CrdtReader> CrdtRead<R> for DeleteSet {
-    fn read(decoder: &mut R) -> JwstCodecResult<Self> {
-        let num_of_clients = decoder.read_var_u64()? as usize;
-        // See: [HASHMAP_SAFE_CAPACITY]
-        let mut map = ClientMap::with_capacity(num_of_clients.min(HASHMAP_SAFE_CAPACITY));
-
-        for _ in 0..num_of_clients {
-            let client = decoder.read_var_u64()?;
-            let deletes = OrderRange::read(decoder)?;
-            map.insert(client, deletes);
-        }
-
-        map.shrink_to_fit();
-        Ok(DeleteSet(map))
-    }
-}
-
 impl<W: CrdtWriter> CrdtWrite<W> for DeleteSet {
     fn write(&self, encoder: &mut W) -> JwstCodecResult {
-        encoder.write_var_u64(self.len() as u64)?;
         let mut clients = self.keys().copied().collect::<Vec<_>>();
 
         // Descending
         clients.sort_by(|a, b| b.cmp(a));
+
+        // skip clients whose ranges canonicalize to nothing (e.g. only
+        // zero-length ranges), keeping the wire format minimal and stable
+        let clients = clients
+            .into_iter()
+            .filter(|client| !self.get(client).unwrap().canonical_ranges().is_empty())
+            .collect::<Vec<_>>();
+
+        encoder.write_var_u64(clients.len() as u64)?;
 
         for client in clients {
             encoder.write_var_u64(client)?;
@@ -217,11 +178,11 @@ mod tests {
     #[test]
     fn test_encode_decode() {
         let delete_set = DeleteSet::from([(1, vec![0..10, 20..30]), (2, vec![0..5, 10..20])]);
-        let mut encoder = RawEncoder::default();
-        delete_set.write(&mut encoder).unwrap();
-        let update = encoder.into_inner();
-        let mut decoder = RawDecoder::new(&update);
-        let decoded = DeleteSet::read(&mut decoder).unwrap();
-        assert_eq!(delete_set, decoded);
+        let update = Update {
+            delete_set: delete_set.clone(),
+            ..Update::default()
+        };
+        let decoded = Update::decode_v1(update.encode_v1().unwrap()).unwrap();
+        assert_eq!(delete_set, decoded.delete_set);
     }
 }

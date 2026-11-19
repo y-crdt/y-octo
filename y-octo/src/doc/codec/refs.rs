@@ -44,9 +44,7 @@ impl PartialEq for Node {
     }
 }
 
-impl Eq for Node {
-    fn assert_receiver_is_total_eq(&self) {}
-}
+impl Eq for Node {}
 
 impl From<Item> for Node {
     fn from(value: Item) -> Self {
@@ -61,33 +59,6 @@ impl Node {
 
     pub fn new_gc(id: Id, len: u64) -> Self {
         Self::GC(Box::new(NodeLen { id, len }))
-    }
-
-    pub fn read<R: CrdtReader>(decoder: &mut R, id: Id) -> JwstCodecResult<Self> {
-        let info = decoder.read_info()?;
-        let first_5_bit = info & 0b11111;
-
-        match first_5_bit {
-            0 => {
-                let len = decoder.read_var_u64()?;
-                Ok(Node::new_gc(id, len))
-            }
-            10 => {
-                let len = decoder.read_var_u64()?;
-                Ok(Node::new_skip(id, len))
-            }
-            _ => {
-                let item = Somr::new(Item::read(decoder, id, info, first_5_bit)?);
-
-                if let Content::Type(ty) = &item.get().unwrap().content
-                    && let Some(mut ty) = ty.ty_mut()
-                {
-                    ty.item = item.clone();
-                }
-
-                Ok(Node::Item(item))
-            }
-        }
     }
 
     pub fn id(&self) -> Id {
@@ -134,9 +105,12 @@ impl Node {
         }
     }
 
+    // Empty Somr links must be None, not neighbors, so head/tail stop at the
+    // real boundary.
     pub fn left(&self) -> Option<Self> {
         if let Node::Item(item) = self {
-            item.get().map(|item| Node::Item(item.left.clone()))
+            item.get()
+                .and_then(|item| item.left.is_some().then(|| Node::Item(item.left.clone())))
         } else {
             None
         }
@@ -144,7 +118,8 @@ impl Node {
 
     pub fn right(&self) -> Option<Self> {
         if let Node::Item(item) = self {
-            item.get().map(|item| Node::Item(item.right.clone()))
+            item.get()
+                .and_then(|item| item.right.is_some().then(|| Node::Item(item.right.clone())))
         } else {
             None
         }
@@ -188,45 +163,21 @@ impl Node {
         }
     }
 
-    pub fn last_id(&self) -> Option<Id> {
-        if let Node::Item(item) = self {
-            item.get().map(|item| item.last_id())
-        } else {
-            None
-        }
-    }
-
     pub fn split_at(&self, offset: u64) -> JwstCodecResult<(Self, Self)> {
-        if let Self::Item(item) = self {
-            let item = item.get().unwrap();
-            debug_assert!(offset > 0 && item.len() > 1 && offset < item.len());
-            let id = item.id;
-            let right_id = Id::new(id.client, id.clock + offset);
-            let (left_content, right_content) = item.content.split(offset)?;
-
-            let left_item = Somr::new(Item::new(
-                id,
-                left_content,
-                // let caller connect left <-> node <-> right
-                Somr::none(),
-                Somr::none(),
-                item.parent.clone(),
-                item.parent_sub.clone(),
-            ));
-
-            let right_item = Somr::new(Item::new(
-                right_id,
-                right_content,
-                // let caller connect left <-> node <-> right
-                Somr::none(),
-                Somr::none(),
-                item.parent.clone(),
-                item.parent_sub.clone(),
-            ));
-
-            Ok((Self::Item(left_item), Self::Item(right_item)))
-        } else {
-            Err(JwstCodecError::ItemSplitNotSupport)
+        debug_assert!(offset > 0 && offset < self.len());
+        match self {
+            Self::GC(node) => Ok((
+                Self::new_gc(node.id, offset),
+                Self::new_gc(Id::new(node.id.client, node.id.clock + offset), node.len - offset),
+            )),
+            Self::Skip(node) => Ok((
+                Self::new_skip(node.id, offset),
+                Self::new_skip(Id::new(node.id.client, node.id.clock + offset), node.len - offset),
+            )),
+            Self::Item(item) => {
+                let (left, right) = item.get().unwrap().split_at(offset)?;
+                Ok((left.into(), right.into()))
+            }
         }
     }
 
@@ -253,6 +204,7 @@ impl Node {
                 let mut litem = unsafe { lref.get_mut_unchecked() };
                 let mut ritem = unsafe { rref.get_mut_unchecked() };
                 let llen = litem.len();
+                let rlen = ritem.len();
 
                 let parent_kind = match &litem.parent {
                     Some(Parent::Type(ty)) => ty.ty().map(|ty| ty.kind()),
@@ -309,6 +261,7 @@ impl Node {
                     litem.flags.set_keep()
                 }
 
+                litem.len += rlen;
                 litem.right = ritem.right.clone();
                 unsafe {
                     if litem.right.is_some() {
@@ -390,7 +343,38 @@ mod tests {
                 assert_eq!(struct_info.len(), 7);
                 assert_eq!(struct_info.client(), 3);
                 assert_eq!(struct_info.clock(), 0);
+                assert_eq!(struct_info.head(), struct_info);
+                assert_eq!(struct_info.tail(), struct_info);
+                assert!(struct_info.left().is_none());
+                assert!(struct_info.right().is_none());
             }
+            for node in [Node::new_gc(Id::new(1, 5), 4), Node::new_skip(Id::new(1, 5), 4)] {
+                let (left, right) = node.split_at(2).unwrap();
+                assert_eq!(left.id(), Id::new(1, 5));
+                assert_eq!(right.id(), Id::new(1, 7));
+                assert_eq!((left.len(), right.len()), (2, 2));
+                assert_eq!(left.is_skip(), node.is_skip());
+                assert_eq!(right.is_gc(), node.is_gc());
+            }
+            let item = ItemBuilder::new()
+                .id(Id::new(1, 5))
+                .left_id(Some(Id::new(2, 3)))
+                .right_id(Some(Id::new(3, 2)))
+                .content(Content::String("abcd".into()))
+                .build();
+            item.flags.set_deleted();
+            item.flags.set_keep();
+            let (left, right) = Node::from(item).split_at(2).unwrap();
+            for node in [&left, &right] {
+                let item = node.as_item();
+                let item = item.get().unwrap();
+                assert!(item.deleted());
+                assert!(item.keep());
+                assert!(item.left.is_none() && item.right.is_none());
+                assert_eq!(item.origin_right_id, Some(Id::new(3, 2)));
+            }
+            assert_eq!(left.as_item().get().unwrap().origin_left_id, Some(Id::new(2, 3)));
+            assert_eq!(right.as_item().get().unwrap().origin_left_id, Some(Id::new(1, 6)));
         });
     }
 
@@ -439,40 +423,38 @@ mod tests {
             ];
 
             for info in struct_infos {
-                let mut encoder = RawEncoder::default();
-                info.write(&mut encoder).unwrap();
+                let mut update = Update::default();
+                update.structs.insert(info.client(), [info.clone()].into());
+                let decoded = Update::decode_v1(update.encode_v1().unwrap()).unwrap();
+                let decoded = decoded.structs.get(&info.client()).unwrap().front().unwrap();
 
-                let update = encoder.into_inner();
-                let mut decoder = RawDecoder::new(&update);
-                let decoded = Node::read(&mut decoder, info.id()).unwrap();
-
-                assert_eq!(info, decoded);
+                assert_eq!(&info, decoded);
             }
         });
     }
 
     #[cfg(not(loom))]
     fn struct_info_round_trip(info: &mut Node) -> JwstCodecResult {
-        if let Node::Item(item) = info {
-            if let Some(item) = item.get_mut() {
-                if !item.is_valid() {
-                    return Ok(());
-                }
+        if info.len() == 0 || info.clock().checked_add(info.len()).is_none() {
+            return Ok(());
+        }
+        if let Node::Item(item) = info
+            && let Some(item) = item.get_mut()
+        {
+            if !item.is_valid() {
+                return Ok(());
+            }
 
-                if item.content.countable() {
-                    item.flags.set_countable();
-                }
+            if item.content.countable() {
+                item.flags.set_countable();
             }
         }
-        let mut encoder = RawEncoder::default();
-        info.write(&mut encoder)?;
+        let mut update = Update::default();
+        update.structs.insert(info.client(), [info.clone()].into());
+        let decoded = Update::decode_v1(update.encode_v1()?)?;
+        let decoded = decoded.structs.get(&info.client()).unwrap().front().unwrap();
 
-        let ret = encoder.into_inner();
-        let mut decoder = RawDecoder::new(&ret);
-
-        let decoded = Node::read(&mut decoder, info.id())?;
-
-        assert_eq!(info, &decoded);
+        assert_eq!(info, decoded);
 
         Ok(())
     }

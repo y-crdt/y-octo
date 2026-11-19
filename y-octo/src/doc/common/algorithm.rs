@@ -1,0 +1,392 @@
+use std::borrow::Cow;
+
+use super::{HashSet, Id, StateVector};
+
+pub(crate) fn find_clock_segment(
+    count: usize,
+    clock: u64,
+    mut segment_at: impl FnMut(usize) -> Option<(u64, u64)>,
+) -> Option<usize> {
+    let mut left = 0usize;
+    let mut right = count;
+
+    while left < right {
+        let middle = left + (right - left) / 2;
+        let (start, len) = segment_at(middle)?;
+        let end = start.saturating_add(len);
+        if clock < start {
+            right = middle;
+        } else if clock >= end {
+            left = middle + 1;
+        } else {
+            return Some(middle);
+        }
+    }
+
+    None
+}
+
+/// Slice by Yjs clocks (UTF-16 code units), not UTF-8 bytes or Unicode scalars.
+/// Like Yjs ContentString.splice, replace each retained half of a split
+/// surrogate pair with U+FFFD rather than rounding the boundary and changing
+/// its clock length.
+pub(crate) fn utf16_slice(value: &str, offset: u64, len: u64) -> Cow<'_, str> {
+    Utf16Slices::new(value).slice(offset, len)
+}
+
+pub(crate) struct Utf16Slices<'a> {
+    value: &'a str,
+    chars: std::iter::Peekable<std::str::CharIndices<'a>>,
+    clock: u64,
+}
+
+impl<'a> Utf16Slices<'a> {
+    pub(crate) fn new(value: &'a str) -> Self {
+        Self {
+            value,
+            chars: value.char_indices().peekable(),
+            clock: 0,
+        }
+    }
+
+    fn boundary(&mut self, target: u64) -> (usize, usize, bool) {
+        while let Some(&(byte, ch)) = self.chars.peek() {
+            let next = self.clock + ch.len_utf16() as u64;
+            if target < next {
+                return (byte, byte + ch.len_utf8(), target > self.clock);
+            }
+            self.clock = next;
+            self.chars.next();
+        }
+        (self.value.len(), self.value.len(), false)
+    }
+
+    // Callers supplying multiple slices must advance in UTF-16 clock order.
+    pub(crate) fn slice(&mut self, offset: u64, len: u64) -> Cow<'a, str> {
+        if len == 0 {
+            return Cow::Borrowed(&self.value[..0]);
+        }
+        let (start, after_start, start_surrogate) = self.boundary(offset);
+        let (end, _, end_surrogate) = self.boundary(offset.saturating_add(len));
+        let selected = &self.value[if start_surrogate { after_start } else { start }..end];
+        if start_surrogate || end_surrogate {
+            Cow::Owned(format!(
+                "{}{selected}{}",
+                if start_surrogate { "\u{FFFD}" } else { "" },
+                if end_surrogate { "\u{FFFD}" } else { "" },
+            ))
+        } else {
+            Cow::Borrowed(selected)
+        }
+    }
+}
+
+pub(crate) fn find_conflict_left<T: Clone + Eq>(
+    this: ConflictItem,
+    mut left: Option<T>,
+    mut conflict: Option<T>,
+    right: Option<T>,
+    mut item: impl FnMut(&T) -> Option<ConflictItem>,
+    mut next: impl FnMut(&T) -> Option<T>,
+    mut origin_owner: impl FnMut(Id) -> Option<Id>,
+) -> Option<T> {
+    let mut conflicting = HashSet::default();
+    let mut before_origin = HashSet::default();
+
+    while let Some(current) = conflict {
+        if right.as_ref() == Some(&current) {
+            break;
+        }
+        let Some(candidate) = item(&current) else {
+            break;
+        };
+        before_origin.insert(candidate.id);
+        conflicting.insert(candidate.id);
+
+        if this.origin_left == candidate.origin_left {
+            if candidate.id.client < this.id.client {
+                left = Some(current.clone());
+                conflicting.clear();
+            } else if this.origin_right == candidate.origin_right {
+                break;
+            }
+        } else if let Some(candidate_left) = candidate.origin_left {
+            // Origins can point inside compacted structs; the sets contain
+            // struct starts.
+            let Some(owner) = origin_owner(candidate_left) else {
+                break;
+            };
+            // Yjs stops at an origin outside the scanned prefix; continuing
+            // could choose a later conflict and delete the actual map winner.
+            if !before_origin.contains(&owner) {
+                break;
+            }
+            if !conflicting.contains(&owner) {
+                left = Some(current.clone());
+                conflicting.clear();
+            }
+        } else {
+            break;
+        }
+
+        conflict = next(&current);
+    }
+
+    left
+}
+
+/// Returns the client of the first dependency (origin left, origin right,
+/// then parent) not yet covered by `state`, mirroring yjs' integration order
+/// decision. Dependencies on the same client never block: structs of one
+/// client are always consumed in clock order.
+pub(crate) fn find_missing_dependency(
+    id: Id,
+    origin_left: Option<Id>,
+    origin_right: Option<Id>,
+    parent: Option<Id>,
+    state: &StateVector,
+) -> Option<u64> {
+    for dependency in [origin_left, origin_right, parent].into_iter().flatten() {
+        if dependency.client != id.client && dependency.clock >= state.get(&dependency.client) {
+            return Some(dependency.client);
+        }
+    }
+    None
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct ConflictItem {
+    pub id: Id,
+    pub origin_left: Option<Id>,
+    pub origin_right: Option<Id>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn segments(segments: &[(u64, u64)]) -> impl FnMut(usize) -> Option<(u64, u64)> + '_ {
+        |index| segments.get(index).copied()
+    }
+
+    #[test]
+    #[allow(clippy::type_complexity)]
+    fn clock_segment_lookup() {
+        let cases: &[(&[(u64, u64)], u64, Option<usize>)] = &[
+            (&[], 0, None),
+            (&[(0, 10)], 0, Some(0)),
+            (&[(0, 10)], 9, Some(0)),
+            (&[(0, 10)], 10, None),
+            (&[(0, 10), (10, 5), (20, 10)], 19, None),
+            (&[(0, 10), (10, 5), (20, 10)], 20, Some(2)),
+            (&[(0, 10), (10, 5), (20, 10)], 29, Some(2)),
+            (&[(0, 10), (10, 5), (20, 10)], 30, None),
+            (&[(5, 5), (20, 10)], 4, None),
+            (&[(5, 5), (20, 10)], 7, Some(0)),
+        ];
+        for (segments_input, clock, expected) in cases {
+            assert_eq!(
+                find_clock_segment(segments_input.len(), *clock, segments(segments_input)),
+                *expected,
+                "segments {segments_input:?} clock {clock}"
+            );
+        }
+    }
+
+    #[test]
+    fn utf16_offsets() {
+        for (value, offset, len, expected) in [
+            ("", 0, 1, ""),
+            ("abc", 0, 3, "abc"),
+            ("abc", 1, 1, "b"),
+            ("abc", 3, 1, ""),
+            ("a😀b", 0, 2, "a\u{FFFD}"),
+            ("a😀b", 1, 1, "\u{FFFD}"),
+            ("a😀b", 2, 1, "\u{FFFD}"),
+            ("a😀b", 2, 2, "\u{FFFD}b"),
+            ("a😀b", 2, 0, ""),
+            ("a😀b", 1, 2, "😀"),
+            ("a😀b", 3, u64::MAX, "b"),
+            ("中文", 1, 1, "文"),
+        ] {
+            assert_eq!(
+                utf16_slice(value, offset, len),
+                expected,
+                "{value:?} offset={offset} len={len}"
+            );
+        }
+        assert!(matches!(utf16_slice("a😀b", 1, 2), Cow::Borrowed("😀")));
+        let mut slices = Utf16Slices::new("中😀文🎉尾");
+        for (offset, len, expected) in [(0, 2, "中\u{FFFD}"), (2, 3, "\u{FFFD}文\u{FFFD}"), (5, 2, "\u{FFFD}尾")] {
+            assert_eq!(slices.slice(offset, len), expected);
+        }
+    }
+
+    #[test]
+    #[allow(clippy::type_complexity)]
+    fn missing_dependency_order() {
+        let state = StateVector::from([(1, 10), (2, 5)]);
+        let id = Id::new(1, 10);
+        let cases: &[(Option<Id>, Option<Id>, Option<Id>, Option<u64>)] = &[
+            (None, None, None, None),
+            // satisfied dependencies never block
+            (Some(Id::new(1, 9)), Some(Id::new(2, 4)), Some(Id::new(2, 0)), None),
+            // same-client dependencies never block even beyond state
+            (Some(Id::new(1, 100)), None, None, None),
+            // first unsatisfied dependency wins: left, then right, then parent
+            (Some(Id::new(2, 5)), Some(Id::new(3, 0)), Some(Id::new(4, 0)), Some(2)),
+            (None, Some(Id::new(3, 0)), Some(Id::new(4, 0)), Some(3)),
+            (None, None, Some(Id::new(4, 0)), Some(4)),
+        ];
+        for (left, right, parent, expected) in cases {
+            assert_eq!(
+                find_missing_dependency(id, *left, *right, *parent, &state),
+                *expected,
+                "left {left:?} right {right:?} parent {parent:?}"
+            );
+        }
+    }
+
+    #[derive(Clone, PartialEq, Eq, Debug)]
+    struct ConflictNode {
+        id: Id,
+        len: u64,
+        origin_left: Option<Id>,
+        origin_right: Option<Id>,
+        right: Option<usize>,
+    }
+
+    fn conflict_left(
+        this: ConflictItem,
+        left: Option<usize>,
+        conflict: Option<usize>,
+        right: Option<usize>,
+        nodes: &[ConflictNode],
+    ) -> Option<usize> {
+        find_conflict_left(
+            this,
+            left,
+            conflict,
+            right,
+            |&index| {
+                nodes.get(index).map(|node| ConflictItem {
+                    id: node.id,
+                    origin_left: node.origin_left,
+                    origin_right: node.origin_right,
+                })
+            },
+            |&index| nodes.get(index).and_then(|node| node.right),
+            |id| {
+                nodes
+                    .iter()
+                    .find(|node| {
+                        node.id.client == id.client && node.id.clock <= id.clock && id.clock < node.id.clock + node.len
+                    })
+                    .map(|node| node.id)
+            },
+        )
+    }
+
+    fn item(client: u64, clock: u64, origin_left: Option<Id>, origin_right: Option<Id>) -> ConflictItem {
+        ConflictItem {
+            id: Id::new(client, clock),
+            origin_left,
+            origin_right,
+        }
+    }
+
+    #[test]
+    fn conflict_left_decisions() {
+        // concurrent inserts at the same position: lower client id goes left
+        let concurrent = |this_client: u64, other_client: u64| {
+            let nodes = [ConflictNode {
+                id: Id::new(other_client, 0),
+                len: 1,
+                origin_left: None,
+                origin_right: None,
+                right: None,
+            }];
+            conflict_left(item(this_client, 0, None, None), None, Some(0), None, &nodes)
+        };
+        assert_eq!(concurrent(2, 1), Some(0), "higher client id inserts after");
+        assert_eq!(concurrent(1, 2), None, "lower client id inserts before");
+
+        // same origin left but higher client id and matching origin right:
+        // insert before the candidate
+        let nodes = [ConflictNode {
+            id: Id::new(2, 0),
+            len: 1,
+            origin_left: Some(Id::new(1, 0)),
+            origin_right: Some(Id::new(1, 5)),
+            right: None,
+        }];
+        assert_eq!(
+            conflict_left(
+                item(1, 6, Some(Id::new(1, 0)), Some(Id::new(1, 5))),
+                None,
+                Some(0),
+                None,
+                &nodes
+            ),
+            None
+        );
+
+        // a candidate whose origin left was walked past before the last
+        // conflicting clear becomes the new left
+        let nodes = [
+            ConflictNode {
+                id: Id::new(1, 0),
+                len: 2,
+                origin_left: Some(Id::new(8, 0)),
+                origin_right: None,
+                right: Some(1),
+            },
+            ConflictNode {
+                id: Id::new(2, 0),
+                len: 1,
+                origin_left: Some(Id::new(8, 0)),
+                origin_right: None,
+                right: Some(2),
+            },
+            ConflictNode {
+                id: Id::new(3, 0),
+                len: 1,
+                origin_left: Some(Id::new(1, 1)),
+                origin_right: None,
+                right: Some(3),
+            },
+            ConflictNode {
+                id: Id::new(4, 0),
+                len: 1,
+                origin_left: None,
+                origin_right: None,
+                right: Some(4),
+            },
+            ConflictNode {
+                id: Id::new(5, 0),
+                len: 1,
+                origin_left: Some(Id::new(8, 0)),
+                origin_right: None,
+                right: None,
+            },
+        ];
+        assert_eq!(
+            conflict_left(item(9, 0, Some(Id::new(8, 0)), None), None, Some(0), None, &nodes),
+            Some(2)
+        );
+
+        // a conflict chain that reaches the right neighbor keeps the current
+        // left
+        let nodes = [ConflictNode {
+            id: Id::new(2, 0),
+            len: 1,
+            origin_left: Some(Id::new(1, 0)),
+            origin_right: None,
+            right: Some(1),
+        }];
+        assert_eq!(
+            conflict_left(item(3, 0, Some(Id::new(9, 0)), None), None, Some(0), Some(1), &nodes),
+            None
+        );
+    }
+}

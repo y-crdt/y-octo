@@ -23,11 +23,27 @@ Y-Octo also has interoperability and binary compatibility with [yjs]. Developers
 
 [Mysc](https://www.mysc.app/) is using y-octo in the Rust server, and the iOS/Android client via the Swift/Kotlin bindings (Official bindings coming soon).
 
+## Performance
+
+| Tasks | automerge v0.10.0 (2026-06-05) | loro v1.13.7 (2026-07-15) | diamond-types v1.0.0 (2022-08-25) | y-octo v0.1.0 (2026-07-27) | yrs v0.27.3 (2026-07-13) |
+| :---- | :---- | :---- | :---- | :---- | :---- |
+| automerge - apply | 3862.98 ± 3.78 ms | 45.66 ± 0.06 ms | 9.28 ± 0.02 ms | 203.74 ± 0.43 ms | 2387.79 ± 12.86 ms |
+| automerge - decode time | 206.94 ± 1.17 ms | 73.09 ± 0.95 us | 1.49 ± 0.00 ms | 37.51 ± 0.05 ms | 2.32 ± 0.01 ms |
+| automerge - encode time | 1.71 ± 0.05 ms | 219.52 ± 3.05 us | 672.47 ± 7.71 us | 9.70 ± 0.02 ms | 459.53 ± 0.91 us |
+| concurrent list inserts | 93.09 ± 0.45 ms | 164.31 ± 0.41 ms | 34.10 ± 0.06 ms | 7.88 ± 0.02 ms | 7.55 ± 0.03 ms |
+| list_random_insert_1k | 248.13 ± 0.25 ms | 10.22 ± 0.10 ms | 2.61 ± 0.00 ms | 2.06 ± 0.01 ms | 3.16 ± 0.00 ms |
+| parallel applying automerge edits | 57192.59 ± 464.50 ms | 10216.50 ± 120.33 ms | 96.83 ± 0.37 ms | 1157.47 ± 14.51 ms | 5416.23 ± 54.97 ms |
+
+The parallel workload applies the full Automerge trace to two replicas in random batches of 1–1000 local edits, synchronizes after each pair of batches, and verifies replica convergence.
+
+Ref: https://github.com/darkskygit/crdt-bench-native
+
+
 ## Features
 
 - ✅ Collaborative Text
   - ✅ Read and write styled Unicode compatible data.
-  - 🚧 Add, modify and delete text styles.
+  - ✅ Add, modify and delete text styles.
   - 🚧 Embedded JS data types and collaborative types.
   - ✅ Collaborative types of thread-safe.
 - Collaborative Array

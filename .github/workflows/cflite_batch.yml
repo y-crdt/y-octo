@@ -1,0 +1,59 @@
+name: ClusterFuzzLite batch fuzzing
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 18 * * *"
+
+permissions: read-all
+
+concurrency:
+  group: daily-fuzzing
+  cancel-in-progress: false
+
+jobs:
+  batch-fuzzing:
+    name: batch fuzzing
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write # upload crash reports to code scanning
+    strategy:
+      fail-fast: false
+      matrix:
+        sanitizer: [address]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: ./.github/actions/setup-rust
+
+      - name: Build fuzzers (${{ matrix.sanitizer }})
+        id: build
+        uses: google/clusterfuzzlite/actions/build_fuzzers@v1
+        with:
+          language: rust
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          sanitizer: ${{ matrix.sanitizer }}
+
+      - name: Run fuzzers (${{ matrix.sanitizer }})
+        id: run
+        uses: google/clusterfuzzlite/actions/run_fuzzers@v1
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          fuzz-seconds: 9000
+          mode: "batch"
+          sanitizer: ${{ matrix.sanitizer }}
+          output-sarif: true
+
+      - name: Notify Telegram on fuzz failure
+        if: ${{ steps.run.outcome == 'failure' }}
+        env:
+          TG_NOTIFY_SECRET: ${{ secrets.TG_FUZZ_NOTIFY_CONFIG }}
+          TG_NOTIFY_TEXT: |
+            y-octo batch fuzzing failed
+            Workflow: ${{ github.workflow }}
+            Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+            Ref: ${{ github.ref }}
+            Commit: ${{ github.sha }}
+        run: cargo run -p y-octo-utils --bin tg_notify

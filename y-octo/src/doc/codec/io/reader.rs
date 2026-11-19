@@ -12,6 +12,14 @@ pub trait CrdtReader {
     fn len(&self) -> u64;
     fn read_var_u64(&mut self) -> JwstCodecResult<u64>;
     fn read_var_i32(&mut self) -> JwstCodecResult<i32>;
+    /// Return the sign separately because an i32 cannot distinguish wire -0
+    /// from 0. The default keeps existing readers compatible; wire readers that
+    /// support signed zero must override it before the sign is lost in integer
+    /// decoding.
+    fn read_var_i32_with_sign(&mut self) -> JwstCodecResult<(i32, bool)> {
+        let value = self.read_var_i32()?;
+        Ok((value, value < 0))
+    }
     fn read_var_string(&mut self) -> JwstCodecResult<String>;
     fn read_var_buffer(&mut self) -> JwstCodecResult<Vec<u8>>;
     fn read_u8(&mut self) -> JwstCodecResult<u8>;

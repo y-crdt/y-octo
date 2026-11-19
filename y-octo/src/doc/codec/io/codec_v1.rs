@@ -50,6 +50,36 @@ impl<'b> RawDecoder<'b> {
 
         if pos == 0 { buf } else { &buf[pos..] }
     }
+
+    pub(crate) fn position(&self) -> usize {
+        self.buffer.position().min(self.buffer.get_ref().len() as u64) as usize
+    }
+
+    pub(crate) fn consume_rest(&mut self) {
+        self.buffer.set_position(self.buffer.get_ref().len() as u64);
+    }
+
+    pub(crate) fn read_var_buffer_ref(&mut self) -> JwstCodecResult<&'b [u8]> {
+        let len = self.read_var_u64()?;
+        let start = self.position();
+        let end = start
+            .checked_add(
+                len.try_into()
+                    .map_err(|_| JwstCodecError::IncompleteDocument("buffer too large".into()))?,
+            )
+            .ok_or_else(|| JwstCodecError::IncompleteDocument("buffer length overflow".into()))?;
+        let input = *self.buffer.get_ref();
+        if end > input.len() {
+            return Err(JwstCodecError::IncompleteDocument("buffer exceeds update".into()));
+        }
+        self.buffer.set_position(end as u64);
+        Ok(&input[start..end])
+    }
+
+    pub(crate) fn read_var_str_ref(&mut self) -> JwstCodecResult<&'b str> {
+        let bytes = self.read_var_buffer_ref()?;
+        std::str::from_utf8(bytes).map_err(|error| JwstCodecError::IncompleteDocument(error.to_string()))
+    }
 }
 
 impl CrdtReader for RawDecoder<'_> {
@@ -67,6 +97,13 @@ impl CrdtReader for RawDecoder<'_> {
 
     fn read_var_i32(&mut self) -> JwstCodecResult<i32> {
         read_with_cursor(&mut self.buffer, read_var_i32)
+    }
+
+    fn read_var_i32_with_sign(&mut self) -> JwstCodecResult<(i32, bool)> {
+        // lib0 varInt stores the sign in bit 6 of the first byte, including for
+        // zero.
+        let negative = self.rest_ref().first().is_some_and(|byte| byte & 0x40 != 0);
+        Ok((self.read_var_i32()?, negative))
     }
 
     fn read_var_string(&mut self) -> JwstCodecResult<String> {
@@ -167,6 +204,14 @@ mod tests {
 
     #[test]
     fn test_crdt_reader() {
+        for (bytes, expected) in [
+            (&[0][..], (0, false)),
+            (&[64][..], (0, true)),
+            (&[42][..], (42, false)),
+            (&[106][..], (-42, true)),
+        ] {
+            assert_eq!(RawDecoder::new(bytes).read_var_i32_with_sign().unwrap(), expected);
+        }
         {
             let mut reader = RawDecoder::new(&[0xf2, 0x5]);
             assert_eq!(reader.read_var_u64().unwrap(), 754);

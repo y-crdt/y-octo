@@ -10,12 +10,12 @@ fn process_duration(duration: &str) -> Option<(f64, f64)> {
     }
     let units = dur_split[1]
         .chars()
-        .skip_while(|c| c.is_ascii_digit())
+        .skip_while(|c| c.is_ascii_digit() || *c == '.')
         .collect::<String>();
     let dur_secs = dur_split[0].parse::<f64>().ok()?;
     let error_secs = dur_split[1]
         .chars()
-        .take_while(|c| c.is_ascii_digit())
+        .take_while(|c| c.is_ascii_digit() || *c == '.')
         .collect::<String>()
         .parse::<f64>()
         .ok()?;
@@ -85,10 +85,10 @@ fn convert_to_markdown() -> impl Iterator<Item = String> {
                 let (changes_dur_secs, changes_err_secs) = process_duration(&changes_duration)?;
 
                 let diff = -(1.0 - changes_dur_secs / base_dur_secs) * 100.0;
-                difference = format!("{:+.2}%", diff);
+                difference = format!("{diff:+.2}%");
 
                 if is_significant(changes_dur_secs, changes_err_secs, base_dur_secs, base_err_secs) {
-                    difference = format!("**{}**", difference);
+                    difference = format!("**{difference}**");
                 }
             }
 
@@ -115,7 +115,7 @@ fn main() {
     ];
 
     for line in headers.into_iter().chain(convert_to_markdown()) {
-        println!("{}", line);
+        println!("{line}");
     }
     println!("</details>");
 }
