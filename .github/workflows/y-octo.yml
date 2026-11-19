@@ -160,3 +160,61 @@ jobs:
         run: |
           rustup component add rust-src --toolchain ${{ env.nightly }}
           cargo +${{ env.nightly }} test -Zbuild-std --target x86_64-unknown-linux-gnu -p y-octo --lib
+
+  differential:
+    name: bidirectional Yjs differential
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Rust
+        uses: ./.github/actions/setup-rust
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: y-octo/tests/oracle/package-lock.json
+      - name: Install pinned oracle and verify materials
+        run: |
+          npm ci --prefix y-octo/tests/oracle --ignore-scripts
+          npm run check --prefix y-octo/tests/oracle
+      - name: Run online differential batch
+        run: cargo test -p y-octo --test trace_differential --features large_refs online_yjs_differential -- --ignored --exact --nocapture
+      - name: Preserve minimized failures
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: differential-traces
+          path: target/trace-failures
+          if-no-files-found: ignore
+
+  upstream_factory:
+    name: upstream Yjs factory
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Rust
+        uses: ./.github/actions/setup-rust
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: y-octo/tests/oracle/package-lock.json
+      - name: Generate pinned upstream corpus and verify manifest
+        run: |
+          npm ci --prefix y-octo/tests/oracle --ignore-scripts
+          npm run check:upstream --prefix y-octo/tests/oracle
+          node y-octo/tests/oracle/upstream.mjs --report >> "$GITHUB_STEP_SUMMARY"
+      - name: Replay every recorded document
+        run: cargo test --release -p y-octo --test yjs_upstream_oracle --features large_refs replay_upstream_factory -- --ignored --exact --nocapture
+      - name: Verify full exports for the registered text-reader gap
+        run: node y-octo/tests/oracle/upstream-exports.mjs
+      - name: Preserve generated corpus on failure or manual request
+        if: ${{ failure() || github.event_name == 'workflow_dispatch' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: upstream-oracle
+          path: target/yjs-oracle
+          if-no-files-found: ignore
+          retention-days: 7

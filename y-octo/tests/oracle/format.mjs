@@ -1,4 +1,4 @@
-import { gzipSync } from "node:zlib";
+import { gzipSync } from "fflate";
 // JSONL keeps generated fixtures compact and gives each scenario its own diff
 // line. Equal scenarios share one versions provenance list.
 // Only wire bytes become hex; action/update indices remain numeric.
@@ -36,6 +36,13 @@ export function jsonl(output) {
   );
 }
 
+export function gzipBytes(input) {
+  const compressed = Buffer.from(gzipSync(input, { level: 9, mtime: 0 }));
+  // A locked JS compressor avoids Node's platform/version-specific zlib
+  // output. Also fix the gzip OS field to the standard "unknown OS" marker.
+  compressed[9] = 255;
+  return compressed;
+}
 export function gzipCorpus(output) {
-  return gzipSync(Buffer.from(jsonl(output)), { level: 9, mtime: 0 });
+  return gzipBytes(Buffer.from(jsonl(output)));
 }

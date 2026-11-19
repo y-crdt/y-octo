@@ -57,6 +57,7 @@ path-ext         = { workspace = true }
 proptest         = { workspace = true }
 proptest-derive  = { workspace = true }
 rand_chacha      = { workspace = true }
+sha2             = "0.10"
 yrs              = { workspace = true }
 
 [lints.rust]

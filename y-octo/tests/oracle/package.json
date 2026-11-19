@@ -3,10 +3,14 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "generate": "node generate.mjs && node concurrent.mjs",
-    "check": "node generate.mjs --check && node concurrent.mjs --check"
+    "generate": "node generate.mjs && node concurrent.mjs && node regressions.mjs",
+    "check": "node generate.mjs --check && node concurrent.mjs --check && node regressions.mjs --check",
+    "generate:upstream": "node upstream.mjs",
+    "check:upstream": "node upstream.mjs --check"
   },
   "dependencies": {
+    "fflate": "0.8.3",
+    "y-protocols": "1.0.6",
     "yjs-13-6-21": "npm:yjs@13.6.21",
     "yjs-13-6-33": "npm:yjs@13.6.33"
   }

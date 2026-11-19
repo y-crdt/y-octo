@@ -1,5 +1,8 @@
 #![allow(dead_code)]
 pub mod concurrent;
+pub mod digest;
+pub mod trace;
+pub mod upstream;
 use serde_json::{Value as Json, json};
 use y_octo::{Doc, DocOptions, StateVector, Update};
 
