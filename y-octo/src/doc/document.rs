@@ -109,7 +109,7 @@ impl Default for DocOptions {
             }
         } else {
             Self {
-                client_id: prefer_small_random(),
+                client_id: random_client_id(),
                 guid: nanoid::nanoid!(),
                 gc: true,
             }
@@ -179,7 +179,6 @@ impl TryFrom<Any> for DocOptions {
 
 #[derive(Debug, Clone)]
 pub struct Doc {
-    client_id: u64,
     opts: DocOptions,
 
     pub(crate) store: StoreRef,
@@ -199,7 +198,7 @@ impl Default for Doc {
 
 impl PartialEq for Doc {
     fn eq(&self, other: &Self) -> bool {
-        self.client_id == other.client_id
+        self.client() == other.client()
     }
 }
 
@@ -214,7 +213,6 @@ impl Doc {
         let publisher = Arc::new(DocPublisher::new(store.clone()));
 
         Self {
-            client_id: options.client_id,
             opts: options,
             store,
             #[cfg(feature = "events")]
@@ -228,15 +226,15 @@ impl Doc {
     }
 
     pub fn client(&self) -> Client {
-        self.client_id
+        self.store.read().unwrap().client()
     }
 
     pub fn set_client(&mut self, client_id: u64) {
-        self.client_id = client_id;
+        self.store.write().unwrap().set_client(client_id);
     }
 
     pub fn renew_client(&mut self) {
-        self.client_id = prefer_small_random();
+        self.set_client(random_client_id());
     }
 
     pub fn clients(&self) -> Vec<u64> {
@@ -554,6 +552,133 @@ mod tests {
     use yrs::{Array, Map, Options, Transact, types::ToJson, updates::decoder::Decode};
 
     use super::*;
+
+    #[test]
+    fn test_duplicate_update_with_gced_parent() {
+        loom_model!(64 << 10, {
+            let mut doc = Doc::with_client(303);
+            // Accepted by Yjs 13.6.21 and 13.6.33: the last update repeats
+            // already-GCed type structs before introducing their descendants.
+            for (index, hex) in [
+                "0101ca01012700ca010001740200",
+                "0101ca01002701036d617006706172656e740100",
+                "010465002101036d617006706172656e740100030801056172726179017601066f70617175657d032101036d61700c61667465722d72656d6f74650102ca010200050702650200040501",
+                "0109ca01002701036d617006706172656e74012700ca01000174022700ca01000161002700ca0100016d010500ca0101097b22726566223a367d2801036d61700179017d8f012801036d61700178017d102800ca0103016b017d0244ca010401610165010004",
+            ]
+            .iter()
+            .enumerate()
+            {
+                let bytes = (0..hex.len())
+                    .step_by(2)
+                    .map(|offset| u8::from_str_radix(&hex[offset..offset + 2], 16).unwrap())
+                    .collect::<Vec<_>>();
+                let result = doc.apply_update_from_binary_v1(bytes);
+                assert!(result.is_ok(), "update {}: {result:?}", index + 1);
+            }
+            assert!(!doc.has_pending_updates());
+            let expected = StateVector::from([(101, 6), (202, 9)]);
+            assert_eq!(doc.get_state_vector(), expected);
+            let restored = Doc::try_from_binary_v1(doc.encode_update_v1().unwrap()).unwrap();
+            assert_eq!(restored.get_state_vector(), expected);
+            assert!(!restored.has_pending_updates());
+        });
+    }
+
+    #[test]
+    fn test_duplicate_types_with_new_grandchild_after_gc() {
+        loom_model!({
+            let source = Doc::with_client(202);
+            let mut root = source.get_or_create_map("map").unwrap();
+            let mut parent = source.create_map().unwrap();
+            let mut child = source.create_text().unwrap();
+            root.insert("parent".into(), parent.clone()).unwrap();
+            parent.insert("child".into(), child.clone()).unwrap();
+
+            let mut target = Doc::with_client(101);
+            target
+                .apply_update_from_binary_v1(source.encode_update_v1().unwrap())
+                .unwrap();
+            target.get_or_create_map("map").unwrap().remove("parent");
+            target.gc().unwrap();
+            assert!(target.store.read().unwrap().get_node(Id::new(202, 1)).unwrap().is_gc());
+
+            child.insert(0, "x").unwrap();
+            root.insert("tail".into(), 1).unwrap();
+            // Full update repeats the parent and child types and adds a new
+            // grandchild plus a following struct to verify contiguous clocks.
+            target
+                .apply_update_from_binary_v1(source.encode_update_v1().unwrap())
+                .unwrap();
+            assert!(target.store.read().unwrap().get_node(Id::new(202, 2)).unwrap().is_gc());
+            assert_eq!(target.get_state_vector(), StateVector::from([(202, 4)]));
+            assert!(!target.has_pending_updates());
+            assert_eq!(
+                target.get_or_create_map("map").unwrap().get("tail"),
+                Some(Value::Any(Any::Integer(1)))
+            );
+            target.store.read().unwrap().self_check().unwrap();
+        });
+    }
+
+    #[test]
+    fn test_set_client_updates_item_author() {
+        loom_model!({
+            let mut doc = Doc::with_client(5);
+            let mut map = doc.get_or_create_map("map").unwrap();
+            map.insert("before".into(), 1).unwrap();
+            doc.set_client(77);
+            map.insert("after".into(), 2).unwrap();
+            assert_eq!(doc.client(), 77);
+            assert_eq!(doc.get_state_vector(), StateVector::from([(5, 1), (77, 1)]));
+        });
+    }
+
+    #[test]
+    fn test_renew_client_updates_item_author() {
+        loom_model!({
+            let mut doc = Doc::with_client(0);
+            let mut map = doc.get_or_create_map("map").unwrap();
+            doc.renew_client();
+            let client = doc.client();
+            assert!((1..=(1_u64 << 53) - 1).contains(&client));
+            map.insert("k".into(), 1).unwrap();
+            assert_eq!(doc.get_state_vector(), StateVector::from([(client, 1)]));
+        });
+    }
+
+    #[test]
+    fn test_clone_set_client_uses_shared_author() {
+        loom_model!({
+            let doc = Doc::with_client(5);
+            let mut other = doc.clone();
+            other.set_client(77);
+            doc.get_or_create_text("text").unwrap().insert(0, "x").unwrap();
+            assert_eq!(doc.get_state_vector(), StateVector::from([(77, 1)]));
+            assert_eq!(doc.client(), 77);
+            assert_eq!(doc, other);
+            assert_eq!(doc, Doc::with_client(77));
+        });
+    }
+
+    #[test]
+    fn test_clone_renew_client_uses_shared_author() {
+        loom_model!({
+            let doc = Doc::with_client(0);
+            let mut other = doc.clone();
+            other.renew_client();
+            let client = other.client();
+            doc.get_or_create_text("text").unwrap().insert(0, "x").unwrap();
+            assert_eq!(doc.get_state_vector(), StateVector::from([(client, 1)]));
+            assert_eq!(doc.client(), client);
+            assert_eq!(doc, other);
+        });
+    }
+
+    #[test]
+    fn test_default_test_client_is_fixed() {
+        assert_eq!(DocOptions::default().client_id, 1);
+        assert_eq!(DocOptions::default().guid, "test");
+    }
 
     #[test]
     fn test_encode_state_as_update() {

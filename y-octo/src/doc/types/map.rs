@@ -229,7 +229,34 @@ impl serde::Serialize for Map {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Any, Doc, loom_model};
+    use crate::{Any, Doc, DocOptions, Update, loom_model};
+
+    #[test]
+    fn test_map_reinsert_after_gc_merge() {
+        loom_model!({
+            let doc = Doc::with_options(DocOptions::new().with_client_id(5));
+            let mut map = doc.get_or_create_map("map").unwrap();
+            map.insert("k".into(), 1).unwrap();
+            map.insert("k".into(), 2).unwrap();
+            map.remove("k");
+            let before_gc = doc.encode_update_v1().unwrap();
+            let sv = doc.get_state_vector();
+            doc.gc().unwrap();
+            map.insert("k".into(), 3).unwrap();
+            let diff = doc.encode_state_as_update_v1(&sv).unwrap();
+            let update = Update::decode_v1(&diff).unwrap();
+            let item = update.structs.get(&5).unwrap().front().unwrap().as_item();
+            // Yjs v13.6.33 tryToMergeWithLefts repairs the current map entry.
+            assert_eq!(item.get().unwrap().origin_left_id, Some(Id::new(5, 1)));
+            let mut peer = Doc::with_options(DocOptions::new().with_client_id(6).auto_gc(false));
+            peer.apply_update_from_binary_v1(before_gc).unwrap();
+            peer.apply_update_from_binary_v1(diff).unwrap();
+            assert_eq!(
+                peer.get_or_create_map("map").unwrap().get("k"),
+                Some(Value::Any(Any::Integer(3)))
+            );
+        });
+    }
 
     #[test]
     fn test_map_basic() {

@@ -55,6 +55,10 @@ impl DocStore {
         self.client
     }
 
+    pub fn set_client(&mut self, client: Client) {
+        self.client = client;
+    }
+
     pub fn clients(&self) -> Vec<Client> {
         self.items.keys().cloned().collect()
     }
@@ -376,11 +380,13 @@ impl DocStore {
                             // return Err(JwstCodecError::InvalidParent);
                         }
                     }
-                    _ => {
+                    Some(Node::GC(_) | Node::Skip(_)) => {
+                        item.parent.take();
+                    }
+                    None => {
                         if let Some(ty) = pending_types.get(parent_id) {
                             item.parent.replace(Parent::Type(ty.clone()));
                         } else {
-                            // GC & Skip are not valid parent, take it.
                             item.parent.take();
                         }
                     }
@@ -485,17 +491,19 @@ impl DocStore {
                             }
                         }
                     }
+                }
 
-                    let mut parent_lock: Option<RwLockWriteGuard<YType>> = None;
-                    let parent = if let Some(p) = parent {
-                        p
-                    } else if let Some(ty) = ty.ty_mut() {
-                        parent_lock = Some(ty);
-                        parent_lock.as_deref_mut().unwrap()
-                    } else {
-                        return Ok(());
-                    };
+                let mut parent_lock: Option<RwLockWriteGuard<YType>> = None;
+                let parent = if let Some(parent) = parent {
+                    Some(parent)
+                } else {
+                    if let Some(Parent::Type(ty)) = &this.parent {
+                        parent_lock = ty.ty_mut();
+                    }
+                    parent_lock.as_deref_mut()
+                };
 
+                if let (Some(Parent::Type(ty)), Some(parent)) = (&this.parent, parent) {
                     let mut left = this.left.clone();
                     let mut right = this.right.clone();
 
@@ -610,6 +618,7 @@ impl DocStore {
                     // mark changed item's parent
                     Self::mark_changed(&mut self.changed, ty.clone(), this.parent_sub.clone());
                 } else {
+                    drop(parent_lock);
                     // if parent not exists, integrate GC node instead
                     // don't delete it because it may referenced by other nodes
                     // if all nodes that reference it are deleted, it will
@@ -1016,8 +1025,20 @@ impl DocStore {
             let right = nodes.get(pos).unwrap().clone();
             let left = nodes.get_mut(pos - 1).unwrap();
 
-            if !left.merge(right) {
+            if !left.merge(right.clone()) {
                 break;
+            }
+
+            // Yjs v13.6.33 tryToMergeWithLefts keeps the current map value
+            // pointing at the surviving item before dropping the right item.
+            if let Node::Item(right) = &right {
+                let item = right.get().unwrap();
+                if let (Some(Parent::Type(parent)), Some(key)) = (&item.parent, &item.parent_sub)
+                    && let Some(mut parent) = parent.ty_mut()
+                    && parent.map.get(key) == Some(right)
+                {
+                    parent.map.insert(key.clone(), left.as_item());
+                }
             }
 
             pos -= 1;
