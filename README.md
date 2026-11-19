@@ -41,14 +41,16 @@ The default decoder accepts `Any` nesting up to 128 levels. For trusted inputs, 
 
 ## Performance
 
-| Tasks | automerge v0.10.0 (2026-06-05) | loro v1.13.7 (2026-07-15) | diamond-types v1.0.0 (2022-08-25) | y-octo v0.1.0 (2026-07-27) | yrs v0.27.3 (2026-07-13) |
+| Tasks | automerge v0.12.0 (2026-09-16) | loro v1.18.0 (2026-11-16) | diamond-types v1.0.0 (2022-08-25) | y-octo v0.2.0 (2026-11-20) | yrs v0.28.2 (2026-11-19) |
 | :---- | :---- | :---- | :---- | :---- | :---- |
-| automerge - apply | 3862.98 ± 3.78 ms | 45.66 ± 0.06 ms | 9.28 ± 0.02 ms | 203.74 ± 0.43 ms | 2387.79 ± 12.86 ms |
-| automerge - decode time | 206.94 ± 1.17 ms | 73.09 ± 0.95 us | 1.49 ± 0.00 ms | 37.51 ± 0.05 ms | 2.32 ± 0.01 ms |
-| automerge - encode time | 1.71 ± 0.05 ms | 219.52 ± 3.05 us | 672.47 ± 7.71 us | 9.70 ± 0.02 ms | 459.53 ± 0.91 us |
-| concurrent list inserts | 93.09 ± 0.45 ms | 164.31 ± 0.41 ms | 34.10 ± 0.06 ms | 7.88 ± 0.02 ms | 7.55 ± 0.03 ms |
-| list_random_insert_1k | 248.13 ± 0.25 ms | 10.22 ± 0.10 ms | 2.61 ± 0.00 ms | 2.06 ± 0.01 ms | 3.16 ± 0.00 ms |
-| parallel applying automerge edits | 57192.59 ± 464.50 ms | 10216.50 ± 120.33 ms | 96.83 ± 0.37 ms | 1157.47 ± 14.51 ms | 5416.23 ± 54.97 ms |
+| automerge - apply | 2136.55 ± 8.88 ms | 49.37 ± 0.43 ms | 9.57 ± 0.07 ms | 189.98 ± 1.27 ms | 2358.02 ± 20.35 ms |
+| automerge - decode time | 210.56 ± 2.51 ms | 106.23 ± 0.21 us | 1.46 ± 0.01 ms | 4.80 ± 0.03 ms | 2.45 ± 0.02 ms |
+| automerge - encode time | 155.90 ± 1.51 us | 174.01 ± 1.31 us | 717.02 ± 3.28 us | 566.79 ± 3.97 us | 426.80 ± 6.78 us |
+| concurrent list inserts | 77.62 ± 0.36 ms | 102.69 ± 1.65 ms | 35.17 ± 0.25 ms | 7.92 ± 0.18 ms | 7.76 ± 0.07 ms |
+| list_random_insert_1k | 337.38 ± 4.14 ms | 8.20 ± 0.12 ms | 2.56 ± 0.00 ms | 1.77 ± 0.01 ms | 3.19 ± 0.02 ms |
+| parallel applying automerge edits | 8351.01 ± 15.00 ms | 182.84 ± 1.47 ms | 91.69 ± 0.79 ms | 379.84 ± 5.76 ms | 6264.56 ± 126.42 ms |
+
+Measured on Apple M5 Max with rustc 1.96.0 and crdt-bench-native revision `0452093`. Each value is the Criterion mean ± standard error across 10 samples. The y-octo adapter uses Update V1 with `large_refs`; the Yrs adapter uses Update V2.
 
 The parallel workload applies the full Automerge trace to two replicas in random batches of 1–1000 local edits, synchronizes after each pair of batches, and verifies replica convergence.
 
@@ -59,25 +61,31 @@ Ref: https://github.com/darkskygit/crdt-bench-native
 - ✅ Collaborative Text
   - ✅ Read and write styled Unicode compatible data.
   - ✅ Add, modify and delete text styles.
-  - 🚧 Embedded JS data types and collaborative types.
+  - ✅ Embedded JS data types.
+  - 🚧 Embedded collaborative types.
   - ✅ Collaborative types of thread-safe.
 - Collaborative Array
   - ✅ Add, modify, and delete basic JS data types.
   - ✅ Recursively add, modify, and delete collaborative types.
   - ✅ Collaborative types of thread-safe.
-  - 🚧 Recursive event subscription
+  - ✅ Recursive event subscription
 - Collaborative Map
   - ✅ Add, modify, and delete basic JS data types.
   - ✅ Recursively add, modify, and delete collaborative types.
   - ✅ Collaborative types of thread-safe.
-  - 🚧 Recursive event subscription
+  - ✅ Recursive event subscription
 - 🚧 Collaborative Xml (Fragment / Element)
 - ✅ Collaborative Doc Container
   - ✅ YATA CRDT state apply/diff compatible with [yjs]
   - ✅ State sync of thread-safe.
   - ✅ Store all collaborative types and JS data types
   - ✅ Update event subscription.
-  - 🚧 Sub Document.
+  - ✅ Sub Document.
+- ✅ Collaborative Tools
+  - ✅ Undo/Redo Manager
+  - ✅ RelativePosition / AbsolutePosition
+  - ✅ Yjs style transact (not real transaction, see yjs's [doc](https://docs.yjs.dev/getting-started/working-with-shared-types#transactions))
+  - ✅ y-protocols/sync
 - ✅ Yjs binary encoding
   - ✅ Awareness encoding.
   - ✅ Primitive type encoding.
