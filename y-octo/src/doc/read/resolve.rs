@@ -103,9 +103,7 @@ impl Builder {
         let item_id = self.nodes[node_id as usize].id;
         for origin in [origin_left, origin_right].into_iter().flatten() {
             if origin.client == item_id.client && origin.clock >= item_id.clock {
-                return Err(ReadError::InvalidUpdate(JwstCodecError::IncompleteDocument(
-                    "same-client origin must precede item".into(),
-                )));
+                return Err(ReadError::InvalidUpdate(JwstCodecError::InvalidParent));
             }
         }
 
@@ -132,6 +130,11 @@ impl Builder {
 
         let parent = match wire_parent {
             RawParent::Root(key) => Some(self.get_or_create_root(key)?),
+            // A same-client parent at or after the item cannot have been
+            // created before it. All structs are predecoded, so locating it
+            // would find a future node, possibly this one; treat it as missing
+            // like DocStore does, and the item becomes a GC range.
+            RawParent::Item(id) if id.client == item_id.client && id.clock >= item_id.clock => None,
             RawParent::Item(id) => {
                 self.locate(id)
                     .ok()
@@ -216,6 +219,14 @@ impl Builder {
         let mut left = self.nodes[node_id as usize].left();
         let mut right = self.nodes[node_id as usize].right();
         let parent_sub = self.nodes[node_id as usize].parent_sub();
+        // Neighbors resolved from origins must share this item's list;
+        // otherwise linking would cross containers.
+        for neighbor in [left, right].into_iter().flatten() {
+            let neighbor = &self.nodes[neighbor as usize];
+            if neighbor.parent() != Some(parent_id) || neighbor.parent_sub() != parent_sub {
+                return Err(ReadError::InvalidUpdate(JwstCodecError::InvalidParent));
+            }
+        }
         let right_is_null_or_has_left =
             right.is_none() || right.is_some_and(|id| self.nodes[id as usize].left().is_some());
         let left_has_other_right = left.is_some_and(|id| self.nodes[id as usize].right() != right);

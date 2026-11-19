@@ -31,7 +31,8 @@ impl AwarenessState {
     }
 
     pub(crate) fn add_clock(&mut self) {
-        self.clock += 1;
+        // remote peers choose clocks freely; never overflow
+        self.clock = self.clock.saturating_add(1);
     }
 
     pub(crate) fn set_clock(&mut self, clock: u64) {
@@ -77,7 +78,15 @@ pub type AwarenessStates = HashMap<u64, AwarenessState>;
 
 pub fn read_awareness(input: &[u8]) -> IResult<&[u8], AwarenessStates> {
     let (tail, len) = read_var_u64(input)?;
-    let (tail, messages) = count(read_awareness_state, len as usize).parse(tail)?;
+    // `as usize` would truncate on 32-bit targets and misframe the stream
+    let len = usize::try_from(len).map_err(|_| nom::Err::Error(Error::new(input, ErrorKind::TooLarge)))?;
+    // Every entry takes at least three bytes (client, clock, content length).
+    // The frame is already complete, so a count it cannot hold is malformed,
+    // not a stream still arriving: fail before `count` reserves for it.
+    if len > tail.len() / 3 {
+        return Err(nom::Err::Error(Error::new(tail, ErrorKind::TooLarge)));
+    }
+    let (tail, messages) = count(read_awareness_state, len).parse(tail)?;
 
     Ok((tail, messages.into_iter().collect()))
 }
@@ -137,5 +146,33 @@ mod tests {
             assert!(tail.is_empty());
             assert_eq!(result, expected);
         }
+    }
+
+    #[test]
+    fn awareness_count_beyond_frame_is_too_large() {
+        // 200 entries declared, room for at most one
+        let input = [200, 1, 5, 1, 1];
+        assert!(matches!(
+            read_awareness(&input),
+            Err(nom::Err::Error(Error {
+                code: ErrorKind::TooLarge,
+                ..
+            }))
+        ));
+
+        // inside a complete sync frame it is a malformed message, not EOF
+        let frame = [1, input.len() as u8, 200, 1, 5, 1, 1];
+        assert!(matches!(
+            read_sync_message(&frame),
+            Err(nom::Err::Error(Error {
+                code: ErrorKind::TooLarge,
+                ..
+            }))
+        ));
+
+        // exactly three bytes per entry still parses
+        let (tail, states) = read_awareness(&[1, 1, 5, 0]).unwrap();
+        assert!(tail.is_empty());
+        assert_eq!(states, HashMap::from([(1, AwarenessState::new(5, String::new()))]));
     }
 }

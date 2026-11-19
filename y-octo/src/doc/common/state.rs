@@ -4,6 +4,7 @@ use super::{
     Client, ClientMap, Clock, CrdtRead, CrdtReader, CrdtWrite, CrdtWriter, HASHMAP_SAFE_CAPACITY, HashMapExt, Id,
     JwstCodecResult,
 };
+use crate::JwstCodecError;
 
 #[derive(Default, Debug, PartialEq, Clone)]
 pub struct StateVector(ClientMap<Clock>);
@@ -76,7 +77,17 @@ impl<const N: usize> From<[(Client, Clock); N]> for StateVector {
 
 impl<R: CrdtReader> CrdtRead<R> for StateVector {
     fn read(decoder: &mut R) -> JwstCodecResult<Self> {
-        let len = decoder.read_var_u64()? as usize;
+        let len = decoder.read_var_u64()?;
+        // every entry takes at least two bytes (client and clock); `as usize`
+        // alone would truncate the count on 32-bit targets
+        if len > decoder.len() / 2 {
+            return Err(JwstCodecError::IncompleteDocument(format!(
+                "state vector declares {len} entries but has only {} bytes left",
+                decoder.len()
+            )));
+        }
+        let len =
+            usize::try_from(len).map_err(|_| JwstCodecError::IncompleteDocument("state vector too large".into()))?;
 
         // See: [HASHMAP_SAFE_CAPACITY]
         let mut map = ClientMap::with_capacity(len.min(HASHMAP_SAFE_CAPACITY));
@@ -107,6 +118,7 @@ impl<W: CrdtWriter> CrdtWrite<W> for StateVector {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{RawDecoder, RawEncoder};
 
     #[test]
     fn test_state_vector_basic() {
@@ -134,5 +146,24 @@ mod tests {
         let other_state_vector = StateVector::from([(1, 5), (2, 6), (3, 7)]);
         state_vector.merge_with(&other_state_vector);
         assert_eq!(state_vector, StateVector::from([(3, 3), (1, 1), (2, 2)]));
+    }
+
+    #[test]
+    fn test_state_vector_rejects_count_beyond_input() {
+        // declares u64::MAX entries in a 12 byte buffer
+        let mut buffer = vec![0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x01];
+        buffer.extend_from_slice(&[1, 1]);
+        assert!(matches!(
+            StateVector::read(&mut RawDecoder::new(&buffer)),
+            Err(JwstCodecError::IncompleteDocument(_))
+        ));
+
+        let state = StateVector::from([(1, 2), (3, 4)]);
+        let mut encoder = RawEncoder::default();
+        state.write(&mut encoder).unwrap();
+        assert_eq!(
+            StateVector::read(&mut RawDecoder::new(&encoder.into_inner())).unwrap(),
+            state
+        );
     }
 }

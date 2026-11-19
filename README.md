@@ -23,6 +23,12 @@ Y-Octo also has interoperability and binary compatibility with [yjs]. Developers
 
 Run the API examples with `cargo test -p y-octo --doc`. The Rust crate exchanges Yjs Update V1 with other clients. Applications that used the removed Node binding need an adapter.
 
+### Compatibility limits
+
+The default decoder accepts `Any` nesting up to 128 levels. For trusted inputs, set the limit with `Update::decode_v1_with_max_any_depth`, `ReadLimits::max_any_depth` or `Any::read_with_max_depth`. The maximum is 1,024.
+
+`Awareness` starts without a local state. A remote update for the local client ID can advance the clock used for the next broadcast, but only the local client can set its state.
+
 ## Who are using
 
 <a href="https://www.mysc.app/"><img src="https://www.mysc.app/images/logo_blk.webp" width="120px" /></a>

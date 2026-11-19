@@ -10,6 +10,9 @@ on:
 env:
   nightly: nightly-2026-01-10
 
+permissions:
+  contents: read
+
 # Cancels all previous workflow runs for pull requests that have not completed.
 # See https://docs.github.com/en/actions/using-jobs/using-concurrency
 concurrency:
@@ -98,6 +101,9 @@ jobs:
       - name: Collect coverage data
         run: cargo llvm-cov nextest --all-targets --lcov --output-path lcov.info
       - name: Upload coverage data to codecov
+        # uploads without a token are rate limited; coverage is informative,
+        # the tests above are the gate
+        continue-on-error: true
         uses: codecov/codecov-action@v5
         with:
           name: tests
@@ -190,6 +196,7 @@ jobs:
           cargo test -p y-octo --test detached_child --features large_refs online_preliminary_yjs_roundtrip -- --ignored --exact --nocapture
           cargo test -p y-octo --test format_cleanup --features large_refs online_format_cleanup_persistent_replicas -- --ignored --exact --nocapture
           cargo test -p y-octo --test yjs_local_oracle --features large_refs online_yjs_renderer_reads_native_undo -- --ignored --exact --nocapture
+          cargo test -p y-octo --test deep_any --features large_refs online_deep_any_yjs_roundtrip -- --ignored --exact --nocapture
       - name: Preserve minimized failures
         if: failure()
         uses: actions/upload-artifact@v4

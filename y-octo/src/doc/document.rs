@@ -148,6 +148,25 @@ impl From<DocOptions> for Any {
     }
 }
 
+impl DocOptions {
+    /// Applies subdocument options as Yjs `createDocFromOpts` reads them from
+    /// a `ContentDoc`: anything that is not an object, and any key of the
+    /// wrong type, leaves the current value in place instead of failing.
+    pub(crate) fn with_wire_options(mut self, opts: &Any) -> Self {
+        if let Any::Object(map) = opts {
+            match map.get("gc") {
+                Some(Any::True) => self.gc = true,
+                Some(Any::False) => self.gc = false,
+                _ => {}
+            }
+            if let Some(Any::String(guid)) = map.get("guid") {
+                self.guid = guid.clone();
+            }
+        }
+        self
+    }
+}
+
 /// Options read from their `Any` form, which carries no client ID: with the
 /// `random` feature the document gets a random one. Without it there is no
 /// such conversion, the host builds the options with
@@ -161,6 +180,7 @@ impl TryFrom<Any> for DocOptions {
     }
 }
 
+#[cfg(feature = "random")]
 impl DocOptions {
     /// Applies the fields of the `Any` form (`gc`, `guid`) to these options.
     fn read_any(mut self, value: Any) -> JwstCodecResult<Self> {
@@ -193,8 +213,9 @@ pub(crate) fn subdocument(guid: &str, opts: &Any) -> Doc {
     #[cfg(not(feature = "random"))]
     let options = DocOptions::from_identity(0, String::new());
     let doc = options
-        .read_any(opts.clone())
-        .expect("Failed to parse doc options")
+        // opts come from the wire unchecked; Yjs spreads whatever it finds
+        // into the subdocument options
+        .with_wire_options(opts)
         // The GUID lives outside opts on the wire; projecting a subdoc must
         // preserve its identity instead of generating a new one.
         .with_guid(guid.into())
@@ -405,6 +426,10 @@ impl Doc {
         Ok(doc)
     }
 
+    /// Decodes and applies a remote Yjs Update V1, rejecting `Any` values
+    /// nested deeper than [Any::DEFAULT_MAX_DEPTH] like [Update::decode_v1].
+    /// For trusted updates nested deeper, decode them with
+    /// [Update::decode_v1_with_max_any_depth] and call [Doc::apply_update].
     pub fn apply_update_from_binary_v1<T: AsRef<[u8]>>(&mut self, binary: T) -> JwstCodecResult {
         let mut decoder = RawDecoder::new(binary.as_ref());
         let update = Update::read(&mut decoder)?;
@@ -803,9 +828,10 @@ impl Doc {
         self.encode_state_as_update(&StateVector::default())
     }
 
-    /// The returned [Update] is detached from this document.
+    /// The returned [Update] is detached from this document. `Any` values the
+    /// document holds may nest up to [Any::MAX_CONFIGURABLE_DEPTH] levels.
     pub fn encode_state_as_update(&self, sv: &StateVector) -> JwstCodecResult<Update> {
-        Update::decode_v1(self.encode_state_as_update_v1(sv)?)
+        Update::decode_v1_with_max_any_depth(self.encode_state_as_update_v1(sv)?, Any::MAX_CONFIGURABLE_DEPTH)
     }
 
     pub fn get_state_vector(&self) -> StateVector {

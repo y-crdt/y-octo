@@ -914,11 +914,10 @@ mod tests {
             let surviving = text.identity_runs().unwrap();
             assert_eq!(surviving[0].id, runs[0].id);
             assert_eq!(surviving[1].id, tail + 1);
-            assert_eq!(
+            assert!(
                 doc.get_delete_sets()
                     .iter()
-                    .any(|(client, ranges)| *client == tail.client && ranges.contains(tail.clock)),
-                true
+                    .any(|(client, ranges)| *client == tail.client && ranges.contains(tail.clock))
             );
         });
         loom_model!({

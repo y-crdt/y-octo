@@ -1,7 +1,6 @@
 use std::{
     cell::UnsafeCell,
     fmt::{self, Write},
-    hash::{Hash, Hasher},
     marker::PhantomData,
     mem,
     ops::{Deref, DerefMut},
@@ -27,15 +26,22 @@ pub(crate) struct Owned<T>(NonNull<SomrInner<T>>);
 #[repr(transparent)]
 pub(crate) struct Ref<T>(NonNull<SomrInner<T>>);
 
+// Every child item of a type holds a reference to it, so honest documents can
+// exceed 65,535 references; `large_refs` is kept for compatibility and widens
+// the counter further.
 #[cfg(feature = "large_refs")]
-type RefAtomicType = crate::sync::AtomicU32;
+type RefAtomicType = crate::sync::AtomicUsize;
 #[cfg(feature = "large_refs")]
-type RefPrimitiveType = u32;
+type RefPrimitiveType = usize;
 
 #[cfg(not(feature = "large_refs"))]
-type RefAtomicType = crate::sync::AtomicU16;
+type RefAtomicType = crate::sync::AtomicU32;
 #[cfg(not(feature = "large_refs"))]
-type RefPrimitiveType = u16;
+type RefPrimitiveType = u32;
+
+/// Like `Arc`, abort well before the counter can wrap: half the range leaves
+/// room for clones racing past the check on other threads.
+const MAX_REFCOUNT: RefPrimitiveType = RefPrimitiveType::MAX / 2;
 
 pub(crate) struct SomrInner<T> {
     /// The outer cell lets the owner drop the data through a shared reference:
@@ -44,8 +50,7 @@ pub(crate) struct SomrInner<T> {
     /// inner cell keeps the `Option` tag out of `T`'s bytes, so checking for
     /// presence never reads the data.
     data: UnsafeCell<Option<UnsafeCell<T>>>,
-    /// increase the size when we really meet the the scenario with refs more
-    /// then u16::MAX(65535) times
+    /// Live `Owned` and `Ref` handles; see [MAX_REFCOUNT].
     refs: RefAtomicType,
     /// Lets loom check that every access to `data` is ordered by the store
     /// lock: concurrent unsynchronized `get`/`get_mut_*` calls panic under
@@ -259,8 +264,11 @@ impl<T> Clone for Somr<T> {
 
         let old_size = inner.refs.fetch_add(1, Ordering::Relaxed);
 
-        if old_size == RefPrimitiveType::MAX {
-            panic!("Too many refs on Somr, maybe we need to increase the limitation now.")
+        // A panic here would unwind with the counter already incremented
+        // towards a wrap to 0, after which a drop frees the data under live
+        // handles. Abort instead, as `Arc::clone` does.
+        if old_size > MAX_REFCOUNT {
+            std::process::abort();
         }
 
         Self::Ref(Ref(self.ptr()))
@@ -350,11 +358,9 @@ impl<T: PartialOrd> PartialOrd for Somr<T> {
     }
 }
 
-impl<T> Hash for Somr<T> {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.ptr().hash(state)
-    }
-}
+// No `Hash`: `PartialEq` compares the data, so hashing the pointer would let
+// equal values hash differently. Key by the pointer explicitly (as `YTypeRef`
+// does) where identity is meant.
 
 impl<T: fmt::Debug> fmt::Debug for Somr<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -394,7 +400,9 @@ impl<T: fmt::Display> fmt::Display for Somr<T> {
 
 impl<T: Sized> fmt::Pointer for Somr<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Pointer::fmt(&(self.get().unwrap() as *const T), f)
+        // the address of the shared allocation; a `none` or dropped value has
+        // no data to point at
+        fmt::Pointer::fmt(&self.ptr(), f)
     }
 }
 
@@ -551,6 +559,35 @@ mod tests {
 
             add(&five, &five);
             assert_eq!(five.get().copied().unwrap(), 10);
+        });
+    }
+
+    // u16 counters used to stop at 65,535 references, which a type with that
+    // many child items reaches honestly.
+    #[test]
+    #[cfg(not(loom))]
+    #[cfg_attr(miri, ignore)]
+    fn refs_beyond_u16() {
+        let owner = Somr::new(5);
+        let refs = (0..70_000).map(|_| owner.clone()).collect::<Vec<_>>();
+        assert!(refs.iter().all(|r| r.get() == Some(&5)));
+        drop(refs);
+        assert_eq!(owner.get(), Some(&5));
+        assert!(MAX_REFCOUNT >= u32::MAX as RefPrimitiveType / 2);
+    }
+
+    #[test]
+    fn pointer_format_does_not_deref() {
+        loom_model!({
+            let none = Somr::<i32>::none();
+            let _ = format!("{none:p}");
+
+            let five = Somr::new(5);
+            let five_ref = five.clone();
+            assert_eq!(format!("{five:p}"), format!("{five_ref:p}"));
+            drop(five);
+            // the owner released the data; formatting must not unwrap it
+            let _ = format!("{five_ref:p}");
         });
     }
 }

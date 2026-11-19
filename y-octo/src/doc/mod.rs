@@ -6,6 +6,8 @@ mod common;
 #[cfg(test)]
 mod concurrency;
 mod document;
+#[cfg(all(test, not(loom)))]
+mod hardening_tests;
 mod hasher;
 mod history;
 #[cfg(all(test, not(loom)))]

@@ -132,6 +132,11 @@ impl OrderRange {
     /// Range will be merged if overlap exists or turned into fragment if it's
     /// not continuous.
     pub fn push(&mut self, range: Range<u64>) {
+        // an empty range covers nothing; storing it would break the
+        // sorted, non-overlapping fragment invariant
+        if range.is_empty() {
+            return;
+        }
         match self {
             OrderRange::Range(r) => {
                 if r.start == r.end {
@@ -250,51 +255,24 @@ impl OrderRange {
         }
     }
 
+    /// Inserts `range` into a sorted list of disjoint, non-adjacent ranges and
+    /// merges every range it overlaps or touches, keeping the list sorted,
+    /// disjoint and non-adjacent.
     fn push_inner(list: &mut VecDeque<Range<u64>>, range: Range<u64>) {
-        if list.is_empty() {
-            list.push_back(range);
+        if range.is_empty() {
+            return;
+        }
+        // first range that ends at or after the new start
+        let first = list.partition_point(|r| r.end < range.start);
+        // first range that starts after the new end
+        let last = list.partition_point(|r| r.start <= range.end);
+
+        if first == last {
+            list.insert(first, range);
         } else {
-            let search_result = list.binary_search_by(|r| {
-                if is_continuous_range(r, &range) {
-                    std::cmp::Ordering::Equal
-                } else if r.end < range.start {
-                    std::cmp::Ordering::Less
-                } else {
-                    std::cmp::Ordering::Greater
-                }
-            });
-
-            match search_result {
-                Ok(idx) => {
-                    let old = &mut list[idx];
-                    list[idx] = old.start.min(range.start)..old.end.max(range.end);
-                    Self::squash_around(list, idx);
-                }
-                Err(idx) => {
-                    list.insert(idx, range);
-                    Self::squash_around(list, idx);
-                }
-            }
-        }
-    }
-
-    fn squash_around(list: &mut VecDeque<Range<u64>>, idx: usize) {
-        if idx > 0 {
-            let prev = &list[idx - 1];
-            let cur = &list[idx];
-            if is_continuous_range(prev, cur) {
-                list[idx - 1] = prev.start.min(cur.start)..prev.end.max(cur.end);
-                list.remove(idx);
-            }
-        }
-
-        if idx < list.len() - 1 {
-            let next = &list[idx + 1];
-            let cur = &list[idx];
-            if is_continuous_range(cur, next) {
-                list[idx] = cur.start.min(next.start)..cur.end.max(next.end);
-                list.remove(idx + 1);
-            }
+            let merged = range.start.min(list[first].start)..range.end.max(list[last - 1].end);
+            list[first] = merged;
+            list.drain(first + 1..last);
         }
     }
 }
@@ -488,5 +466,83 @@ mod tests {
         let range: OrderRange = OrderRange::Range(0..10);
 
         assert_eq!(range.into_iter().collect::<Vec<_>>(), vec![(0..10)]);
+    }
+
+    fn assert_canonical(range: &OrderRange) {
+        let ranges = range.into_iter().collect::<Vec<_>>();
+        for r in &ranges {
+            assert!(!r.is_empty() || ranges.len() == 1, "empty fragment in {range:?}");
+        }
+        for pair in ranges.windows(2) {
+            assert!(
+                pair[0].end < pair[1].start,
+                "unsorted or touching fragments in {range:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_range_push_spanning_many_fragments() {
+        let mut range: OrderRange = vec![(0..5), (10..15), (20..25), (30..35), (40..45)].into();
+        range.push(0..50);
+        assert_eq!(range, OrderRange::Range(0..50));
+
+        let mut range: OrderRange = vec![(0..5), (10..15), (20..25), (30..35), (40..45)].into();
+        range.push(12..32);
+        assert_eq!(range, OrderRange::from(vec![(0..5), (10..35), (40..45)]));
+
+        // touching both neighbours at once
+        let mut range: OrderRange = vec![(0..5), (10..15)].into();
+        range.push(5..10);
+        assert_eq!(range, OrderRange::Range(0..15));
+
+        let mut range: OrderRange = vec![(0..5), (10..15), (20..25)].into();
+        range.extend([3..22, 30..31]);
+        assert_eq!(range, OrderRange::from(vec![(0..25), (30..31)]));
+    }
+
+    #[test]
+    fn test_range_push_ignores_empty() {
+        let mut range: OrderRange = vec![(0..5), (10..15)].into();
+        range.push(7..7);
+        range.extend([8..8, 20..20]);
+        assert_eq!(range, OrderRange::from(vec![(0..5), (10..15)]));
+
+        let mut range: OrderRange = (0..5).into();
+        range.push(9..9);
+        assert_eq!(range, OrderRange::Range(0..5));
+    }
+
+    #[test]
+    fn test_range_push_keeps_fragments_canonical() {
+        // deterministic pseudo random pushes, checked against a bitmap
+        let mut seed = 0x2545_f491_4f6c_dd1du64;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        // Miri runs a few rounds; the rest only repeat the same code paths
+        let rounds = if cfg!(miri) { 8 } else { 200 };
+        for _ in 0..rounds {
+            let mut range = OrderRange::default();
+            let mut covered = [false; 256];
+            for _ in 0..40 {
+                let start = next() % 250;
+                let len = next() % 12;
+                let end = (start + len).min(256);
+                if next() % 2 == 0 {
+                    range.push(start..end);
+                } else {
+                    range.extend([start..end]);
+                }
+                covered[start as usize..end as usize].iter_mut().for_each(|c| *c = true);
+                assert_canonical(&range);
+            }
+            for (clock, covered) in covered.iter().enumerate() {
+                assert_eq!(range.contains(clock as u64), *covered, "clock {clock} in {range:?}");
+            }
+        }
     }
 }

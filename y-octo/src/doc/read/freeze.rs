@@ -3,7 +3,7 @@ use std::{borrow::Cow, ops::Range};
 use super::{
     AnyId, Builder, FrozenContent, FrozenType, NodeId, RawContent, RawNode, ReadDoc, ReadError, Span, Utf16Slices,
 };
-use crate::{Any, CrdtRead, CrdtReader, JwstCodecError, RawDecoder};
+use crate::{Any, CrdtReader, JwstCodecError, RawDecoder};
 
 impl Builder {
     fn freeze_strings(&mut self, any: &mut Vec<Any>) -> Result<(), ReadError> {
@@ -128,7 +128,8 @@ impl Builder {
                 let start = any.len();
                 for span in &self.parts[range] {
                     let mut decoder = RawDecoder::new(span.bytes(&self.input));
-                    let value = Any::read(&mut decoder)?;
+                    // the scan already bounded the nesting by the same limit
+                    let value = Any::read_with_max_depth(&mut decoder, self.limits.max_any_depth)?;
                     if !decoder.is_empty() {
                         return Err(JwstCodecError::UpdateNotFullyConsumed(decoder.len() as usize).into());
                     }
@@ -157,7 +158,7 @@ impl Builder {
 
     fn push_encoded_any(&self, span: super::Span, any: &mut Vec<Any>) -> Result<AnyId, ReadError> {
         let mut decoder = RawDecoder::new(span.bytes(&self.input));
-        let value = Any::read(&mut decoder)?;
+        let value = Any::read_with_max_depth(&mut decoder, self.limits.max_any_depth)?;
         if !decoder.is_empty() {
             return Err(JwstCodecError::UpdateNotFullyConsumed(decoder.len() as usize).into());
         }

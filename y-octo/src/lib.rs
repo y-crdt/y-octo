@@ -1,6 +1,9 @@
+// The wire codecs need no unsafe code; the lint level on a `mod` item covers
+// the whole module. `doc` relies on `unsafe` for `Somr`.
 #[forbid(unsafe_code)]
 mod codec;
 mod doc;
+#[forbid(unsafe_code)]
 mod protocol;
 mod sync;
 

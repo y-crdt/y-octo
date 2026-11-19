@@ -45,6 +45,26 @@ impl Collector {
     }
 }
 
+/// A type whose children [DocStore::delete_item_inner] is deleting.
+struct DeleteFrame {
+    ty: YTypeRef,
+    /// next list item to visit
+    cursor: ItemRef,
+    /// map values left to visit, once the list is done
+    map_values: Option<std::vec::IntoIter<ItemRef>>,
+}
+
+impl DeleteFrame {
+    fn new(ty: YTypeRef) -> Self {
+        let cursor = ty.ty().map(|ty| ty.start.clone()).unwrap_or_else(Somr::none);
+        Self {
+            ty,
+            cursor,
+            map_values: None,
+        }
+    }
+}
+
 #[derive(Default, Debug)]
 pub(crate) struct DocStore {
     client: Client,
@@ -345,7 +365,8 @@ impl DocStore {
         {
             let item = items.get(index).unwrap().clone();
             let offset = id.clock - item.clock();
-            if offset != item.len() - 1 && !item.is_gc() {
+            // only items split; GC and skip structs are returned whole
+            if offset != item.len() - 1 && !item.is_gc() && !item.is_skip() {
                 let (left, right) = Self::split_node_at(items, index, offset + 1)?;
                 self.collector.merges.push(right.id());
                 return Ok(left);
@@ -405,6 +426,15 @@ impl DocStore {
     ///     - [Parent::Id] for type as item (e.g `doc.create_text()`)
     ///     - [None] means borrow left.parent or right.parent
     pub fn repair(&mut self, item: &mut Item, store_ref: StoreRef) -> JwstCodecResult {
+        // Same-client origins are never deferred by the update iterator, which
+        // assumes they precede the item; an item cannot anchor to a struct
+        // created at or after itself (as `ReadDoc` checks).
+        for origin in [item.origin_left_id, item.origin_right_id].into_iter().flatten() {
+            if origin.client == item.id.client && origin.clock >= item.id.clock {
+                return Err(JwstCodecError::InvalidParent);
+            }
+        }
+
         if let Some(left_id) = item.origin_left_id {
             if let Node::Item(left_ref) = self.split_at_and_get_left(left_id)? {
                 item.origin_left_id = left_ref.get().map(|left| left.last_id());
@@ -438,6 +468,14 @@ impl DocStore {
             //
             // Item { id: (1, 0), content: Content::Type(_) }
             //        ^^ Parent::Id((1, 0))
+            // A same-client parent at or after the item cannot have been
+            // created before it. Only a partially integrated item (offset > 0)
+            // could find such a struct in the store, possibly its own prefix;
+            // treat the parent as missing, like any parent not yet integrated,
+            // so the item is kept as a GC range instead of being linked.
+            Some(Parent::Id(parent_id)) if parent_id.client == item.id.client && parent_id.clock >= item.id.clock => {
+                item.parent = None;
+            }
             Some(Parent::Id(parent_id)) => {
                 // Only an integrated carrier can back a stored parent identity.
                 // The update iterator defers missing cross-client dependencies.
@@ -507,6 +545,17 @@ impl DocStore {
                     if let Node::Item(left_ref) =
                         self.split_at_and_get_left(Id::new(this.id.client, this.id.clock - 1))?
                     {
+                        // The integrated prefix of this item becomes its left
+                        // neighbor. In honest updates it is the same item, so
+                        // it lives in the same list; a byzantine update can
+                        // claim another container for the remainder, which
+                        // would splice two lists together (or delete the
+                        // parent's own carrier as the "previous map value").
+                        if let Some(left) = left_ref.get()
+                            && !Self::same_container(left, this)
+                        {
+                            return Err(JwstCodecError::InvalidParent);
+                        }
                         this.origin_left_id = left_ref.get().map(|left| left.last_id());
                         this.left = left_ref;
                     }
@@ -580,6 +629,15 @@ impl DocStore {
                 });
 
                 if let (Some(Parent::Type(ty)), Some((parent, parent_deleted))) = (&this.parent, parent) {
+                    // Neighbors resolved from origins must share this item's
+                    // list; otherwise linking would cross containers.
+                    for neighbor in [&this.left, &this.right] {
+                        if let Some(neighbor) = neighbor.get()
+                            && !Self::same_container(neighbor, this)
+                        {
+                            return Err(JwstCodecError::InvalidParent);
+                        }
+                    }
                     publish_child = parent.published;
                     if matches!(this.content, Content::Format { .. }) {
                         parent.has_formatting = true;
@@ -735,6 +793,17 @@ impl DocStore {
         Ok(())
     }
 
+    /// Whether two items are in the same list: the same parent type and, for
+    /// map entries, the same key. An item whose parent was not resolved is
+    /// collected instead of linked, so it matches anything.
+    fn same_container(other: &Item, this: &Item) -> bool {
+        match (&other.parent, &this.parent) {
+            (Some(Parent::Type(a)), Some(Parent::Type(b))) => a == b && other.parent_sub == this.parent_sub,
+            (_, Some(Parent::Type(_))) => false,
+            _ => true,
+        }
+    }
+
     pub fn delete_item(&mut self, item: &Item, parent: Option<&mut YType>) {
         let mut pending_delete_sets = HashMap::new();
         Self::delete_item_inner(&mut pending_delete_sets, &mut self.collector, item, parent);
@@ -749,15 +818,97 @@ impl DocStore {
         }
     }
 
+    /// Deletes `item` and, for a type, everything nested in it. Nested types
+    /// are walked with an explicit stack in the order Yjs recurses (each
+    /// child's subtree before its next sibling), so a deeply nested update
+    /// cannot overflow the thread stack, and at most one nested type is
+    /// borrowed mutably at a time.
     fn delete_item_inner(
         delete_set: &mut HashMap<u64, Vec<Range<u64>>>,
         collector: &mut Collector,
         item: &Item,
         parent: Option<&mut YType>,
     ) {
+        let Some(ty) = Self::delete_one(delete_set, collector, item, parent) else {
+            return;
+        };
+
+        // types whose children are being deleted, innermost last
+        let mut stack = vec![DeleteFrame::new(ty)];
+        while let Some(frame) = stack.last_mut() {
+            let DeleteFrame { ty, cursor, map_values } = frame;
+            // SAFETY: store write lock held; the type tree is acyclic, so `ty`
+            // is neither the `parent` borrowed by the caller nor any other
+            // type on this stack, and no other borrow of it is alive. Local
+            // inserts keep it acyclic because `check_insertable` inserts a
+            // type at most once and walks its new ancestors; integrate rejects
+            // cycles in remote updates.
+            let Some(mut ty) = (unsafe { ty.ty_mut() }) else {
+                stack.pop();
+                continue;
+            };
+
+            let mut nested = None;
+            // 4. delete all children: list items first, then map values
+            if map_values.is_none() {
+                while let Some(child) = cursor.get() {
+                    let next = child.right.clone();
+                    // items in ty are all refs, not owned
+                    // children deleted earlier are not in this delete set; Yjs
+                    // `ContentType.delete` queues them for merging
+                    if child.deleted() {
+                        collector.merges.push(child.id);
+                    } else {
+                        nested = Self::delete_one(delete_set, collector, child, Some(&mut ty));
+                    }
+                    *cursor = next;
+                    if nested.is_some() {
+                        break;
+                    }
+                }
+                if nested.is_none() {
+                    *map_values = Some(ty.map.values().cloned().collect::<Vec<_>>().into_iter());
+                }
+            }
+            if nested.is_none()
+                && let Some(values) = map_values
+            {
+                for child in values.by_ref() {
+                    if let Some(child) = child.get() {
+                        if child.deleted() {
+                            collector.merges.push(child.id);
+                        } else {
+                            nested = Self::delete_one(delete_set, collector, child, Some(&mut ty));
+                            if nested.is_some() {
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            // `ty` (no drop glue) is no longer used: pushing the nested
+            // frame below ends its borrow of this one
+
+            match nested {
+                Some(nested) => stack.push(DeleteFrame::new(nested)),
+                None => {
+                    stack.pop();
+                }
+            }
+        }
+    }
+
+    /// Deletes a single item without descending into its content. Returns the
+    /// type it carries when its children still have to be deleted.
+    fn delete_one(
+        delete_set: &mut HashMap<u64, Vec<Range<u64>>>,
+        collector: &mut Collector,
+        item: &Item,
+        parent: Option<&mut YType>,
+    ) -> Option<YTypeRef> {
         // 1. mark item as deleted, if item is gced, return
         if !item.delete() {
-            return;
+            return None;
         }
 
         // 2. add it to delete set
@@ -782,42 +933,8 @@ impl DocStore {
             }
         }
 
-        match &item.content {
-            Content::Type(ty) => {
-                // 4. delete all children
-                // SAFETY: store write lock held; the type tree is acyclic, so
-                // `ty` is not the `parent` borrowed by the caller nor any
-                // type borrowed further up this recursion. Local inserts keep
-                // it acyclic because `check_insertable` inserts a type at most
-                // once and walks its new ancestors; integrate rejects cycles
-                // in remote updates.
-                if let Some(mut ty) = unsafe { ty.ty_mut() } {
-                    // items in ty are all refs, not owned
-                    // children deleted earlier are not in this delete set; Yjs
-                    // `ContentType.delete` queues them for merging
-                    let mut item_ref = ty.start.clone();
-                    while let Some(item) = item_ref.get() {
-                        if !item.deleted() {
-                            Self::delete_item_inner(delete_set, collector, item, Some(&mut ty));
-                        } else {
-                            collector.merges.push(item.id);
-                        }
-
-                        item_ref = item.right.clone();
-                    }
-
-                    let map_values = ty.map.values().cloned().collect::<Vec<_>>();
-                    for item in map_values {
-                        if let Some(item) = item.get() {
-                            if !item.deleted() {
-                                Self::delete_item_inner(delete_set, collector, item, Some(&mut ty));
-                            } else {
-                                collector.merges.push(item.id);
-                            }
-                        }
-                    }
-                }
-            }
+        let nested = match &item.content {
+            Content::Type(ty) => Some(ty.clone()),
             // Yjs `ContentDoc.delete`: a subdocument added by this
             // transaction is no longer added, any other one is removed
             Content::Doc { guid, .. } => {
@@ -826,14 +943,17 @@ impl DocStore {
                 } else {
                     collector.subdocs_removed.push(guid.clone());
                 }
+                None
             }
-            _ => {}
-        }
+            _ => None,
+        };
 
         // mark deleted item's parent
         if let Some(Parent::Type(ty)) = &item.parent {
             Self::mark_changed(&mut collector.changed, ty.clone(), item.parent_sub.clone());
         }
+
+        nested
     }
 
     pub fn delete_node(&mut self, struct_info: &Node, parent: Option<&mut YType>) {
@@ -1084,13 +1204,37 @@ impl DocStore {
     /// replaced by a GC struct.
     /// `item_ref` is a live item of this store.
     fn gc_item(&mut self, item_ref: &ItemRef, parent_gced: bool) {
+        // An explicit stack instead of recursing through nested types:
+        // `Visit` collects an item's children (Yjs `ContentType.gc`) and queues
+        // them before its own `Finish`, so children are collected first, in
+        // the order Yjs recurses.
+        enum Step {
+            Visit(ItemRef, bool),
+            Finish(ItemRef, bool),
+        }
+
+        let mut steps = vec![Step::Visit(item_ref.clone(), parent_gced)];
+        while let Some(step) = steps.pop() {
+            match step {
+                Step::Visit(item_ref, parent_gced) => {
+                    let children = match &item_ref.get().expect("collected items are live").content {
+                        Content::Type(ty) => self.take_type_children(ty),
+                        _ => Vec::new(),
+                    };
+                    steps.push(Step::Finish(item_ref, parent_gced));
+                    steps.extend(children.into_iter().rev().map(|child| Step::Visit(child, true)));
+                }
+                Step::Finish(item_ref, parent_gced) => self.gc_item_content(&item_ref, parent_gced),
+            }
+        }
+    }
+
+    /// The item half of Yjs `Item.gc`, once the children of its type have
+    /// been collected.
+    fn gc_item_content(&mut self, item_ref: &ItemRef, parent_gced: bool) {
         let item = item_ref.get().expect("collected items are live");
         debug_assert!(item.deleted());
         let (id, len) = (item.id, item.len());
-
-        if let Content::Type(ty) = &item.content {
-            self.gc_type(ty);
-        }
 
         if parent_gced {
             let items = self.items.get_mut(&id.client).expect("live items are in the store");
@@ -1109,9 +1253,9 @@ impl DocStore {
         }
     }
 
-    /// Yjs `ContentType.gc`: collects every child of a type whose item is
-    /// being collected.
-    fn gc_type(&mut self, ty: &YTypeRef) {
+    /// Yjs `ContentType.gc`: detaches every child of a type whose item is
+    /// being collected and returns them for collection.
+    fn take_type_children(&mut self, ty: &YTypeRef) -> Vec<ItemRef> {
         let mut children = Vec::new();
         if let Some(ty) = ty.ty() {
             let mut item = ty.start.clone();
@@ -1137,9 +1281,7 @@ impl DocStore {
             }
         }
 
-        for child in children {
-            self.gc_item(&child, true);
-        }
+        children
     }
 
     /// Yjs `tryMergeDeleteSet`: merges the structs in and right after each

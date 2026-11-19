@@ -6,7 +6,10 @@ use super::*;
 
 pub fn read_var_buffer(input: &[u8]) -> IResult<&[u8], &[u8]> {
     let (tail, len) = read_var_u64(input)?;
-    let (tail, val) = take(len as usize)(tail)?;
+    // `as usize` would truncate on 32-bit targets and misframe the stream
+    let len = usize::try_from(len)
+        .map_err(|_| nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::TooLarge)))?;
+    let (tail, val) = take(len)(tail)?;
     Ok((tail, val))
 }
 

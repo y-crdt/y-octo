@@ -83,7 +83,9 @@ impl From<&Content> for Value {
                 YTypeKind::Unknown => Value::Any(Any::Undefined),
             },
             Content::Doc { guid, opts } => Value::Doc(subdocument(guid, opts)),
-            Content::Format { .. } => unimplemented!(),
+            // Yjs `ContentFormat.getContent()` is empty, so a format item that
+            // ended up as a map value reads as undefined.
+            Content::Format { .. } => Value::Any(Any::Undefined),
             // actually unreachable
             Content::Deleted(_) => Value::Any(Any::Undefined),
         }
