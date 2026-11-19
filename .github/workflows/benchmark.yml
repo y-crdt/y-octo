@@ -2,17 +2,32 @@ name: Benchmark
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
+  # Keep the benchmark label to benchmark subsequent PR heads too.
   pull_request:
-    types: [opened, synchronize]
-    paths-ignore:
-      - "**/*.md"
+    types: [opened, reopened, synchronize, labeled]
 
+# Only events that run PR benchmarks share a cancellation group. Skipped label
+# events must not cancel a measurement or its pending result publication.
+# Cancellation includes comparison and PR comment publication.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  group: >-
+    ${{ github.workflow }}-${{
+      github.event_name == 'pull_request' &&
+      (contains(github.event.pull_request.labels.*.name, 'benchmark') &&
+       (github.event.action != 'labeled' || github.event.label.name == 'benchmark') &&
+       format('pr-{0}', github.event.pull_request.number) || format('run-{0}', github.run_id)) ||
+      github.sha
+    }}
   cancel-in-progress: true
 
 jobs:
   benchmark:
+    if: >-
+      github.event_name != 'pull_request' ||
+      (contains(github.event.pull_request.labels.*.name, 'benchmark') &&
+       (github.event.action != 'labeled' || github.event.label.name == 'benchmark'))
     strategy:
       matrix:
         os: [ubuntu-latest, windows-latest] # `macos-latest` is too unstable to be useful for benchmark, the variance is always huge.
@@ -22,7 +37,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          ref: main
+          ref: ${{ github.event_name == 'push' && github.sha || 'main' }}
 
       - name: Setup Rust
         uses: ./.github/actions/setup-rust
@@ -37,13 +52,15 @@ jobs:
           cargo bench --bench text_ops_benchmarks --features bench -- --save-baseline main
           cargo bench --bench update_benchmarks --features bench -- --save-baseline main
 
-      - name: Checkout main branch
+      - name: Checkout PR head
+        if: github.event_name == 'pull_request'
         uses: actions/checkout@v4
         with:
           clean: false
           ref: ${{ github.event.pull_request.head.sha }}
 
       - name: Run Bench on PR Branch
+        if: github.event_name == 'pull_request'
         run: |
           cargo bench --bench codec_benchmarks --features bench -- --save-baseline pr
           cargo bench --bench array_ops_benchmarks --features bench -- --save-baseline pr
@@ -58,7 +75,11 @@ jobs:
           path: ./target/criterion
 
   benchmark-compare:
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
     name: Compare Benchmarks
     needs:
       - benchmark
@@ -104,7 +125,10 @@ jobs:
         shell: bash
         run: |
           critcmp main pr | cargo run -p y-octo-utils --bin bench_result_render --features bench -- Windows >> summary.md
-          cat summary.md > $GITHUB_STEP_SUMMARY
+
+      - name: Publish benchmark summary
+        shell: bash
+        run: cat summary.md > "$GITHUB_STEP_SUMMARY"
 
       - name: Find Comment
         # Check if the event is not triggered by a fork
@@ -114,7 +138,7 @@ jobs:
         with:
           issue-number: ${{ github.event.pull_request.number }}
           comment-author: "github-actions[bot]"
-          body-includes: Benchmark Results
+          body-includes: "## Benchmark for Linux"
 
       - name: Create or update comment
         # Check if the event is not triggered by a fork

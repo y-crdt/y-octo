@@ -12,6 +12,11 @@ inputs:
     required: false
     default: "stable"
 
+  workspaces:
+    description: "Cargo workspaces and target directories to cache"
+    required: false
+    default: ". -> target"
+
 runs:
   using: "composite"
   steps:
@@ -21,8 +26,12 @@ runs:
         toolchain: ${{ inputs.toolchain }}
         targets: ${{ inputs.targets }}
         components: ${{ inputs.components }}
+    # The repository rust-toolchain can override the action-selected toolchain.
+    # Install targets for the toolchain that plain cargo actually uses as well.
     - name: Add Targets
       if: ${{ inputs.targets }}
       run: rustup target add ${{ inputs.targets }}
       shell: bash
     - uses: Swatinem/rust-cache@v2
+      with:
+        workspaces: ${{ inputs.workspaces }}

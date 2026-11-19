@@ -1062,7 +1062,10 @@ mod tests {
             doc
         });
 
-        for _ in 0..50 {
+        // Keep a short history under Miri; native tests cover the full semantic
+        // sample.
+        let steps = if cfg!(miri) { 10 } else { 50 };
+        for _ in 0..steps {
             let index = rng.random_range(0..replicas.len());
             let doc = &mut replicas[index];
             match rng.random_range(0..5) {

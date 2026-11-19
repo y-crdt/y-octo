@@ -22,6 +22,7 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     permissions:
+      actions: read
       contents: read
       security-events: write
 
@@ -36,15 +37,12 @@ jobs:
         with:
           toolchain: nightly
           components: clippy, rustfmt
+          workspaces: |
+            . -> target
+            y-octo-utils/fuzz -> target
 
-      - name: Install Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: "yarn"
-
-      - name: Install Node.js dependencies
-        run: yarn install
+      - name: Setup Node.js
+        uses: ./.github/actions/setup-node
 
       - name: Install required cargo components
         uses: taiki-e/install-action@v2
@@ -59,6 +57,7 @@ jobs:
 
       - name: Build & Check
         run: |
+          set -o pipefail
           cargo +nightly clippy --all-features --message-format=json -- -D warnings | clippy-sarif | tee rust-clippy-results.sarif | sarif-fmt
           RUSTDOCFLAGS="-D rustdoc::broken-intra-doc-links" cargo doc --workspace --all-features --no-deps
         env:
@@ -70,7 +69,7 @@ jobs:
           RUSTFLAGS="--cfg fuzzing" cargo +nightly clippy --manifest-path y-octo-utils/fuzz/Cargo.toml --all-targets -- -D warnings
 
       - name: Upload analysis results to GitHub
-        uses: github/codeql-action/upload-sarif@v2
+        uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: rust-clippy-results.sarif
           wait-for-processing: true
@@ -78,7 +77,6 @@ jobs:
   test:
     name: test & collect coverage
     runs-on: ubuntu-latest
-    continue-on-error: true
     env:
       RUSTFLAGS: -D warnings
       CARGO_TERM_COLOR: always
@@ -105,7 +103,6 @@ jobs:
   loom:
     name: loom thread test
     runs-on: ubuntu-latest
-    continue-on-error: true
     env:
       RUSTFLAGS: --cfg loom
       RUST_BACKTRACE: full
@@ -125,7 +122,6 @@ jobs:
   miri:
     name: miri code check
     runs-on: ubuntu-latest
-    continue-on-error: true
     env:
       RUST_BACKTRACE: full
       CARGO_TERM_COLOR: always
@@ -148,7 +144,6 @@ jobs:
   asan:
     name: Address sanitizer
     runs-on: ubuntu-latest
-    continue-on-error: true
     env:
       RUSTFLAGS: -D warnings -Zsanitizer=address
       ASAN_OPTIONS: detect_leaks=1
