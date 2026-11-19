@@ -8,6 +8,8 @@ mod hasher;
 mod history;
 #[cfg(all(test, not(loom)))]
 mod live_edit_tests;
+#[cfg(all(test, not(loom)))]
+mod local_update_tests;
 mod read;
 mod redo;
 mod relative_position;
@@ -35,7 +37,7 @@ pub type HashSet<K> = std::collections::HashSet<K, std::hash::BuildHasherDefault
 pub use awareness::{Awareness, AwarenessEvent};
 pub use codec::*;
 pub use common::*;
-pub use document::{Doc, DocOptions};
+pub use document::{Doc, DocOptions, LocalUpdate};
 #[cfg(feature = "debug")]
 pub use document::{DocMemoryLayout, memory_layout, profiling_counters, reset_profiling_counters};
 pub use hasher::ClientMap;

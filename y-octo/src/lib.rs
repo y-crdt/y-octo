@@ -8,11 +8,11 @@ pub use codec::*;
 pub use doc::{
     AbsolutePosition, Any, ArrayRead, ArrayWrite, Awareness, AwarenessEvent, ChangedType, Client, ClientMap, Clock,
     CommitEvent, CommitSummary, CrdtRead, CrdtReader, CrdtWrite, CrdtWriter, Doc, DocOptions, HashMap as AHashMap,
-    HashMapExt, History, HistoryOptions, Id, IncomingUpdate, MapRead, MapWrite, Origin, RawDecoder, RawEncoder,
-    ReadAny, ReadArray, ReadDoc, ReadError, ReadLimits, ReadMap, ReadText, ReadTextRun, ReadValue, RelativePosition,
-    StateVector, StoreHistory, Subscription, TextAttributes, TextDelta, TextDeltaOp, TextIdentityRun, TextInsert,
-    TextRead, TextWrite, Transaction, TransactionMut, TypeIdentity, UndoItem, UndoManager, UndoOptions, UndoOrigin,
-    UndoScope, UndoStack, Update, Value, YTypeKind, encode_awareness_as_message, encode_update_as_message,
+    HashMapExt, History, HistoryOptions, Id, IncomingUpdate, LocalUpdate, MapRead, MapWrite, Origin, RawDecoder,
+    RawEncoder, ReadAny, ReadArray, ReadDoc, ReadError, ReadLimits, ReadMap, ReadText, ReadTextRun, ReadValue,
+    RelativePosition, StateVector, StoreHistory, Subscription, TextAttributes, TextDelta, TextDeltaOp, TextIdentityRun,
+    TextInsert, TextRead, TextWrite, Transaction, TransactionMut, TypeIdentity, UndoItem, UndoManager, UndoOptions,
+    UndoOrigin, UndoScope, UndoStack, Update, Value, YTypeKind, encode_awareness_as_message, encode_update_as_message,
     merge_updates_v1,
     types::{array::Array, map::Map, text::Text},
 };

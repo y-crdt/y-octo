@@ -3,8 +3,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "generate": "node generate.mjs && node concurrent.mjs && node undo.mjs && node regressions.mjs && node legacy.mjs",
-    "check": "node generate.mjs --check && node concurrent.mjs --check && node undo.mjs --check && node regressions.mjs --check && node legacy.mjs --check",
+    "generate": "node generate.mjs && node concurrent.mjs && node undo.mjs && node local.mjs && node regressions.mjs && node legacy.mjs",
+    "check": "node generate.mjs --check && node concurrent.mjs --check && node undo.mjs --check && node local.mjs --check && node regressions.mjs --check && node legacy.mjs --check",
     "generate:upstream": "node upstream.mjs",
     "check:upstream": "node upstream.mjs --check",
     "bench": "node bench.mjs",

@@ -365,20 +365,68 @@ impl Doc {
         let store_ref = &self.store;
         transact_mut_with(store_ref, origin.into(), false, |tx| {
             // what the update itself declares, before pending structs join it
-            tx.incoming = Some(IncomingUpdate {
-                structs: update
-                    .structs
-                    .iter()
-                    .fold(DeleteSet::default(), |mut ranges, (client, nodes)| {
-                        for node in nodes.iter().filter(|node| !matches!(node, Node::Skip(_))) {
-                            ranges.add(*client, node.clock(), node.len());
-                        }
-                        ranges
-                    }),
-                delete_set: update.delete_set.clone(),
-            });
+            tx.incoming = Some(IncomingUpdate::of(&update));
             Self::integrate_update(tx.store_mut(), store_ref, update)
         })
+    }
+
+    /// Applies an update authored locally outside this document (for
+    /// example by a trusted renderer with a client ID of its own) as a local
+    /// transaction with `origin`, so that history captures it like an edit
+    /// made through this document; [Doc::apply_update] is for remote
+    /// updates.
+    ///
+    /// The update is applied only when it can take effect completely: if it
+    /// needs structs this document has not integrated (including ones still
+    /// waiting in the document for their own dependencies), nothing is
+    /// applied and [LocalUpdate::MissingDependencies] says from which clock
+    /// of which client the caller has to resynchronize first. Otherwise the
+    /// commit contains exactly what this update adds and deletes for the
+    /// first time; remote updates waiting in the document that it unblocks
+    /// are integrated after it, in a separate remote transaction. Applying an
+    /// update again changes nothing and commits nothing.
+    pub fn apply_local_update(
+        &self,
+        update: Update,
+        origin: impl Into<Option<Origin>>,
+    ) -> JwstCodecResult<LocalUpdate> {
+        let store_ref = &self.store;
+        let applied = transact_mut_with(store_ref, origin.into(), true, |tx| {
+            let missing = missing_dependencies(&update, tx.store_mut().get_state_vector());
+            if !missing.is_empty() {
+                return Ok(LocalUpdate::MissingDependencies(missing));
+            }
+            tx.incoming = Some(IncomingUpdate::of(&update));
+            let store = tx.store_mut();
+            // the remote updates waiting in the store stay out of this commit
+            let pending = store.pending.take();
+            let result = Self::integrate_update(store, store_ref, update);
+            debug_assert!(store.pending.is_none(), "checked for missing dependencies");
+            store.pending = pending;
+            result.map(|()| LocalUpdate::Applied)
+        })?;
+
+        let unblocked = applied == LocalUpdate::Applied && {
+            let store = read_store(store_ref)?;
+            store.pending.as_ref().is_some_and(|pending| {
+                // waiting structs whose dependencies arrived, or waiting
+                // deletions (also of a deletion-only update) whose targets did
+                pending
+                    .missing_state
+                    .iter()
+                    .any(|(client, clock)| *clock < store.get_state(*client))
+                    || pending.delete_set.iter().any(|(client, ranges)| {
+                        let state = store.get_state(*client);
+                        ranges.into_iter().any(|range| range.start < state)
+                    })
+            })
+        };
+        if unblocked {
+            transact_mut_with(store_ref, None, false, |tx| {
+                Self::integrate_update(tx.store_mut(), store_ref, Update::default())
+            })?;
+        }
+        Ok(applied)
     }
 
     /// Runs `f` with a consistent read-only view of the document.
@@ -650,6 +698,60 @@ impl Doc {
         write_store(&self.store)?.optimize_all();
         Ok(())
     }
+}
+
+/// The result of [Doc::apply_local_update].
+#[derive(Debug, Clone, PartialEq)]
+pub enum LocalUpdate {
+    /// The update took effect completely (or had nothing new).
+    Applied,
+    /// Nothing was applied: the update needs structs of these clients that
+    /// the document has not integrated; each clock is what the document has
+    /// integrated of that client, where resynchronization starts.
+    MissingDependencies(StateVector),
+}
+
+impl IncomingUpdate {
+    /// What `update` itself declares.
+    fn of(update: &Update) -> Self {
+        Self {
+            structs: update
+                .structs
+                .iter()
+                .fold(DeleteSet::default(), |mut ranges, (client, nodes)| {
+                    for node in nodes.iter().filter(|node| !matches!(node, Node::Skip(_))) {
+                        ranges.add(*client, node.clock(), node.len());
+                    }
+                    ranges
+                }),
+            delete_set: update.delete_set.clone(),
+        }
+    }
+}
+
+/// What `update` needs beyond `state` (the document's integrated state) to
+/// take effect completely: for each client the integration's dependency
+/// check finds missing (run on a copy, without integrating), the clock the
+/// document has integrated up to, from which the caller resynchronizes.
+fn missing_dependencies(update: &Update, state: StateVector) -> StateVector {
+    let mut probe = update.clone();
+    let mut reached = state.clone();
+    for (node, _) in probe.iter(state.clone()) {
+        reached.set_max(node.client(), node.clock() + node.len());
+    }
+    for _ in probe.delete_set_iter(reached) {}
+    let mut missing = StateVector::default();
+    let clients = probe.missing_state.keys().chain(
+        probe
+            .pending_delete_set
+            .iter()
+            .filter(|(_, ranges)| !ranges.is_empty())
+            .map(|(client, _)| client),
+    );
+    for client in clients {
+        missing.insert(*client, state.get(client));
+    }
+    missing
 }
 
 #[cfg(test)]
