@@ -32,6 +32,8 @@ pub(crate) struct DocStore {
     pub last_optimized_state: StateVector,
     // changed item's parent, value is the parent's sub key if exists
     pub changed: ChangedTypeRefs,
+    // local redo mapping, old id range -> recreated id range
+    pub redone: RedoMap,
 }
 
 pub(crate) type StoreRef = Arc<RwLock<DocStore>>;

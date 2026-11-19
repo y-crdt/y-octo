@@ -50,6 +50,7 @@ async-lock = { workspace = true }
 [dev-dependencies]
 assert-json-diff = { workspace = true }
 criterion        = { workspace = true }
+flate2           = "1"
 lib0             = { workspace = true }
 ordered-float    = { workspace = true, features = ["proptest"] }
 path-ext         = { workspace = true }

@@ -7,3 +7,4 @@ vendor
 index.d.ts
 index.js
 .coverage
+y-octo/fixtures/relative_position/yjs-*.json

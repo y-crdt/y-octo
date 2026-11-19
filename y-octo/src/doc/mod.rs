@@ -5,6 +5,8 @@ mod document;
 mod hasher;
 mod history;
 mod read;
+mod redo;
+mod relative_position;
 mod store;
 pub(crate) mod types;
 mod utils;
@@ -19,6 +21,8 @@ pub use document::{DocMemoryLayout, memory_layout, profiling_counters, reset_pro
 pub use hasher::ClientMap;
 pub use history::{History, HistoryOptions, StoreHistory};
 pub use read::*;
+pub(crate) use redo::RedoMap;
+pub use relative_position::{AbsolutePosition, RelativePosition};
 use smol_str::SmolStr;
 pub(crate) use store::DocStore;
 pub use types::*;

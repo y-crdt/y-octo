@@ -1,0 +1,13 @@
+{
+  "name": "y-octo-yjs-oracle",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "generate": "node generate.mjs && node concurrent.mjs",
+    "check": "node generate.mjs --check && node concurrent.mjs --check"
+  },
+  "dependencies": {
+    "yjs-13-6-21": "npm:yjs@13.6.21",
+    "yjs-13-6-33": "npm:yjs@13.6.33"
+  }
+}
