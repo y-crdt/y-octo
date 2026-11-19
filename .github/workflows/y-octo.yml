@@ -187,6 +187,7 @@ jobs:
           cargo test -p y-octo --test legacy_yjs_wire --features large_refs online_legacy_yjs_roundtrip -- --ignored --exact --nocapture
           cargo test -p y-octo --test trace_differential --features large_refs online_fuzz_trajectories -- --ignored --exact --nocapture
           cargo test -p y-octo --test detached_child --features large_refs online_preliminary_yjs_roundtrip -- --ignored --exact --nocapture
+          cargo test -p y-octo --test format_cleanup --features large_refs online_format_cleanup_persistent_replicas -- --ignored --exact --nocapture
       - name: Preserve minimized failures
         if: failure()
         uses: actions/upload-artifact@v4

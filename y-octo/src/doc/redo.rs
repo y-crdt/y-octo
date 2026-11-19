@@ -80,6 +80,49 @@ impl RedoMap {
         (id.clock < start + range.len).then(|| range.target + (id.clock - start))
     }
 
+    /// `Ok(n)`: `id` and the `n - 1` ids after it were recreated by one
+    /// redo, contiguously. `Err(n)`: they were not, nor any of the next
+    /// `n - 1` ids (`u64::MAX` when nothing after `id` was).
+    pub fn range_at(&self, id: Id) -> Result<u64, u64> {
+        let Some(ranges) = self.clients.get(&id.client) else {
+            return Err(u64::MAX);
+        };
+        if let Some((start, range)) = ranges.range(..=id.clock).next_back()
+            && id.clock < start + range.len
+        {
+            return Ok(start + range.len - id.clock);
+        }
+        Err(ranges
+            .range(id.clock..)
+            .next()
+            .map_or(u64::MAX, |(start, _)| start - id.clock))
+    }
+
+    /// [RedoMap::follow] for the ids `id..id+len`: the ranges at the ends of
+    /// their redo chains, which split where parts were recreated by
+    /// different redos.
+    pub fn follow_range(&self, id: Id, len: u64) -> Vec<(Id, u64)> {
+        let mut ends = Vec::new();
+        let mut pending = vec![(id, len)];
+        while let Some((id, len)) = pending.pop() {
+            match self.range_at(id) {
+                Ok(n) => {
+                    let n = n.min(len);
+                    if n < len {
+                        pending.push((id + n, len - n));
+                    }
+                    pending.push((self.get(id).expect("recreated"), n));
+                }
+                Err(gap) if gap < len => {
+                    pending.push((id + gap, len - gap));
+                    ends.push((id, gap));
+                }
+                Err(_) => ends.push((id, len)),
+            }
+        }
+        ends
+    }
+
     /// Follows the redo chain of `id` (old -> new -> newer ...) to the id that
     /// has not been recreated, keeping the offset inside every range. Returns
     /// `id` itself when it was never recreated.
@@ -122,7 +165,6 @@ impl DocStore {
     }
 
     /// Registers that a redo recreated `old..old+len` as `new..new+len`.
-    #[allow(dead_code)] // the undo manager is the caller
     pub(crate) fn register_redone(&mut self, old: Id, len: u64, new: Id) {
         self.redone.insert(old, len, new);
     }
@@ -147,6 +189,32 @@ mod tests {
         assert_eq!(map.get(id(1, 14)), Some(id(1, 104)));
         assert_eq!(map.get(id(1, 15)), None);
         assert_eq!(map.follow(id(1, 13)), id(1, 103));
+    }
+
+    #[test]
+    fn ranges_at_an_id() {
+        let mut map = RedoMap::default();
+        assert_eq!(map.range_at(id(1, 0)), Err(u64::MAX));
+        map.insert(id(1, 10), 5, id(2, 0));
+        map.insert(id(1, 20), 5, id(3, 0));
+        assert_eq!(map.range_at(id(1, 12)), Ok(3));
+        assert_eq!(map.range_at(id(1, 10)), Ok(5));
+        assert_eq!(map.range_at(id(1, 5)), Err(5));
+        assert_eq!(map.range_at(id(1, 15)), Err(5));
+        assert_eq!(map.range_at(id(1, 25)), Err(u64::MAX));
+        assert_eq!(map.range_at(id(2, 0)), Err(u64::MAX));
+    }
+
+    #[test]
+    fn following_ranges_splits_where_redos_differ() {
+        let mut map = RedoMap::default();
+        assert_eq!(map.follow_range(id(1, 0), 3), [(id(1, 0), 3)]);
+        // (1, 0..6) -> (2, 0..6); (2, 2..4) -> (3, 0..2)
+        map.insert(id(1, 0), 6, id(2, 0));
+        map.insert(id(2, 2), 2, id(3, 0));
+        let mut ends = map.follow_range(id(1, 1), 6);
+        ends.sort_by_key(|(id, _)| (id.client, id.clock));
+        assert_eq!(ends, [(id(1, 6), 1), (id(2, 1), 1), (id(2, 4), 2), (id(3, 0), 2)]);
     }
 
     #[test]

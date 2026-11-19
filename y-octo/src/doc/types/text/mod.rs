@@ -1,12 +1,14 @@
+pub(in crate::doc) mod cleanup;
 mod identity;
 use std::{collections::BTreeMap, fmt::Display};
 
+use cleanup::{FormatAttributes, cleanup_formatting_gap, equal_attrs};
 pub use identity::TextIdentityRun;
 pub(crate) use identity::identity_runs;
 
 use super::{
     AsInner, Id,
-    list::{ListIterator, ListType},
+    list::{ListIterator, ListType, list_remove},
 };
 use crate::{
     Any, Content, JwstCodecError, JwstCodecResult,
@@ -64,7 +66,8 @@ impl Text {
 
     #[inline]
     pub fn remove(&mut self, char_index: u64, len: u64) -> JwstCodecResult {
-        self.remove_at(char_index, len)
+        let parent = self.as_inner();
+        parent.write(|store, ty| text_remove(parent, store, ty, char_index, len))
     }
 
     pub fn to_delta(&self) -> TextDelta {
@@ -196,7 +199,7 @@ struct TextPosition {
     left: ItemRef,
     right: ItemRef,
     index: u64,
-    attrs: TextAttributes,
+    attrs: FormatAttributes,
 }
 
 impl TextPosition {
@@ -206,7 +209,7 @@ impl TextPosition {
             left: Somr::none(),
             right,
             index: 0,
-            attrs: TextAttributes::new(),
+            attrs: FormatAttributes::default(),
         }
     }
 
@@ -217,7 +220,7 @@ impl TextPosition {
                     if is_nullish(value) {
                         self.attrs.remove(key.as_str());
                     } else {
-                        self.attrs.insert(key.to_string(), value.as_ref().clone());
+                        self.attrs.insert(key.to_string(), value.as_ref().clone(), right.id);
                     }
                 } else if right.countable() {
                     self.index += right.len();
@@ -297,8 +300,8 @@ fn minimize_attribute_changes(pos: &mut TextPosition, attrs: &TextAttributes) {
         }
 
         if let Content::Format { key, value } = &item.content {
-            let attr = attrs.get(key.as_str()).cloned().unwrap_or(Any::Null);
-            if attr == **value {
+            let attr = attrs.get(key.as_str()).unwrap_or(&Any::Null);
+            if equal_attrs(attr, value) {
                 pos.forward();
                 continue;
             }
@@ -340,7 +343,7 @@ fn insert_attributes(
 
     for (key, value) in attrs {
         let current = pos.attrs.get(key.as_str()).cloned().unwrap_or(Any::Null);
-        if current == *value {
+        if equal_attrs(&current, value) {
             continue;
         }
 
@@ -373,7 +376,7 @@ fn insert_negated_attributes(
 
         if let Content::Format { key, value } = &item.content
             && let Some(negated_value) = negated.get(key.as_str())
-            && negated_value == value.as_ref()
+            && equal_attrs(negated_value, value)
         {
             negated.remove(key.as_str());
             pos.forward();
@@ -433,11 +436,13 @@ fn format_text(
     minimize_attribute_changes(pos, &attrs);
     let mut negated = insert_attributes(store, ty, pos, &attrs)?;
 
-    while remaining > 0 {
-        let Some(item) = pos.right.get() else {
+    while let Some(item) = pos.right.get() {
+        // Yjs also scans trailing formats/tombstones while attributes still
+        // need negating, but never crosses the next live content item.
+        if remaining == 0 && (negated.is_empty() || !item.deleted() && !matches!(item.content, Content::Format { .. }))
+        {
             break;
-        };
-
+        }
         if item.deleted() {
             pos.forward();
             continue;
@@ -446,9 +451,12 @@ fn format_text(
         match &item.content {
             Content::Format { key, value } => {
                 if let Some(attr) = attrs.get(key.as_str()) {
-                    if attr == value.as_ref() {
+                    if equal_attrs(attr, value) {
                         negated.remove(key.as_str());
                     } else {
+                        if remaining == 0 {
+                            break;
+                        }
                         negated.insert(key.to_string(), value.as_ref().clone());
                     }
                     store.delete_item(item, Some(ty));
@@ -481,6 +489,8 @@ fn delete_text(store: &mut DocStore, ty: &mut YType, pos: &mut TextPosition, mut
     }
 
     let start = remaining;
+    let gap_start = pos.right.clone();
+    let start_attrs = pos.attrs.clone();
 
     while remaining > 0 {
         let item_ref = pos.right.clone();
@@ -505,11 +515,36 @@ fn delete_text(store: &mut DocStore, ty: &mut YType, pos: &mut TextPosition, mut
         pos.forward();
     }
 
+    if gap_start.is_some() {
+        cleanup_formatting_gap(store, ty, gap_start, &pos.right, &start_attrs, &mut pos.attrs);
+    }
     if let Some(markers) = &mut ty.markers {
         markers.update_marker_changes(pos.index, -((start - remaining) as i64));
     }
 
     Ok(())
+}
+
+/// The public text deletion path, shared by implicit and explicit transactions.
+pub(crate) fn text_remove(
+    parent: &YTypeRef,
+    store: &mut DocStore,
+    ty: &mut YType,
+    index: u64,
+    len: u64,
+) -> JwstCodecResult {
+    if !ty.has_formatting {
+        return list_remove(parent, store, ty, index, len);
+    }
+    if len == 0 || ty.len == 0 {
+        return Ok(());
+    }
+    if index >= ty.len {
+        return Err(JwstCodecError::IndexOutOfBound(index));
+    }
+    let mut pos = TextPosition::new(parent.clone(), ty.start.clone());
+    advance_text_position(store, &mut pos, index)?;
+    delete_text(store, ty, &mut pos, len)
 }
 
 #[cfg(test)]

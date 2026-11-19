@@ -48,3 +48,5 @@ node y-octo/tests/oracle/upstream-exports.mjs
 ```
 
 Run `node y-octo/tests/oracle/budget.mjs` to report fixture sizes.
+
+Additional offline test targets include `yjs_undo_oracle` for scoped undo and redo.

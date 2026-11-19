@@ -63,8 +63,8 @@ pub(crate) struct DocStore {
     pub redone: RedoMap,
     /// What the running transaction changed; empty between transactions.
     pub collector: Collector,
-    /// ID ranges garbage collection must keep. Owned by
-    /// the history layer; empty until it is wired up.
+    /// ID ranges garbage collection must keep, see
+    /// [DocStore::set_retained]. Owned by the history layer.
     pub retained: DeleteSet,
     /// Whether commits garbage-collect deleted content.
     pub gc: bool,
@@ -290,6 +290,19 @@ impl DocStore {
                 right_item.origin_left_id = Some(left_item.last_id());
                 right_item.origin_right_id = left_item.origin_right_id;
             };
+
+            // Yjs `splitItem`: when the last value of a map key is split, its
+            // right half is the key's value now.
+            if let Some(right_item) = right_ref.get()
+                && right_item.right.is_none()
+                && let (Some(Parent::Type(parent)), Some(key)) = (&right_item.parent, &right_item.parent_sub)
+                // SAFETY: splits run under the store write lock. Callers that
+                // hold a type's data mutably only split list items, which have
+                // no parent_sub.
+                && let Some(mut parent) = unsafe { parent.ty_mut() }
+            {
+                parent.map.insert(key.clone(), right_ref.clone());
+            }
 
             let right = Node::Item(right_ref);
             let right_ref = right.clone();
@@ -562,6 +575,9 @@ impl DocStore {
 
                 if let (Some(Parent::Type(ty)), Some((parent, parent_deleted))) = (&this.parent, parent) {
                     publish_child = parent.published;
+                    if matches!(this.content, Content::Format { .. }) {
+                        parent.has_formatting = true;
+                    }
                     let mut left = this.left.clone();
                     let mut right = this.right.clone();
 
@@ -1025,7 +1041,7 @@ impl DocStore {
             .is_some_and(|ranges| ranges.into_iter().any(|r| r.start < id.clock + len && id.clock < r.end))
     }
 
-    fn gc_delete_set(&mut self, deleted: &DeleteSet) {
+    pub(super) fn gc_delete_set(&mut self, deleted: &DeleteSet) {
         for (client, ranges) in deleted.iter() {
             for range in ranges {
                 let Some(mut idx) = self
@@ -1122,7 +1138,7 @@ impl DocStore {
 
     /// Yjs `tryMergeDeleteSet`: merges the structs in and right after each
     /// deleted range, from right to left.
-    fn merge_delete_set(&mut self, deleted: &DeleteSet) {
+    pub(super) fn merge_delete_set(&mut self, deleted: &DeleteSet) {
         for (client, ranges) in deleted.iter() {
             let ranges = ranges.into_iter().collect::<Vec<_>>();
             let Some(nodes) = self.items.get_mut(client) else {
@@ -1678,6 +1694,52 @@ mod tests {
             assert_eq!(
                 store.get_node((2, 0)).unwrap(), // " world" GCd
                 Node::new_gc((2, 0).into(), 6)
+            );
+        });
+    }
+
+    /// Splitting the merged tombstones of a map key at the origin of a remote
+    /// value leaves the key's last value in the right half; the next local
+    /// value must go after it, not between the halves where it is deleted.
+    #[test]
+    fn splitting_the_last_value_of_a_key_keeps_the_key_on_it() {
+        loom_model!({
+            let mut doc = DocOptions::new().with_client_id(1).build();
+            let mut map = doc.get_or_create_map("map").unwrap();
+            map.insert("k".into(), 1).unwrap();
+            map.insert("k".into(), 2).unwrap();
+
+            // a peer with a smaller client ID overwrites the value (1, 1)
+            let mut peer = DocOptions::new().with_client_id(0).build();
+            peer.apply_update_from_binary_v1(doc.encode_update_v1().unwrap())
+                .unwrap();
+            peer.get_or_create_map("map")
+                .unwrap()
+                .insert("k".into(), "peer")
+                .unwrap();
+
+            map.insert("k".into(), 3).unwrap();
+            map.remove("k");
+            {
+                let store = doc.store.read().unwrap();
+                let node = store.get_node((1, 0)).unwrap();
+                assert_eq!((node.id(), node.len()), (Id::new(1, 0), 3), "merged tombstones");
+            }
+
+            // splits (1, 0..3) after (1, 1); the peer's value lands before
+            // (1, 2) and is deleted
+            doc.apply_update_from_binary_v1(peer.encode_update_v1().unwrap())
+                .unwrap();
+            assert_eq!(map.get("k"), None);
+
+            map.insert("k".into(), "local").unwrap();
+            assert_eq!(map.get("k"), Some(Value::from("local")));
+
+            peer.apply_update_from_binary_v1(doc.encode_update_v1().unwrap())
+                .unwrap();
+            assert_eq!(
+                peer.get_or_create_map("map").unwrap().get("k"),
+                Some(Value::from("local"))
             );
         });
     }

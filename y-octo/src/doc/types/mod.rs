@@ -44,6 +44,8 @@ pub(crate) struct YType {
     /// Monotonic: this type has acquired a document identity. Retirement is
     /// still determined by its carrying item, never by resetting this bit.
     pub published: bool,
+    /// Sticky, like Yjs _hasFormatting, even after the last Format is deleted.
+    pub has_formatting: bool,
 }
 
 /// A handle to a type stored in a [DocStore].

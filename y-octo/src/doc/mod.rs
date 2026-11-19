@@ -11,11 +11,13 @@ mod live_edit_tests;
 mod read;
 mod redo;
 mod relative_position;
+mod retention;
 mod store;
 mod transaction;
 #[cfg(all(test, not(loom)))]
 mod transaction_tests;
 pub(crate) mod types;
+mod undo;
 mod utils;
 
 #[cfg(not(loom))]
@@ -48,9 +50,10 @@ pub use transaction::{
     Subscription, TextRead, TextWrite, Transaction, TransactionMut,
 };
 pub(crate) use transaction::{
-    CommitHook, EventHub, or_released, read_store, read_store_or_panic, transact_mut_with, write_store,
+    CommitHook, EventHub, after_unlock, or_released, read_store, read_store_or_panic, transact_mut_with, write_store,
 };
 pub use types::*;
+pub use undo::{UndoItem, UndoManager, UndoOptions, UndoOrigin, UndoScope, UndoStack};
 pub use utils::*;
 
 use super::*;

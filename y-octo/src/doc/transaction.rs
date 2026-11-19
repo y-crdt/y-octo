@@ -90,6 +90,12 @@ impl Origin {
     pub fn downcast_ref<T: 'static>(&self) -> Option<&T> {
         self.0.as_any().downcast_ref()
     }
+
+    /// The same origin: `self` or a clone of it. Unlike `==` it never calls
+    /// the value's `PartialEq`.
+    pub(crate) fn same(&self, other: &Origin) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
 }
 
 impl PartialEq for Origin {
@@ -342,6 +348,8 @@ impl Deref for CommitEvent {
 /// the changes and before GC, and may retain ranges from GC.
 pub(crate) trait CommitHook: Send + Sync + fmt::Debug {
     fn on_commit(&mut self, store: &mut DocStore, summary: &CommitSummary);
+    fn as_any(&self) -> &dyn StdAny;
+    fn as_any_mut(&mut self) -> &mut dyn StdAny;
 }
 
 type Callback = Arc<dyn Fn(&CommitEvent) + Send + Sync>;
@@ -350,6 +358,13 @@ type PanicPayload = Box<dyn StdAny + Send>;
 enum AfterUnlock {
     Deliver(Arc<EventHub>, Arc<AtomicBool>),
     DropCallbacks(Vec<Callback>),
+    Run(Box<dyn FnOnce() + Send>),
+}
+
+/// Runs `f` once this thread holds no document lock: now, or when it
+/// releases its last one.
+pub(crate) fn after_unlock(f: impl FnOnce() + Send + 'static) {
+    AfterUnlock::Run(Box::new(f)).schedule();
 }
 
 impl AfterUnlock {
@@ -380,6 +395,11 @@ impl AfterUnlock {
         for action in actions {
             match action {
                 Self::Deliver(hub, _) => hub.deliver(&mut panics),
+                Self::Run(f) => {
+                    if let Err(payload) = catch_unwind(AssertUnwindSafe(f)) {
+                        panics.push(payload);
+                    }
+                }
                 Self::DropCallbacks(callbacks) => {
                     for callback in callbacks {
                         if let Err(payload) = catch_unwind(AssertUnwindSafe(move || drop(callback))) {
@@ -547,6 +567,8 @@ pub struct TransactionMut<'doc> {
     store_ref: &'doc StoreRef,
     origin: Option<Origin>,
     local: bool,
+    /// Internal formatting maintenance never captures history or clears redo.
+    capture_history: bool,
     before_state: StateVector,
     pub(crate) incoming: Option<IncomingUpdate>,
 }
@@ -590,7 +612,15 @@ fn own<'t>(store_ref: &StoreRef, handle: &'t YTypeRef) -> JwstCodecResult<&'t YT
 
 impl<'doc> TransactionMut<'doc> {
     pub(crate) fn begin(store_ref: &'doc StoreRef, origin: Option<Origin>, local: bool) -> JwstCodecResult<Self> {
-        let store = write_store(store_ref)?;
+        let store = match write_store(store_ref) {
+            Ok(store) => store,
+            Err(error) => {
+                if let Some(origin) = origin {
+                    after_unlock(move || drop(origin));
+                }
+                return Err(error);
+            }
+        };
         debug_assert!(store.collector.is_empty());
         let before_state = store.get_state_vector();
         Ok(Self {
@@ -598,6 +628,7 @@ impl<'doc> TransactionMut<'doc> {
             store_ref,
             origin,
             local,
+            capture_history: true,
             before_state,
             incoming: None,
         })
@@ -618,6 +649,10 @@ impl<'doc> TransactionMut<'doc> {
 
     pub fn state_vector(&self) -> StateVector {
         self.store.get_state_vector()
+    }
+
+    pub(crate) fn store_ref(&self) -> &'doc StoreRef {
+        self.store_ref
     }
 
     pub(crate) fn store_mut(&mut self) -> &mut DocStore {
@@ -664,10 +699,26 @@ impl<'doc> TransactionMut<'doc> {
 
     /// Steps 1 to 6 of the commit pipeline, under the write lock.
     fn commit(&mut self) {
+        self.commit_with_origin(None);
+    }
+
+    fn commit_with_origin(&mut self, maintenance_origin: Option<Origin>) {
         let local = self.local;
         let store = &mut *self.store;
         let collector = mem::take(&mut store.collector);
         let after_state = store.get_state_vector();
+        // Save format identities before GC/merge can erase their content.
+        let cleanup = if !local {
+            text::cleanup::CleanupPlan::after_remote(
+                store,
+                &self.before_state,
+                &after_state,
+                &collector.changed,
+                &collector.deleted,
+            )
+        } else {
+            text::cleanup::CleanupPlan::default()
+        };
 
         // 1. what changed
         let mut inserted = DeleteSet::default();
@@ -684,10 +735,10 @@ impl<'doc> TransactionMut<'doc> {
         let subscribers = hub.as_ref().map(|hub| hub.subscribers.lock().unwrap());
         let deliver = subscribers.as_ref().is_some_and(|guard| !guard.1.is_empty());
         // only built for someone who reads it
-        let summary = (deliver || (changes && store.history_hook.is_some())).then(|| {
+        let summary = (deliver || (changes && self.capture_history && store.history_hook.is_some())).then(|| {
             let (changed, ancestors) = changed_types(&collector.changed, &self.before_state);
             CommitSummary {
-                origin: self.origin.clone(),
+                origin: maintenance_origin.clone().or_else(|| self.origin.clone()),
                 local,
                 before_state: self.before_state.clone(),
                 after_state: after_state.clone(),
@@ -702,7 +753,8 @@ impl<'doc> TransactionMut<'doc> {
         });
 
         // 2. history
-        if let Some(summary) = &summary
+        if self.capture_history
+            && let Some(summary) = &summary
             && let Some(mut hook) = store.history_hook.take()
         {
             hook.on_commit(store, summary);
@@ -716,8 +768,11 @@ impl<'doc> TransactionMut<'doc> {
             merges,
             ..
         } = collector;
+        // The history stage only collects released ranges: it adds merge
+        // points (children it replaced), never deletions.
+        debug_assert!(store.collector.deleted.is_empty());
         store.collector.deleted = deleted;
-        store.collector.merges = merges;
+        store.collector.merges.extend(merges);
         store.optimize(store.gc);
         debug_assert!(store.collector.is_empty());
 
@@ -746,7 +801,10 @@ impl<'doc> TransactionMut<'doc> {
         if changes {
             store.commit_seq += 1;
         }
-        if deliver && let (Some(summary), Some(subscribers)) = (summary, subscribers) {
+        // Release the subscription lock even when no event is encoded, before
+        // the independent cleanup transaction takes its own subscription view.
+        let subscribers = subscribers.filter(|_| deliver);
+        if let (Some(summary), Some(subscribers)) = (summary, subscribers) {
             let update = encode_commit(store, &summary.before_state, &summary.deleted)
                 .expect("the store encodes its own structs");
             let ready = store.events.enqueue(
@@ -759,6 +817,19 @@ impl<'doc> TransactionMut<'doc> {
             );
             drop(subscribers);
             AfterUnlock::Deliver(store.events.clone(), ready).schedule();
+        }
+        if !cleanup.is_empty() {
+            // Separate collector, origin and event boundary, with no
+            // intervening writer. Both commits are queued before unlocking and
+            // callbacks.
+            self.before_state = self.store.get_state_vector();
+            self.local = true;
+            self.capture_history = false;
+            self.incoming = None;
+            cleanup.run(&mut self.store);
+            // Keep the original origin owned by this transaction so its
+            // destructor can defer release until the outermost unlock.
+            self.commit_with_origin(Some(Origin::new(text::cleanup::FormattingCleanup)));
         }
     }
 }
@@ -841,6 +912,9 @@ impl Drop for TransactionMut<'_> {
         // a panic inside the transaction: the changes are not committed and
         // the store lock gets poisoned with the guard
         debug_assert!(std::thread::panicking() || self.store.collector.is_empty());
+        if let Some(origin) = self.origin.take() {
+            after_unlock(move || drop(origin));
+        }
     }
 }
 
@@ -915,7 +989,7 @@ impl TextWrite<'_, '_> {
     pub fn remove(&mut self, index: u64, len: u64) -> JwstCodecResult {
         let parent = self.parent;
         self.tx
-            .with_type(parent, |store, ty| list_remove(parent, store, ty, index, len))
+            .with_type(parent, |store, ty| text::text_remove(parent, store, ty, index, len))
     }
 
     pub fn apply_delta(&mut self, delta: &[TextDeltaOp]) -> JwstCodecResult {
