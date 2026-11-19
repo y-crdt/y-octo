@@ -4,16 +4,12 @@
   "packageManager": "yarn@4.12.0",
   "license": "MIT",
   "workspaces": [
-    ".",
-    "y-octo-node"
+    "."
   ],
   "engines": {
     "node": ">=22"
   },
   "scripts": {
-    "build:node": "yarn workspace @y-octo/node build",
-    "test:node": "yarn workspace @y-octo/node test",
-    "test:node:coverage": "yarn workspace @y-octo/node test:coverage",
     "format": "run-p format:toml format:prettier format:rs",
     "format:toml": "taplo format",
     "format:prettier": "prettier --write .",
