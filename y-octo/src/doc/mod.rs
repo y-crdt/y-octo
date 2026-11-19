@@ -1,4 +1,6 @@
 mod awareness;
+#[cfg(all(test, not(loom), not(feature = "random")))]
+mod client_identity_tests;
 mod codec;
 mod common;
 #[cfg(test)]
@@ -37,6 +39,7 @@ pub type HashSet<K> = std::collections::HashSet<K, std::hash::BuildHasherDefault
 pub use awareness::{Awareness, AwarenessEvent};
 pub use codec::*;
 pub use common::*;
+pub(crate) use document::subdocument;
 pub use document::{Doc, DocOptions, LocalUpdate};
 #[cfg(feature = "debug")]
 pub use document::{DocMemoryLayout, memory_layout, profiling_counters, reset_profiling_counters};
@@ -52,7 +55,8 @@ pub use transaction::{
     Subscription, TextRead, TextWrite, Transaction, TransactionMut,
 };
 pub(crate) use transaction::{
-    CommitHook, EventHub, after_unlock, or_released, read_store, read_store_or_panic, transact_mut_with, write_store,
+    CommitHook, EventHub, after_unlock, or_released, read_store, read_store_or_panic, transact_maintenance,
+    transact_mut_with, write_store,
 };
 pub use types::*;
 pub use undo::{UndoItem, UndoManager, UndoOptions, UndoOrigin, UndoScope, UndoStack};

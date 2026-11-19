@@ -423,13 +423,15 @@ impl<M: Send + Sync + 'static> UndoManager<M> {
         f(state(store.history_hook.as_deref()))
     }
 
-    /// Runs `f` on the state in a transaction with `origin`.
+    /// Runs `f` on the state: an undo or redo (with its origin) edits the
+    /// document; everything else is bookkeeping, which runs also while the
+    /// document waits for a client ID from the host.
     fn write<R>(
         &self,
         origin: Option<Origin>,
         f: impl FnOnce(&mut UndoState, &mut DocStore, &StoreRef) -> R,
     ) -> JwstCodecResult<R> {
-        transact_mut_with(&self.store, origin, true, |tx| {
+        let run = |tx: &mut TransactionMut<'_>| {
             let store_ref = tx.store_ref();
             let store = tx.store_mut();
             // the commit runs the hook, after it is back in place
@@ -441,7 +443,11 @@ impl<M: Send + Sync + 'static> UndoManager<M> {
             let result = f(state, store, store_ref);
             store.history_hook = hook;
             Ok(result)
-        })
+        };
+        match origin {
+            Some(origin) => transact_mut_with(&self.store, Some(origin), true, run),
+            None => transact_maintenance(&self.store, run),
+        }
     }
 }
 
@@ -469,7 +475,7 @@ impl<M: Send + Sync + 'static> Drop for UndoManager<M> {
 /// releases its retained content. The state, with its tracked origins, is
 /// dropped after the lock is released.
 fn release_manager(store: &StoreRef, manager: u64) -> JwstCodecResult {
-    let hook = transact_mut_with(store, None, true, |tx| {
+    let hook = transact_maintenance(store, |tx| {
         let store = tx.store_mut();
         let ours = store
             .history_hook

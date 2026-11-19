@@ -612,6 +612,19 @@ fn own<'t>(store_ref: &StoreRef, handle: &'t YTypeRef) -> JwstCodecResult<&'t YT
 
 impl<'doc> TransactionMut<'doc> {
     pub(crate) fn begin(store_ref: &'doc StoreRef, origin: Option<Origin>, local: bool) -> JwstCodecResult<Self> {
+        Self::begin_with(store_ref, origin, local, true)
+    }
+
+    /// `edits`: the transaction may create structs with the document's client
+    /// ID, so it is refused while the host has to set one
+    /// ([Doc::client_required]). Internal maintenance (history bookkeeping,
+    /// releasing retained content) creates none and always runs.
+    fn begin_with(
+        store_ref: &'doc StoreRef,
+        origin: Option<Origin>,
+        local: bool,
+        edits: bool,
+    ) -> JwstCodecResult<Self> {
         let store = match write_store(store_ref) {
             Ok(store) => store,
             Err(error) => {
@@ -621,6 +634,13 @@ impl<'doc> TransactionMut<'doc> {
                 return Err(error);
             }
         };
+        if local && edits && store.client_required {
+            drop(store);
+            if let Some(origin) = origin {
+                after_unlock(move || drop(origin));
+            }
+            return Err(JwstCodecError::ClientIdRequired);
+        }
         debug_assert!(store.collector.is_empty());
         let before_state = store.get_state_vector();
         Ok(Self {
@@ -794,7 +814,14 @@ impl<'doc> TransactionMut<'doc> {
         // collide with theirs.
         let client = store.client();
         if !local && after_state.get(&client) != self.before_state.get(&client) {
+            // Without randomness the host assigns identities: refuse local
+            // writes until it sets a new one.
+            #[cfg(feature = "random")]
             store.set_client(random_client_id());
+            #[cfg(not(feature = "random"))]
+            {
+                store.client_required = true;
+            }
         }
 
         // 6. the event
@@ -832,6 +859,23 @@ impl<'doc> TransactionMut<'doc> {
             self.commit_with_origin(Some(Origin::new(text::cleanup::FormattingCleanup)));
         }
     }
+}
+
+/// A local transaction that creates no structs of its own (history
+/// bookkeeping, releasing retained content): it runs also while the document
+/// waits for a client ID from the host.
+pub(crate) fn transact_maintenance<R>(
+    store_ref: &StoreRef,
+    f: impl FnOnce(&mut TransactionMut<'_>) -> JwstCodecResult<R>,
+) -> JwstCodecResult<R> {
+    let mut tx = TransactionMut::begin_with(store_ref, None, true, false)?;
+    let result = f(&mut tx);
+    debug_assert!(
+        !tx.store.client_required || tx.store.get_state(tx.store.client()) == tx.before_state.get(&tx.store.client()),
+        "maintenance created structs while the document waits for a client ID"
+    );
+    tx.commit();
+    result
 }
 
 /// Runs `f` in a write transaction and commits it, also when `f` fails: what

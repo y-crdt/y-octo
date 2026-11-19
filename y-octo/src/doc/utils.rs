@@ -26,6 +26,7 @@ pub fn merge_updates_v1<V: AsRef<[u8]>, I: IntoIterator<Item = V>>(updates: I) -
 }
 
 /// Generate a uniform, nonzero client ID representable exactly by JavaScript.
+#[cfg(feature = "random")]
 pub fn random_client_id() -> u64 {
     rand::random_range(1..=(1_u64 << 53) - 1)
 }

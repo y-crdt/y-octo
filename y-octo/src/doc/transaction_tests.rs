@@ -604,7 +604,10 @@ fn a_panic_inside_a_transaction_poisons_the_document() {
     assert!(matches!(doc.encode_update_v1(), Err(JwstCodecError::DocPoisoned)));
 }
 
+/// Without the `random` feature the document waits for the host instead
+/// (`client_identity_tests`).
 #[test]
+#[cfg(feature = "random")]
 fn remote_use_of_our_client_id_switches_it() {
     let mut doc = Doc::with_client(7);
     // another replica writing as client 7

@@ -92,27 +92,35 @@ pub struct DocOptions {
     pub gc: bool,
 }
 
+/// A random client ID and GUID (fixed ones in tests and benches). Without the
+/// `random` feature, use [DocOptions::from_identity].
+#[cfg(any(test, feature = "bench", feature = "random"))]
 impl Default for DocOptions {
     fn default() -> Self {
-        if cfg!(any(test, feature = "bench")) {
-            Self {
-                client_id: 1,
-                guid: "test".into(),
-                gc: true,
-            }
-        } else {
-            Self {
-                client_id: random_client_id(),
-                guid: nanoid::nanoid!(),
-                gc: true,
-            }
-        }
+        #[cfg(any(test, feature = "bench"))]
+        return Self::from_identity(1, "test".into());
+        #[cfg(not(any(test, feature = "bench")))]
+        Self::from_identity(random_client_id(), nanoid::nanoid!())
     }
 }
 
 impl DocOptions {
+    #[cfg(any(test, feature = "bench", feature = "random"))]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Options with the client ID and GUID the host chose, the entry for
+    /// builds without the `random` feature (such as wasm32-unknown-unknown,
+    /// where the host draws them from `crypto.getRandomValues`). The host
+    /// gives every replica its own client ID, below 2^53 to stay exact in
+    /// JavaScript. 0 is an ordinary client ID.
+    pub fn from_identity(client_id: u64, guid: String) -> Self {
+        Self {
+            client_id,
+            guid,
+            gc: true,
+        }
     }
 
     pub fn with_client_id(mut self, client_id: u64) -> Self {
@@ -144,30 +152,60 @@ impl From<DocOptions> for Any {
     }
 }
 
+/// Options read from their `Any` form, which carries no client ID: with the
+/// `random` feature the document gets a random one. Without it there is no
+/// such conversion, the host builds the options with
+/// [DocOptions::from_identity].
+#[cfg(feature = "random")]
 impl TryFrom<Any> for DocOptions {
     type Error = JwstCodecError;
 
     fn try_from(value: Any) -> Result<Self, Self::Error> {
+        DocOptions::default().read_any(value)
+    }
+}
+
+impl DocOptions {
+    /// Applies the fields of the `Any` form (`gc`, `guid`) to these options.
+    fn read_any(mut self, value: Any) -> JwstCodecResult<Self> {
         match value {
             Any::Object(map) => {
-                let mut options = DocOptions::default();
                 for (key, value) in *map {
                     match key.as_str() {
                         "gc" => {
-                            options.gc = bool::try_from(value)?;
+                            self.gc = bool::try_from(value)?;
                         }
                         "guid" => {
-                            options.guid = String::try_from(value)?;
+                            self.guid = String::try_from(value)?;
                         }
                         _ => {}
                     }
                 }
-
-                Ok(options)
+                Ok(self)
             }
             _ => Err(JwstCodecError::UnexpectedType("Object")),
         }
     }
+}
+
+/// The subdocument an item holds, from its GUID and options. They carry no
+/// client ID: with the `random` feature it gets a random one; without it the
+/// document waits for the host to set one ([Doc::client_required]).
+pub(crate) fn subdocument(guid: &str, opts: &Any) -> Doc {
+    #[cfg(feature = "random")]
+    let options = DocOptions::default();
+    #[cfg(not(feature = "random"))]
+    let options = DocOptions::from_identity(0, String::new());
+    let doc = options
+        .read_any(opts.clone())
+        .expect("Failed to parse doc options")
+        // The GUID lives outside opts on the wire; projecting a subdoc must
+        // preserve its identity instead of generating a new one.
+        .with_guid(guid.into())
+        .build();
+    #[cfg(not(feature = "random"))]
+    or_released(write_store(&doc.store).map(|mut store| store.client_required = true));
+    doc
 }
 
 #[derive(Debug, Clone)]
@@ -190,6 +228,7 @@ const _: fn() = || {
     send_sync::<Update>();
 };
 
+#[cfg(any(test, feature = "bench", feature = "random"))]
 impl Default for Doc {
     fn default() -> Self {
         Doc::new()
@@ -203,6 +242,7 @@ impl PartialEq for Doc {
 }
 
 impl Doc {
+    #[cfg(any(test, feature = "bench", feature = "random"))]
     pub fn new() -> Self {
         Self::with_options(DocOptions::default())
     }
@@ -220,6 +260,8 @@ impl Doc {
         }
     }
 
+    /// A document with `client_id` and a random GUID.
+    #[cfg(any(test, feature = "bench", feature = "random"))]
     pub fn with_client(client_id: u64) -> Self {
         DocOptions::new().with_client_id(client_id).build()
     }
@@ -230,10 +272,28 @@ impl Doc {
         or_released(read_store(&self.store).map(|store| store.client()))
     }
 
+    /// Whether the host has to set a client ID ([Doc::set_client]) before
+    /// local transactions are accepted again; they fail with
+    /// [JwstCodecError::ClientIdRequired] meanwhile. Only without the
+    /// `random` feature, where the document cannot draw one itself, and only
+    /// when no host assigned its current one: a subdocument read from a
+    /// document (its options carry no client ID), or after a remote update
+    /// showed another replica writing with this document's client ID (with
+    /// `random` it switches to a random one, as Yjs does). A client ID the
+    /// host passes, 0 included, is never questioned. Remote updates are still
+    /// applied, and so is internal bookkeeping such as dropping an undo
+    /// manager.
+    pub fn client_required(&self) -> bool {
+        or_released(read_store(&self.store).map(|store| store.client_required))
+    }
+
+    /// Sets the client ID new structs are created with (0 included); local
+    /// transactions are accepted again ([Doc::client_required]).
     pub fn set_client(&mut self, client_id: u64) {
         or_released(write_store(&self.store).map(|mut store| store.set_client(client_id)));
     }
 
+    #[cfg(feature = "random")]
     pub fn renew_client(&mut self) {
         self.set_client(random_client_id());
     }
@@ -338,6 +398,7 @@ impl Doc {
     // TODO:
     //   provide a better way instead of `_v1` methods
     //   when implementing `v2` binary format
+    #[cfg(any(test, feature = "bench", feature = "random"))]
     pub fn try_from_binary_v1<T: AsRef<[u8]>>(binary: T) -> JwstCodecResult<Self> {
         Self::try_from_binary_v1_with_options(binary, DocOptions::default())
     }
@@ -868,6 +929,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "random")]
     fn test_renew_client_updates_item_author() {
         loom_model!({
             let mut doc = Doc::with_client(0);
@@ -895,6 +957,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "random")]
     fn test_clone_renew_client_uses_shared_author() {
         loom_model!({
             let doc = Doc::with_client(0);
@@ -905,6 +968,25 @@ mod tests {
             assert_eq!(doc.get_state_vector(), StateVector::from([(client, 1)]));
             assert_eq!(doc.client(), client);
             assert_eq!(doc, other);
+        });
+    }
+
+    /// Client ID 0 the host passes is an ordinary ID, with and without the
+    /// `random` feature: built with it, or set to it, the document writes as
+    /// client 0.
+    #[test]
+    fn test_explicit_client_zero_writes() {
+        loom_model!({
+            let mut doc = DocOptions::from_identity(0, "guid".into()).build();
+            assert!(!doc.client_required());
+            let mut text = doc.get_or_create_text("text").unwrap();
+            text.insert(0, "a").unwrap();
+            doc.set_client(5);
+            text.insert(1, "b").unwrap();
+            doc.set_client(0);
+            assert!(!doc.client_required());
+            text.insert(2, "c").unwrap();
+            assert_eq!(doc.get_state_vector(), StateVector::from([(0, 2), (5, 1)]));
         });
     }
 
@@ -1124,7 +1206,9 @@ mod tests {
         let json = serde_json::json!([42.0, -42.0, true, false, "hello", "world", [1.0]]);
 
         {
-            let doc = Doc::try_from_binary_v1(yjs_fixture("mixed-array")).unwrap();
+            let doc =
+                Doc::try_from_binary_v1_with_options(yjs_fixture("mixed-array"), DocOptions::new().with_client_id(2))
+                    .unwrap();
             let array = doc.get_or_create_array("abc").unwrap();
             let config = assert_json_diff::Config::new(assert_json_diff::CompareMode::Strict)
                 .numeric_mode(assert_json_diff::NumericMode::AssumeFloat);
@@ -1177,7 +1261,8 @@ mod tests {
                 doc.encode_update_v1().unwrap()
             };
 
-            let detached_doc = Doc::try_from_binary_v1(binary_detached).unwrap();
+            let detached_doc =
+                Doc::try_from_binary_v1_with_options(binary_detached, DocOptions::new().with_client_id(2)).unwrap();
             assert!(detached_doc.root_has_sequence_content("abc"));
             assert!(!detached_doc.root_has_sequence_content("missing"));
             let mut metadata = detached_doc.get_or_create_map("metadata").unwrap();

@@ -82,14 +82,7 @@ impl From<&Content> for Value {
                 // actually unreachable
                 YTypeKind::Unknown => Value::Any(Any::Undefined),
             },
-            Content::Doc { guid, opts } => Value::Doc(
-                DocOptions::try_from(opts.as_ref().clone())
-                    .expect("Failed to parse doc options")
-                    // The GUID lives outside opts on the wire; projecting a subdoc
-                    // must preserve its identity instead of generating a new one.
-                    .with_guid(guid.clone())
-                    .build(),
-            ),
+            Content::Doc { guid, opts } => Value::Doc(subdocument(guid, opts)),
             Content::Format { .. } => unimplemented!(),
             // actually unreachable
             Content::Deleted(_) => Value::Any(Any::Undefined),

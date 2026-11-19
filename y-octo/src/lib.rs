@@ -78,6 +78,8 @@ pub enum JwstCodecError {
     DocPoisoned,
     #[error("The document already has an undo manager")]
     UndoManagerExists,
+    #[error("The document needs a client ID from the host before local writes (see Doc::client_required)")]
+    ClientIdRequired,
     #[error("Unexpected type, expect {0}")]
     UnexpectedType(&'static str),
 }

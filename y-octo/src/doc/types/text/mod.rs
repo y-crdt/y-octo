@@ -587,11 +587,12 @@ mod tests {
             to.apply_update_from_binary_v1(update).unwrap();
         }
 
-        let c0 = Doc::with_client(0);
+        // ascending client IDs (0 is unassigned without the random feature)
+        let c0 = Doc::with_client(10);
         let mut t0 = c0.get_or_create_text("text").unwrap();
-        let mut c1 = Doc::with_client(1);
+        let mut c1 = Doc::with_client(11);
         let mut t1 = c1.get_or_create_text("text").unwrap();
-        let mut c2 = Doc::with_client(2);
+        let mut c2 = Doc::with_client(12);
         let mut t2 = c2.get_or_create_text("text").unwrap();
 
         t0.insert(0, "a").unwrap();
@@ -792,7 +793,7 @@ mod tests {
                 doc.encode_update_v1().unwrap()
             };
 
-            let doc = Doc::try_from_binary_v1(binary).unwrap();
+            let doc = Doc::try_from_binary_v1_with_options(binary, crate::DocOptions::new().with_client_id(2)).unwrap();
             let mut text = doc.get_or_create_text("greating").unwrap();
 
             assert_eq!(text.to_string(), "hello world");

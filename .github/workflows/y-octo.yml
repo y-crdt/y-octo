@@ -197,6 +197,42 @@ jobs:
           path: target/trace-failures
           if-no-files-found: ignore
 
+  wasm:
+    name: wasm core without randomness
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Rust
+        uses: ./.github/actions/setup-rust
+        with:
+          targets: wasm32-unknown-unknown
+          workspaces: |
+            . -> target
+            y-octo/tests/wasm -> target
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: y-octo/tests/oracle/package-lock.json
+      - name: No getrandom without the random feature
+        run: |
+          tree=$(cargo tree -p y-octo --target wasm32-unknown-unknown --no-default-features -e normal,no-proc-macro)
+          if grep -E 'getrandom|rand_core|nanoid' <<< "$tree"; then
+            echo "randomness in the wasm dependency graph" >&2
+            exit 1
+          fi
+      - name: Build for wasm and test the host-assigned identity
+        run: |
+          cargo check -p y-octo --target wasm32-unknown-unknown --no-default-features
+          cargo check -p y-octo --target wasm32-unknown-unknown --no-default-features --features large_refs
+          cargo test -p y-octo --lib --no-default-features
+      - name: Run the wasm module and read its update with Yjs
+        run: |
+          npm ci --prefix y-octo/tests/oracle --ignore-scripts
+          cargo build --manifest-path y-octo/tests/wasm/Cargo.toml --target wasm32-unknown-unknown --release
+          node y-octo/tests/wasm/run.mjs
+
   upstream_factory:
     name: upstream Yjs factory
     runs-on: ubuntu-latest

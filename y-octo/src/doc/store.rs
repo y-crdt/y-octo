@@ -68,6 +68,11 @@ pub(crate) struct DocStore {
     pub retained: DeleteSet,
     /// Whether commits garbage-collect deleted content.
     pub gc: bool,
+    /// Without the `random` feature: local transactions are refused until the
+    /// host sets a client ID, because none was assigned (a subdocument read
+    /// from a document) or a remote update showed another replica using this
+    /// one. See [Doc::client_required].
+    pub client_required: bool,
     /// Sequence number of the last commit.
     pub commit_seq: u64,
     pub events: Arc<EventHub>,
@@ -98,6 +103,7 @@ impl DocStore {
 
     pub fn set_client(&mut self, client: Client) {
         self.client = client;
+        self.client_required = false;
     }
 
     pub fn clients(&self) -> Vec<Client> {
@@ -1704,13 +1710,13 @@ mod tests {
     #[test]
     fn splitting_the_last_value_of_a_key_keeps_the_key_on_it() {
         loom_model!({
-            let mut doc = DocOptions::new().with_client_id(1).build();
+            let mut doc = DocOptions::new().with_client_id(2).build();
             let mut map = doc.get_or_create_map("map").unwrap();
             map.insert("k".into(), 1).unwrap();
             map.insert("k".into(), 2).unwrap();
 
-            // a peer with a smaller client ID overwrites the value (1, 1)
-            let mut peer = DocOptions::new().with_client_id(0).build();
+            // a peer with a smaller client ID overwrites the value (2, 1)
+            let mut peer = DocOptions::new().with_client_id(1).build();
             peer.apply_update_from_binary_v1(doc.encode_update_v1().unwrap())
                 .unwrap();
             peer.get_or_create_map("map")
@@ -1722,12 +1728,12 @@ mod tests {
             map.remove("k");
             {
                 let store = doc.store.read().unwrap();
-                let node = store.get_node((1, 0)).unwrap();
-                assert_eq!((node.id(), node.len()), (Id::new(1, 0), 3), "merged tombstones");
+                let node = store.get_node((2, 0)).unwrap();
+                assert_eq!((node.id(), node.len()), (Id::new(2, 0), 3), "merged tombstones");
             }
 
-            // splits (1, 0..3) after (1, 1); the peer's value lands before
-            // (1, 2) and is deleted
+            // splits (2, 0..3) after (2, 1); the peer's value lands before
+            // (2, 2) and is deleted
             doc.apply_update_from_binary_v1(peer.encode_update_v1().unwrap())
                 .unwrap();
             assert_eq!(map.get("k"), None);

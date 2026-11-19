@@ -138,6 +138,15 @@ impl Map {
         self._contains_key(key)
     }
 
+    /// Deletes `key`.
+    ///
+    /// # Panics
+    ///
+    /// On errors other than a released document, as it returns nothing (kept
+    /// for compatibility): among them `ClientIdRequired` while the host has
+    /// to assign a client ID ([Doc::client_required]). Remove inside
+    /// [Doc::transact_mut] (`tx.map(&map)?.remove(key)`) to get that error
+    /// back, with nothing changed, and retry after [Doc::set_client].
     #[inline(always)]
     pub fn remove(&mut self, key: &str) {
         self._remove(key)
