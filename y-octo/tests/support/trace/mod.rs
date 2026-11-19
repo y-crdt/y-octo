@@ -124,7 +124,32 @@ pub fn normalize_delta(delta: Json) -> Json {
 fn identity(id: Option<y_octo::Id>) -> Json {
     id.map(|id| json!([id.client, id.clock])).unwrap_or(Json::Null)
 }
-fn shape(value: Value, path: &str, missing: &mut Option<Vec<(String, String)>>) -> Result<Json> {
+#[derive(Debug)]
+pub enum ProjectionError {
+    IdentityRuns {
+        path: String,
+        source: y_octo::JwstCodecError,
+    },
+    Other(String),
+}
+impl From<String> for ProjectionError {
+    fn from(error: String) -> Self {
+        Self::Other(error)
+    }
+}
+impl std::fmt::Display for ProjectionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::IdentityRuns { path, source } => write!(f, "identity_runs at {path}: {source}"),
+            Self::Other(error) => f.write_str(error),
+        }
+    }
+}
+fn shape(
+    value: Value,
+    path: &str,
+    missing: &mut Option<Vec<ProjectionError>>,
+) -> std::result::Result<Json, ProjectionError> {
     Ok(match value {
         Value::Any(v) => json!({"kind":"any","value":any_json(&v)}),
         Value::Text(t) => {
@@ -132,11 +157,15 @@ fn shape(value: Value, path: &str, missing: &mut Option<Vec<(String, String)>>) 
                 TypeIdentity::Item(id) => identity(Some(id)),
                 TypeIdentity::Root(_) => Json::Null,
             };
-            let runs = match codec(t.identity_runs()) {
+            let runs = match t.identity_runs() {
                 Ok(runs) => Some(runs),
-                Err(error) => {
+                Err(source) => {
+                    let error = ProjectionError::IdentityRuns {
+                        path: path.to_string(),
+                        source,
+                    };
                     if let Some(errors) = missing {
-                        errors.push((path.to_string(), error));
+                        errors.push(error);
                         None
                     } else {
                         return Err(error);
@@ -174,7 +203,7 @@ fn shape(value: Value, path: &str, missing: &mut Option<Vec<(String, String)>>) 
         }
         Value::Map(m) => {
             let entries: Vec<_> = m.iter().map(|(k, v)| (k.to_owned(), v)).collect();
-            let entries: Result<serde_json::Map<_, _>> = entries
+            let entries: std::result::Result<serde_json::Map<_, _>, ProjectionError> = entries
                 .into_iter()
                 .map(|(k, v)| {
                     let child = shape(
@@ -187,7 +216,7 @@ fn shape(value: Value, path: &str, missing: &mut Option<Vec<(String, String)>>) 
                 .collect();
             json!({"kind":"map","id":identity(m.id()),"value":entries?})
         }
-        other => return Err(format!("trace cannot project {other:?}")),
+        other => return Err(format!("trace cannot project {other:?}").into()),
     })
 }
 fn root(d: &Doc, kind: &str, name: &str) -> Result<Value> {
@@ -216,17 +245,24 @@ fn make(trace: &Json, client: u64) -> Result<Doc> {
     Ok(d)
 }
 pub fn snapshot(d: &Doc, trace: &Json) -> Result<Json> {
+    snapshot_projection(d, trace).map_err(|e| e.to_string())
+}
+pub fn snapshot_projection(d: &Doc, trace: &Json) -> std::result::Result<Json, ProjectionError> {
     snapshot_inner(d, trace, &mut None)
 }
 /// Read every available field even when a text identity API rejects an embedded
 /// shared type. Callers must separately match and account for every missing
 /// path.
-pub fn snapshot_available(d: &Doc, trace: &Json) -> Result<(Json, Vec<(String, String)>)> {
+pub fn snapshot_available(d: &Doc, trace: &Json) -> Result<(Json, Vec<ProjectionError>)> {
     let mut missing = Some(Vec::new());
-    let state = snapshot_inner(d, trace, &mut missing)?;
+    let state = snapshot_inner(d, trace, &mut missing).map_err(|e| e.to_string())?;
     Ok((state, missing.unwrap()))
 }
-fn snapshot_inner(d: &Doc, trace: &Json, missing: &mut Option<Vec<(String, String)>>) -> Result<Json> {
+fn snapshot_inner(
+    d: &Doc,
+    trace: &Json,
+    missing: &mut Option<Vec<ProjectionError>>,
+) -> std::result::Result<Json, ProjectionError> {
     let mut roots = serde_json::Map::new();
     for (name, kind) in trace["roots"].as_object().unwrap() {
         roots.insert(

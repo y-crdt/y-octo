@@ -1,5 +1,5 @@
 const hex = (bytes) => Buffer.from(bytes).toString("hex");
-function value(v) {
+export function value(v) {
   if (v === undefined) return { $any: "undefined" };
   if (typeof v === "bigint") return { $any: "bigint", value: String(v) };
   if (typeof v === "number" && (Object.is(v, -0) || !Number.isFinite(v)))

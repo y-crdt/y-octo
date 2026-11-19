@@ -481,6 +481,68 @@ fn metadata() {
     assert_eq!(undo.peek(UndoStack::Redo).unwrap().meta, None);
 }
 
+/// The way an editor keeps its selection with a history entry: the relative
+/// positions of the selection before the change go into the item's metadata.
+/// Remote edits (also inside the selected range) neither add an item nor
+/// touch the metadata, and after the undo the positions resolve to the
+/// restored content, remote insertions included.
+#[test]
+fn selection_in_metadata_survives_remote_edits_and_resolves_after_undo() {
+    type Selection = (RelativePosition, RelativePosition);
+    let (a, b) = (doc(1), doc(2));
+    let mut text_a = a.get_or_create_text("text").unwrap();
+    let mut text_b = b.get_or_create_text("text").unwrap();
+    text_a.insert(0, "hello wörld😀").unwrap();
+    sync(&a, &b);
+    let undo = UndoManager::<Selection>::new(&a, [(&text_a).into()], UndoOptions::default()).unwrap();
+    let index = |rpos: &RelativePosition| {
+        let position = a.resolve_relative_position(rpos, true).unwrap();
+        assert_eq!(position.r#type, TypeIdentity::Root("text".into()));
+        position.index
+    };
+
+    // select "wörld😀" (UTF-16 6..13) and delete it
+    let selection = (
+        text_a.relative_position(6, 0).unwrap(),
+        text_a.relative_position(13, -1).unwrap(),
+    );
+    text_a.remove(6, 7).unwrap();
+    let top = undo.peek(UndoStack::Undo).unwrap();
+    assert!(undo.set_meta(UndoStack::Undo, top.id, selection.clone()).unwrap());
+
+    // concurrently, the remote author edits before and inside the selection
+    text_b.insert(0, "dear ").unwrap();
+    text_b.insert(13, "XX").unwrap();
+    sync_both(&a, &b);
+    assert_eq!(text_a.to_string(), "dear hello XX");
+    let peeked = undo.peek(UndoStack::Undo).unwrap();
+    assert_eq!(peeked.id, top.id, "remote edits add no history item");
+    assert_eq!(peeked.meta.as_deref(), Some(&selection));
+    assert!(undo.peek(UndoStack::Redo).is_none());
+
+    // the metadata comes back with the undo; the selection covers the
+    // recreated text and the remote insertion that landed inside it
+    let undone = undo.undo().unwrap().unwrap();
+    assert_eq!(undone.meta.as_deref(), Some(&selection));
+    assert_eq!(text_a.to_string(), "dear hello wöXXrld😀");
+    assert_eq!((index(&selection.0), index(&selection.1)), (11, 20));
+    // the same bytes, as stored by an editor, resolve the same way
+    let decoded = RelativePosition::decode(selection.0.encode().unwrap()).unwrap();
+    assert_eq!(index(&decoded), 11);
+    // without following redone content, the anchors stay on the deleted
+    // originals: only the end resolves to the same place
+    let unfollowed = |rpos: &RelativePosition| a.resolve_relative_position(rpos, false).unwrap().index;
+    assert_eq!((unfollowed(&selection.0), unfollowed(&selection.1)), (13, 20));
+
+    // after the redo deletes it again, each anchor sits where its deleted
+    // character was: the start before the remote "XX", the end after it
+    undo.redo().unwrap();
+    assert_eq!(text_a.to_string(), "dear hello XX");
+    assert_eq!((index(&selection.0), index(&selection.1)), (11, 13));
+    sync(&a, &b);
+    assert_eq!(text_b.to_string(), "dear hello XX");
+}
+
 #[test]
 fn undo_and_redo_commits_carry_their_origin() {
     let doc = doc(1);

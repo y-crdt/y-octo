@@ -6,7 +6,7 @@
       "versions": ["13.6.21", "13.6.33"],
       "replica_ranges": [[0, 10]],
       "stage": "identity_runs",
-      "error": "Invalid struct type, expect item, actually text content",
+      "error_category": "InvalidStructType",
       "missing_text_paths": ["/roots/text"]
     },
     {
@@ -140,7 +140,7 @@
         [9900, 10]
       ],
       "stage": "identity_runs",
-      "error": "Invalid struct type, expect item, actually text content",
+      "error_category": "InvalidStructType",
       "missing_text_paths": ["/roots/text"]
     },
     {
@@ -148,7 +148,7 @@
       "versions": ["13.6.21", "13.6.33"],
       "replica_ranges": [[0, 10]],
       "stage": "identity_runs",
-      "error": "Invalid struct type, expect item, actually text content",
+      "error_category": "InvalidStructType",
       "missing_text_paths": ["/roots/text"]
     },
     {
@@ -156,7 +156,7 @@
       "versions": ["13.6.21", "13.6.33"],
       "replica_ranges": [[0, 10]],
       "stage": "identity_runs",
-      "error": "Invalid struct type, expect item, actually text content",
+      "error_category": "InvalidStructType",
       "missing_text_paths": ["/roots/text"]
     },
     {
@@ -164,7 +164,7 @@
       "versions": ["13.6.21", "13.6.33"],
       "replica_ranges": [[0, 10]],
       "stage": "identity_runs",
-      "error": "Invalid struct type, expect item, actually text content",
+      "error_category": "InvalidStructType",
       "missing_text_paths": ["/roots/text"]
     },
     {
@@ -172,7 +172,7 @@
       "versions": ["13.6.21", "13.6.33"],
       "replica_ranges": [[0, 10]],
       "stage": "identity_runs",
-      "error": "Invalid struct type, expect item, actually text content",
+      "error_category": "InvalidStructType",
       "missing_text_paths": ["/roots/text"]
     },
     {
@@ -180,7 +180,7 @@
       "versions": ["13.6.21", "13.6.33"],
       "replica_ranges": [[0, 2]],
       "stage": "identity_runs",
-      "error": "Invalid struct type, expect item, actually text content",
+      "error_category": "InvalidStructType",
       "missing_text_paths": ["/roots/text"]
     }
   ]

@@ -49,4 +49,7 @@ node y-octo/tests/oracle/upstream-exports.mjs
 
 Run `node y-octo/tests/oracle/budget.mjs` to report fixture sizes.
 
+To check raw update compaction across reopen and edit cycles, run
+`cargo test -p y-octo --features large_refs --test trace_differential online_storage_chain -- --ignored --exact`.
+
 Additional offline test targets include `yjs_undo_oracle` for scoped undo and redo and `yjs_local_oracle` for importing renderer edits.

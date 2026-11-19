@@ -129,6 +129,43 @@ fn known_for<'a>(known: &'a Json, name: &str, index: usize, versions: &Json) -> 
             })
     })
 }
+pub fn check_known_projection(
+    known: &Json,
+    error: &trace::ProjectionError,
+    missing: &[trace::ProjectionError],
+    expected_paths: &Json,
+) -> Result<(), String> {
+    let matches = |error: &trace::ProjectionError| {
+        matches!(
+            error,
+            trace::ProjectionError::IdentityRuns {
+                source: y_octo::JwstCodecError::InvalidStructType(_),
+                ..
+            }
+        ) && known["stage"] == "identity_runs"
+            && known["error_category"] == "InvalidStructType"
+    };
+    if !matches(error) || missing.iter().any(|error| !matches(error)) {
+        return Err(format!("different error category/stage: {error}; missing={missing:?}"));
+    }
+    let paths: Vec<_> = missing
+        .iter()
+        .map(|error| match error {
+            trace::ProjectionError::IdentityRuns { path, .. } => path.as_str(),
+            _ => unreachable!(), // Matched the typed identity error above.
+        })
+        .collect();
+    let trace::ProjectionError::IdentityRuns { path, .. } = error else {
+        unreachable!()
+    };
+    if json!(paths) != known["missing_text_paths"]
+        || json!(paths) != *expected_paths
+        || paths.first().copied() != Some(path.as_str())
+    {
+        return Err(format!("different missing fields: {missing:?}"));
+    }
+    Ok(())
+}
 pub fn replay(corpus: &Json, small: bool, exports: &std::path::Path) -> Result<(usize, usize, usize), String> {
     let expected_manifest = validate_manifest(corpus, small)?;
     let known: Json = serde_json::from_str(include_str!("../oracle/upstream-known-failures.json")).unwrap();
@@ -222,10 +259,12 @@ pub fn replay(corpus: &Json, small: bool, exports: &std::path::Path) -> Result<(
                     }
                 }
                 let checked = &checked["docs"][index];
-                match trace::snapshot(&doc, &input) {
+                match trace::snapshot_projection(&doc, &input) {
                     Ok(actual) => {
                         if known.is_some() {
-                            return Err("known identity_runs failure unexpectedly passed".into());
+                            return Err("known identity_runs failure unexpectedly passed; remove the fixed \
+                                        case/replicas from upstream-known-failures.json"
+                                .into());
                         }
                         if digest(&actual) != checked["expected_digest"].as_str().unwrap() {
                             return Err(format!(
@@ -238,17 +277,8 @@ pub fn replay(corpus: &Json, small: bool, exports: &std::path::Path) -> Result<(
                     }
                     Err(error) => {
                         let known = known.ok_or_else(|| format!("unregistered projection error: {error}"))?;
-                        if known["stage"] != "identity_runs" || known["error"] != error {
-                            return Err(format!("different error/stage: {error}"));
-                        }
                         let (actual, missing) = trace::snapshot_available(&doc, &input)?;
-                        let paths: Vec<_> = missing.iter().map(|(p, _)| p.clone()).collect();
-                        if json!(paths) != known["missing_text_paths"]
-                            || json!(paths) != meta["missing_text_paths"]
-                            || missing.iter().any(|(_, e)| *e != error)
-                        {
-                            return Err(format!("different missing fields: {missing:?}"));
-                        }
+                        check_known_projection(known, &error, &missing, &meta["missing_text_paths"])?;
                         if digest(&actual) != checked["available_digest"].as_str().unwrap() {
                             return Err(format!(
                                 "available-field digest mismatch: actual={} expected={}",

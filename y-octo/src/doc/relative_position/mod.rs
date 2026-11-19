@@ -324,6 +324,28 @@ impl Doc {
     /// Returns `None` when the position points to content this document has
     /// not received, to a type that is gone (garbage collected, deleted, or a
     /// root name the document does not have), or names nothing.
+    ///
+    /// ```
+    /// use y_octo::{DocOptions, RelativePosition, TypeIdentity};
+    ///
+    /// let source = DocOptions::from_identity(101, "note".into()).build();
+    /// let mut text = source.get_or_create_text("body")?;
+    /// text.insert(0, "A😀B")?;
+    ///
+    /// // A is one UTF-16 unit and 😀 is two. Anchor before B.
+    /// let bytes = text.relative_position(3, 0)?.encode()?;
+    /// let anchor = RelativePosition::decode(bytes)?;
+    ///
+    /// let mut peer = DocOptions::from_identity(202, "note".into()).build();
+    /// let mut peer_text = peer.get_or_create_text("body")?;
+    /// peer.apply_update_from_binary_v1(source.encode_update_v1()?)?;
+    /// peer_text.insert(0, "!")?;
+    ///
+    /// let resolved = peer.resolve_relative_position(&anchor, false).unwrap();
+    /// assert_eq!(resolved.r#type, TypeIdentity::Root("body".into()));
+    /// assert_eq!(resolved.index, 4); // Still before B in "!A😀B".
+    /// # Ok::<(), y_octo::JwstCodecError>(())
+    /// ```
     pub fn resolve_relative_position(
         &self,
         rpos: &RelativePosition,

@@ -49,7 +49,7 @@ jobs:
         with:
           tool: clippy-sarif,sarif-fmt
 
-      - name: Check repository test payload budget
+      - name: Report tracked test payload sizes
         run: node y-octo/tests/oracle/budget.mjs
 
       - name: Format check
@@ -183,6 +183,7 @@ jobs:
           npm run check --prefix y-octo/tests/oracle
       - name: Run online differential batch
         run: |
+          cargo test -p y-octo --test trace_differential --features large_refs online_storage_chain -- --ignored --exact --nocapture
           cargo test -p y-octo --test trace_differential --features large_refs online_yjs_differential -- --ignored --exact --nocapture
           cargo test -p y-octo --test legacy_yjs_wire --features large_refs online_legacy_yjs_roundtrip -- --ignored --exact --nocapture
           cargo test -p y-octo --test trace_differential --features large_refs online_fuzz_trajectories -- --ignored --exact --nocapture

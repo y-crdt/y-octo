@@ -77,11 +77,7 @@ pub fn profiling_counters() -> (u64, u64, u64) {
 /// ```
 /// use y_octo::DocOptions;
 ///
-/// let doc = DocOptions::new()
-///     .with_client_id(1)
-///     .with_guid("guid".into())
-///     .auto_gc(true)
-///     .build();
+/// let doc = DocOptions::from_identity(1, "guid".into()).build();
 ///
 /// assert_eq!(doc.guid(), "guid")
 /// ```
@@ -446,6 +442,74 @@ impl Doc {
     /// first time; remote updates waiting in the document that it unblocks
     /// are integrated after it, in a separate remote transaction. Applying an
     /// update again changes nothing and commits nothing.
+    ///
+    /// Use the renderer's commit update for the action being imported.
+    /// A general synchronization diff can also contain earlier deletions,
+    /// including changes from other peers.
+    ///
+    /// ```
+    /// use std::sync::{Arc, Mutex};
+    ///
+    /// use y_octo::{DocOptions, LocalUpdate, Origin, UndoManager, UndoOptions, Update};
+    ///
+    /// let native = DocOptions::from_identity(101, "note".into()).build();
+    /// let mut renderer = DocOptions::from_identity(202, "note".into()).build();
+    /// let mut peer = DocOptions::from_identity(303, "note".into()).build();
+    /// let mut text = native.get_or_create_text("body")?;
+    /// text.insert(0, "Hello")?;
+    /// let initial = native.encode_update_v1()?;
+    /// renderer.apply_update_from_binary_v1(&initial)?;
+    /// peer.apply_update_from_binary_v1(&initial)?;
+    ///
+    /// let origin = Origin::new("renderer");
+    /// let history = UndoManager::<()>::new(
+    ///     &native,
+    ///     [(&text).into()],
+    ///     UndoOptions {
+    ///         tracked_origins: vec![None, Some(origin.clone())],
+    ///         ..UndoOptions::default()
+    ///     },
+    /// )?;
+    ///
+    /// let edits = Arc::new(Mutex::new(Vec::new()));
+    /// let sink = Arc::clone(&edits);
+    /// let renderer_origin = origin.clone();
+    /// let _subscription = renderer.subscribe(move |event| {
+    ///     if event.local && event.origin.as_ref() == Some(&renderer_origin) {
+    ///         sink.lock().unwrap().push(event.update.clone());
+    ///     }
+    /// });
+    ///
+    /// // The peer deletes 'e'. The renderer receives that change first.
+    /// let mut peer_text = peer.get_or_create_text("body")?;
+    /// peer_text.remove(1, 1)?;
+    /// let remote = peer.encode_state_as_update_v1(&renderer.get_state_vector())?;
+    /// renderer.apply_update_from_binary_v1(&remote)?;
+    ///
+    /// let rendered = renderer.get_or_create_text("body")?;
+    /// assert_eq!(rendered.to_string(), "Hllo");
+    /// renderer.transact_mut(origin.clone(), |tx| tx.text(&rendered)?.insert(4, "!"))?;
+    /// let [bytes]: [Vec<u8>; 1] = std::mem::take(&mut *edits.lock().unwrap()).try_into().unwrap();
+    /// match native.apply_local_update(Update::decode_v1(bytes)?, origin)? {
+    ///     LocalUpdate::Applied => {}
+    ///     LocalUpdate::MissingDependencies(clocks) => {
+    ///         // In an editor, resynchronize the missing structs and retry.
+    ///         panic!("renderer was not synchronized: {clocks:?}");
+    ///     }
+    /// }
+    /// assert_eq!(text.to_string(), "Hello!");
+    ///
+    /// // The peer deletion arrives separately and does not enter local history.
+    /// native.apply_update_with_origin(Update::decode_v1(remote)?, None)?;
+    /// assert_eq!(text.to_string(), "Hllo!");
+    /// assert!(history.undo()?.is_some());
+    /// assert_eq!(text.to_string(), "Hllo");
+    /// assert!(history.redo()?.is_some());
+    /// assert_eq!(text.to_string(), "Hllo!");
+    /// history.clear(true, true)?;
+    /// assert!(!history.can_undo() && !history.can_redo());
+    /// # Ok::<(), y_octo::JwstCodecError>(())
+    /// ```
     pub fn apply_local_update(
         &self,
         update: Update,
@@ -517,9 +581,9 @@ impl Doc {
     /// ```
     /// use std::sync::{Arc, Mutex};
     ///
-    /// use y_octo::{Any, Doc, Origin, Value};
+    /// use y_octo::{Any, DocOptions, Origin, Value};
     ///
-    /// let doc = Doc::new();
+    /// let doc = DocOptions::from_identity(101, "greeting".into()).build();
     /// let text = doc.get_or_create_text("text").unwrap();
     /// let meta = doc.get_or_create_map("meta").unwrap();
     ///
@@ -550,7 +614,7 @@ impl Doc {
     ///
     /// // the saved updates rebuild the document
     /// assert_eq!(saved.lock().unwrap().len(), 2);
-    /// let mut copy = Doc::new();
+    /// let mut copy = DocOptions::from_identity(202, "greeting".into()).build();
     /// for update in saved.lock().unwrap().iter() {
     ///     copy.apply_update_from_binary_v1(update).unwrap();
     /// }

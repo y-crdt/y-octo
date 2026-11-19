@@ -1,6 +1,7 @@
 import readline from "node:readline";
 import { snapshot as projectSnapshot } from "./projection.mjs";
 import { fileURLToPath } from "node:url";
+import { storageSeed, wireState } from "./storage.mjs";
 
 let Y, trace, docs, messages, shadows;
 const snapshot = (d) => projectSnapshot(Y, d);
@@ -152,6 +153,7 @@ function operate(step) {
     at,
     snapshots: docs.map(snapshot),
     full: hex(Y.encodeStateAsUpdate(d)),
+    update: messages[at].at(-1),
   };
 }
 export async function request(r) {
@@ -164,6 +166,15 @@ export async function request(r) {
     return { ok: true };
   }
   if (r.kind === "step") return operate(r.step);
+  if (r.kind === "storage_seed") return storageSeed(Y, trace.gc);
+  if (r.kind === "storage_wire") {
+    const merged = Y.mergeUpdates(r.updates.map(bytes));
+    return {
+      merged: hex(merged),
+      expected: wireState(Y, merged),
+      actual: wireState(Y, bytes(r.actual)),
+    };
+  }
   if (r.kind === "cross") {
     Y.applyUpdate(shadows[r.at], bytes(r.update), "rust");
     return {

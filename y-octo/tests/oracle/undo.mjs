@@ -171,6 +171,39 @@ const remove = (path, key) => ({ kind: "remove", target: path, key });
 const T = ["text"],
   A = ["array"],
   M = ["map"];
+const CHILDREN = ["map", "page", "children"];
+const P = (block) => ["map", block, "text"];
+// Untracked setup of a page whose children are the given paragraphs, each
+// with a plain and a bold run of text.
+function paragraphs(blocks) {
+  const ids = Object.keys(blocks);
+  return [
+    untracked(
+      "a",
+      set(M, "page", { new: "map" }),
+      ...ids.map((id) => set(M, id, { new: "map" })),
+    ),
+    untracked(
+      "a",
+      set(["map", "page"], "children", { new: "array" }),
+      ...ids.flatMap((id) => [
+        set(["map", id], "type", "paragraph"),
+        set(["map", id], "text", { new: "text" }),
+      ]),
+    ),
+    untracked(
+      "a",
+      push(CHILDREN, 0, ...ids),
+      ...ids.flatMap((id) => {
+        const [plain, bold] = blocks[id];
+        return [
+          ...(plain ? [ins(P(id), 0, plain)] : []),
+          ...(bold ? [ins(P(id), plain.length, bold, { bold: true })] : []),
+        ];
+      }),
+    ),
+  ];
+}
 
 const scenarios = [
   {
@@ -445,6 +478,109 @@ const scenarios = [
       undo,
       sync("a", "b"),
       redo,
+      undo,
+      sync("a", "b"),
+    ],
+  },
+  // The root map holds a page block (children ids)
+  // and paragraph blocks (type + text). A split or merge is one window that
+  // moves text between blocks and edits the children array together.
+  {
+    name: "paragraph-split-with-remote-edits",
+    scope: ["map"],
+    steps: [
+      ...paragraphs({ p1: ["hello ", "wörld😀"] }),
+      sync("a", "b"),
+      // Enter after "hello": the tail moves to a new block after p1
+      tx(
+        "a",
+        del(P("p1"), 5, 8),
+        set(M, "p2", { new: "map" }),
+        set(["map", "p2"], "type", "paragraph"),
+        set(["map", "p2"], "text", { new: "text" }),
+        ins(P("p2"), 0, " "),
+        ins(P("p2"), 1, "wörld😀", { bold: true }),
+        push(CHILDREN, 1, "p2"),
+      ),
+      stop,
+      // concurrently: edits at both ends of p1 and a sibling after p1
+      tx(
+        "b",
+        ins(P("p1"), 0, ">"),
+        ins(P("p1"), 14, "!"),
+        push(CHILDREN, 1, "remote"),
+      ),
+      ...both,
+      tx("b", ins(P("p2"), 1, "~")),
+      sync("b", "a"),
+      undo,
+      ...both,
+      redo,
+      ...both,
+      undo,
+      ...both,
+    ],
+  },
+  {
+    name: "paragraph-merge-with-remote-edits",
+    scope: ["map"],
+    steps: [
+      ...paragraphs({ p1: ["first", ""], p2: ["sec", "ond"] }),
+      sync("a", "b"),
+      // Backspace at the start of p2: its text joins p1, the block goes
+      tx(
+        "a",
+        ins(P("p1"), 5, "sec"),
+        ins(P("p1"), 8, "ond", { bold: true }),
+        del(CHILDREN, 1, 1),
+        remove(M, "p2"),
+      ),
+      // concurrently: an edit inside p2 and a sibling after it
+      tx("b", ins(P("p2"), 3, "-"), push(CHILDREN, 2, "remote")),
+      ...both,
+      undo,
+      ...both,
+      tx("b", ins(P("p2"), 0, "*")),
+      sync("b", "a"),
+      redo,
+      ...both,
+      undo,
+      ...both,
+    ],
+  },
+  {
+    name: "paragraph-split-edit-merge-history",
+    scope: ["map"],
+    steps: [
+      ...paragraphs({ p1: ["abc", "def"] }),
+      tx(
+        "a",
+        del(P("p1"), 3, 3),
+        set(M, "p2", { new: "map" }),
+        set(["map", "p2"], "type", "paragraph"),
+        set(["map", "p2"], "text", { new: "text" }),
+        ins(P("p2"), 0, "def", { bold: true }),
+        push(CHILDREN, 1, "p2"),
+      ),
+      stop,
+      tx("a", ins(P("p2"), 3, "g"), set(["map", "p2"], "type", "h1")),
+      stop,
+      tx(
+        "a",
+        ins(P("p1"), 3, "defg", { bold: true }),
+        del(CHILDREN, 1, 1),
+        remove(M, "p2"),
+      ),
+      sync("a", "b"),
+      undo,
+      undo,
+      undo,
+      sync("a", "b"),
+      redo,
+      redo,
+      redo,
+      sync("a", "b"),
+      undo,
       undo,
       sync("a", "b"),
     ],

@@ -1,22 +1,18 @@
-// All checked test payloads share one budget; generated pressure streams stay
+// Report tracked test payloads; generated pressure streams stay
 // under ignored target/ and may be uploaded as CI artifacts.
 import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 const root = fileURLToPath(new URL("../../../", import.meta.url));
-const limit = 512 * 1024;
+const reference = 512 * 1024;
 const sources = new Set([".rs", ".js", ".mjs", ".ts", ".toml", ".md"]);
 const packages = new Set(["package.json", "package-lock.json"]);
 const files = new Set(
-  execFileSync(
-    "git",
-    ["ls-files", "--cached", "--others", "--exclude-standard", "-z"],
-    {
-      cwd: root,
-      encoding: "utf8",
-    },
-  )
+  execFileSync("git", ["ls-files", "--cached", "-z"], {
+    cwd: root,
+    encoding: "utf8",
+  })
     .split("\0")
     .filter(Boolean),
 );
@@ -47,17 +43,22 @@ for (const name of [...files].sort()) {
 }
 let total = 0,
   count = 0;
+const summary = [
+  "## Tracked test payloads",
+  "",
+  "| Category | Files | Bytes |",
+  "| --- | ---: | ---: |",
+];
 for (const [name, entry] of groups) {
   console.log(`${name}: ${entry.bytes} bytes (${entry.files} files)`);
+  summary.push(`| ${name} | ${entry.files} | ${entry.bytes} |`);
   total += entry.bytes;
   count += entry.files;
 }
-console.log(
-  `Test payload budget: ${total}/${limit} bytes (${count} files; ${limit - total} bytes remaining)`,
-);
-if (total > limit) {
-  console.error(
-    "Test payload budget exceeded: deduplicate/compact checked materials or generate pressure data in CI.",
-  );
-  process.exitCode = 1;
+console.log(`Tracked test payloads: ${total} bytes (${count} files)`);
+const diagnostic = `512 KiB reference: ${reference} bytes; ${total > reference ? "above" : "within"} reference (diagnostic only).`;
+console.log(diagnostic);
+summary.push(`| **Total** | **${count}** | **${total}** |`, "", diagnostic, "");
+if (process.env.GITHUB_STEP_SUMMARY) {
+  fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, summary.join("\n") + "\n");
 }

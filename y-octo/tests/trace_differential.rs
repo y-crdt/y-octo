@@ -177,6 +177,17 @@ fn online_array_marker_regression() {
 }
 
 #[test]
+#[ignore = "Requires pinned Node oracle; three-round raw storage and continuation"]
+fn online_storage_chain() {
+    for version in ["13.6.21", "13.6.33"] {
+        let mut oracle = Oracle::start().unwrap();
+        for gc in [true, false] {
+            support::storage::verify(&mut oracle, version, gc).unwrap();
+        }
+    }
+}
+
+#[test]
 #[cfg_attr(
     miri,
     ignore = "Seeded semantic properties run in ordinary tests; targeted Miri cases cover lifetimes"

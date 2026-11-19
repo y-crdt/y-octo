@@ -61,6 +61,10 @@ pub struct Oracle {
     output: BufReader<ChildStdout>,
 }
 impl Oracle {
+    /// Reuse the persistent line protocol for storage-chain checkpoints.
+    pub fn command(&mut self, request: Json) -> Result<Json> {
+        self.request(request).map_err(|e| format!("{e:?}"))
+    }
     pub fn start() -> Result<Self> {
         let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/oracle/trace.mjs");
         let mut child = Command::new("node")

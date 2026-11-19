@@ -202,9 +202,9 @@ impl fmt::Debug for UndoState {
 /// is a stack item of its own.
 ///
 /// ```
-/// use y_octo::{Doc, UndoManager, UndoOptions};
+/// use y_octo::{DocOptions, UndoManager, UndoOptions};
 ///
-/// let doc = Doc::new();
+/// let doc = DocOptions::from_identity(101, "note".into()).build();
 /// let mut text = doc.get_or_create_text("text").unwrap();
 /// let undo = UndoManager::<()>::new(&doc, [(&text).into()], UndoOptions::default()).unwrap();
 ///
@@ -864,6 +864,14 @@ fn clean_start(store: &mut DocStore, id: Id) -> Option<ItemRef> {
     }
 }
 
+/// Yjs `getItemCleanEnd`: the item ending at `id`. `None` for a GC struct.
+fn clean_end(store: &mut DocStore, id: Id) -> Option<ItemRef> {
+    match store.split_at_and_get_left(id).ok()? {
+        Node::Item(item) => Some(item),
+        _ => None,
+    }
+}
+
 /// The items covering exactly `id..id+len`, split at both ends. Collected
 /// structs in the range are left out.
 fn clean_items(store: &mut DocStore, id: Id, len: u64) -> Vec<ItemRef> {
@@ -966,15 +974,18 @@ fn redo_item(store: &mut DocStore, ctx: &RedoContext<'_>, item_ref: &ItemRef) ->
         )
     } else {
         // a list item: insert at the old position, next to the neighbors (or
-        // their recreations) in the recreated parent
+        // their recreations) in the recreated parent. A left neighbor is
+        // traced by its last unit: deleted neighbors may have been merged
+        // since they were recreated, and only the unit next to the item
+        // tells where it goes.
         let mut left = item_left;
         while left.is_some() {
             let mut trace = left.clone();
-            while let Some((trace_id, trace_parent)) = trace.get().map(|trace| (trace.id, carrier_of(trace)))
+            while let Some((trace_id, trace_parent)) = trace.get().map(|trace| (trace.last_id(), carrier_of(trace)))
                 && trace_parent != parent_item_id
             {
                 trace = match store.redone.get(trace_id) {
-                    Some(redone) => clean_start(store, redone).unwrap_or_default(),
+                    Some(redone) => clean_end(store, redone).unwrap_or_default(),
                     None => Somr::none(),
                 };
             }

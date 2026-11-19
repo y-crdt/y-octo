@@ -560,8 +560,8 @@ pub struct Transaction<'doc> {
     store_ref: &'doc StoreRef,
 }
 
-/// A write transaction, see the [module docs](self). Created by
-/// [Doc::transact_mut]; holds the write lock until its closure returns.
+/// A write transaction created by [Doc::transact_mut]. It holds the write
+/// lock until the closure returns.
 pub struct TransactionMut<'doc> {
     store: StoreWriteGuard<'doc>,
     store_ref: &'doc StoreRef,
