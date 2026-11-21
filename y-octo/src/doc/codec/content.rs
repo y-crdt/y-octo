@@ -170,7 +170,11 @@ impl Content {
                 encoder.write_var_u64(type_ref)?;
 
                 if matches!(ty.kind(), YTypeKind::XMLElement | YTypeKind::XMLHook) {
-                    encoder.write_var_string(ty.name.as_ref().unwrap())?;
+                    let default_name = match ty.kind() {
+                        YTypeKind::XMLElement => "UNDEFINED",
+                        _ => "",
+                    };
+                    encoder.write_var_string(ty.name.as_deref().unwrap_or(default_name))?;
                 }
             }
             Self::Any(any) => {

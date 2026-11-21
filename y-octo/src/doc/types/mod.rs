@@ -4,7 +4,7 @@ pub(crate) mod map;
 mod preliminary;
 pub(crate) mod text;
 mod value;
-mod xml;
+pub(crate) mod xml;
 
 use std::{
     collections::hash_map::Entry,
@@ -259,7 +259,6 @@ impl YTypeBuilder {
         self
     }
 
-    #[allow(dead_code)]
     pub fn set_tag_name(mut self, tag_name: String) -> Self {
         self.name = Some(tag_name);
 
@@ -268,6 +267,7 @@ impl YTypeBuilder {
 
     pub fn build_exists<T: FromTypeRef>(self) -> JwstCodecResult<T> {
         let kind = self.kind;
+        let tag_name = self.name;
         let store = write_store(&self.store)?;
         let ty = if let Some(root_name) = &self.root_name {
             match store.types.get(root_name) {
@@ -280,29 +280,38 @@ impl YTypeBuilder {
             return Err(JwstCodecError::TypeCastError("root_name is not set"));
         };
 
-        Self::assign_kind(kind, &ty)?;
+        Self::assign_kind_and_name(kind, tag_name, &ty)?;
         drop(store);
 
         Ok(T::from_type_ref(ty))
     }
 
-    /// Gives `ty` the builder's kind, or fails if it already has another one.
-    /// The caller holds the store write lock: finding or creating a type and
-    /// assigning its kind is one step.
-    fn assign_kind(kind: YTypeKind, ty: &YTypeRef) -> JwstCodecResult {
-        if kind == YTypeKind::Unknown {
+    /// Gives `ty` the builder's kind (and tag name if unset), or fails if it
+    /// already has another kind. The caller holds the store write lock: finding
+    /// or creating a type and assigning its kind is one step.
+    fn assign_kind_and_name(kind: YTypeKind, tag_name: Option<String>, ty: &YTypeRef) -> JwstCodecResult {
+        if kind == YTypeKind::Unknown && tag_name.is_none() {
             return Ok(());
         }
         // SAFETY: the caller holds the store write lock and no reference to
         // this type's data.
         match unsafe { ty.ty_mut() } {
-            Some(mut inner) => inner.set_kind(kind),
+            Some(mut inner) => {
+                if kind != YTypeKind::Unknown {
+                    inner.set_kind(kind)?;
+                }
+                if inner.name.is_none() && tag_name.is_some() {
+                    inner.name = tag_name;
+                }
+                Ok(())
+            }
             None => Err(JwstCodecError::DocReleased),
         }
     }
 
     pub fn build<T: FromTypeRef>(self) -> JwstCodecResult<T> {
         let kind = self.kind;
+        let tag_name = self.name.clone();
         let mut store = write_store(&self.store)?;
         let ty = if let Some(root_name) = self.root_name {
             match store.types.entry(root_name.clone()) {
@@ -349,17 +358,20 @@ impl YTypeBuilder {
             ty_ref
         };
 
-        Self::assign_kind(kind, &ty)?;
+        Self::assign_kind_and_name(kind, tag_name, &ty)?;
         drop(store);
 
         Ok(T::from_type_ref(ty))
     }
 
     fn markers(kind: YTypeKind) -> Option<MarkerList> {
-        match kind {
-            YTypeKind::Map => None,
-            _ => Some(MarkerList::new()),
-        }
+        kind.uses_markers().then(MarkerList::new)
+    }
+}
+
+impl YTypeKind {
+    pub(crate) fn uses_markers(self) -> bool {
+        !matches!(self, Self::Map | Self::XMLHook)
     }
 }
 

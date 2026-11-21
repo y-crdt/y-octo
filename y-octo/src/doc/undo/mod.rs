@@ -1077,7 +1077,7 @@ fn copy_content(store: &mut DocStore, store_ref: &StoreRef, content: &Content) -
             let ty = ty.ty().expect("the item holds its type");
             let kind = ty.kind();
             let mut copy = YType::new(kind, ty.name.clone());
-            if kind != YTypeKind::Map {
+            if kind.uses_markers() {
                 copy.markers = Some(MarkerList::new());
             }
             let owner = YTypeRef {

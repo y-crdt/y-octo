@@ -417,9 +417,13 @@ impl From<f32> for Any {
 
 impl From<f64> for Any {
     fn from(value: f64) -> Self {
-        if value.trunc() == value {
-            (value as i64).into()
-        } else if value as f32 as f64 == value {
+        if value.is_finite()
+            && !(value == 0.0 && value.is_sign_negative())
+            && value.trunc() == value
+            && ((-i32::MAX as f64)..=(i32::MAX as f64)).contains(&value)
+        {
+            Self::Integer(value as i32)
+        } else if (value as f32 as f64) == value {
             Self::Float32((value as f32).into())
         } else {
             Self::Float64(value.into())
@@ -901,6 +905,36 @@ mod tests {
 
         let any: Any = 10u64.into();
         assert_eq!([any].iter().collect::<Any>(), Any::Array(vec![Any::Integer(10)]));
+    }
+
+    #[test]
+    fn test_f64_to_any_never_produces_bigint_and_preserves_neg_zero() {
+        for v in [
+            1e20_f64,
+            1e21_f64,
+            9007199254740991.0_f64,
+            9007199254740992.0_f64,
+            (i32::MAX as f64) + 1.0,
+            -0.0_f64,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NAN,
+        ] {
+            let any = Any::from(v);
+            assert!(
+                !matches!(any, Any::BigInt64(_)),
+                "f64 {v:?} unexpectedly converted to {any:?}"
+            );
+        }
+
+        match Any::from(-0.0_f64) {
+            Any::Float32(f) => assert!(f.0 == 0.0 && f.0.is_sign_negative()),
+            Any::Float64(f) => assert!(f.0 == 0.0 && f.0.is_sign_negative()),
+            other => panic!("expected negative zero float, got {other:?}"),
+        }
+        assert_eq!(Any::from(0.0_f64), Any::Integer(0));
+        assert_eq!(Any::from(i32::MAX as f64), Any::Integer(i32::MAX));
+        assert_eq!(Any::from(-i32::MAX as f64), Any::Integer(-i32::MAX));
     }
 
     /// `depth` arrays nested around a single null.

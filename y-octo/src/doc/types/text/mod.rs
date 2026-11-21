@@ -64,6 +64,17 @@ impl Text {
         self.insert_at(char_index, Content::String(str.to_string()))
     }
 
+    pub fn insert_embed<V: Into<Any>>(&mut self, char_index: u64, embed: V) -> JwstCodecResult {
+        let parent = self.as_inner();
+        let embed = embed.into();
+        parent.write(|store, ty| text_insert_embed(parent, store, ty, char_index, embed))
+    }
+
+    pub fn format(&mut self, char_index: u64, len: u64, attrs: TextAttributes) -> JwstCodecResult {
+        let parent = self.as_inner();
+        parent.write(|store, ty| text_format(parent, store, ty, char_index, len, attrs))
+    }
+
     #[inline]
     pub fn remove(&mut self, char_index: u64, len: u64) -> JwstCodecResult {
         let parent = self.as_inner();
@@ -545,6 +556,46 @@ pub(crate) fn text_remove(
     let mut pos = TextPosition::new(parent.clone(), ty.start.clone());
     advance_text_position(store, &mut pos, index)?;
     delete_text(store, ty, &mut pos, len)
+}
+
+/// Applies formatting attributes over `char_index..char_index + len`.
+pub(crate) fn text_format(
+    parent: &YTypeRef,
+    store: &mut DocStore,
+    ty: &mut YType,
+    char_index: u64,
+    len: u64,
+    attrs: TextAttributes,
+) -> JwstCodecResult {
+    if char_index > ty.len {
+        return Err(JwstCodecError::IndexOutOfBound(char_index));
+    }
+    if len == 0 || attrs.is_empty() {
+        return Ok(());
+    }
+    let mut ops = Vec::with_capacity(2);
+    if char_index > 0 {
+        ops.push(TextDeltaOp::Retain {
+            retain: char_index,
+            format: None,
+        });
+    }
+    ops.push(TextDeltaOp::Retain {
+        retain: len,
+        format: Some(attrs),
+    });
+    apply_text_delta(parent, store, ty, &ops)
+}
+
+/// Inserts an embed value at `char_index`.
+pub(crate) fn text_insert_embed(
+    parent: &YTypeRef,
+    store: &mut DocStore,
+    ty: &mut YType,
+    char_index: u64,
+    embed: Any,
+) -> JwstCodecResult {
+    super::list::list_insert(parent, store, ty, char_index, Content::Embed(Box::new(embed)))
 }
 
 #[cfg(test)]

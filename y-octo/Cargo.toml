@@ -28,6 +28,7 @@ nanoid        = { workspace = true, optional = true }
 nom           = { workspace = true }
 ordered-float = { workspace = true }
 rand          = { workspace = true, optional = true }
+ryu-js        = { workspace = true }
 serde         = { workspace = true, features = ["derive"] }
 serde_json    = { workspace = true }
 smol_str      = { workspace = true }
