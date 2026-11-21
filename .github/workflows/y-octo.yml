@@ -232,16 +232,30 @@ jobs:
             echo "randomness in the wasm dependency graph" >&2
             exit 1
           fi
+          tree_session=$(cargo tree -p y-octo --target wasm32-unknown-unknown --no-default-features --features session -e normal,no-proc-macro)
+          if grep -E 'getrandom|rand_core|nanoid' <<< "$tree_session"; then
+            echo "randomness in the y-octo session wasm dependency graph" >&2
+            exit 1
+          fi
+          tree_wasm=$(cargo tree -p y-octo-wasm --target wasm32-unknown-unknown -e normal,no-proc-macro)
+          if grep -E 'getrandom|rand_core|nanoid' <<< "$tree_wasm"; then
+            echo "randomness in the y-octo-wasm dependency graph" >&2
+            exit 1
+          fi
       - name: Build for wasm and test the host-assigned identity
         run: |
           cargo check -p y-octo --target wasm32-unknown-unknown --no-default-features
+          cargo check -p y-octo --target wasm32-unknown-unknown --no-default-features --features session
           cargo check -p y-octo --target wasm32-unknown-unknown --no-default-features --features large_refs
           cargo test -p y-octo --lib --no-default-features
+          cargo test -p y-octo --lib --no-default-features --features session
       - name: Run the wasm module and read its update with Yjs
         run: |
           npm ci --prefix y-octo/tests/oracle --ignore-scripts
           cargo build --manifest-path y-octo/tests/wasm/Cargo.toml --target wasm32-unknown-unknown --release
           node y-octo/tests/wasm/run.mjs
+          cargo build -p y-octo-wasm --target wasm32-unknown-unknown --release
+          node y-octo-wasm/tests/yjs_interop.mjs target/wasm32-unknown-unknown/release/y_octo_wasm.wasm
 
   upstream_factory:
     name: upstream Yjs factory

@@ -1,0 +1,16 @@
+[package]
+edition = "2024"
+license = "MIT"
+name    = "y-octo-wasm"
+publish = false
+version = "0.0.0"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+ordered-float = { workspace = true }
+smol_str = { workspace = true }
+y-octo = { path = "../y-octo", default-features = false, features = [
+  "session",
+] }

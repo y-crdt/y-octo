@@ -66,7 +66,7 @@ impl RelativePosition {
     }
 
     /// Yjs `createRelativePositionFromTypeIndex` on the type data `ty`.
-    fn from_type_index(ty: &YType, index: u64, assoc: i64) -> JwstCodecResult<Self> {
+    pub(in crate::doc) fn from_type_index(ty: &YType, index: u64, assoc: i64) -> JwstCodecResult<Self> {
         check_assoc(assoc)?;
         if ty.is_preliminary() {
             return Err(JwstCodecError::InvalidParent);
@@ -114,7 +114,7 @@ impl RelativePosition {
     }
 
     /// Yjs `createAbsolutePositionFromRelativePosition`.
-    fn resolve(&self, store: &DocStore, follow_undone_deletions: bool) -> Option<AbsolutePosition> {
+    pub(in crate::doc) fn resolve(&self, store: &DocStore, follow_undone_deletions: bool) -> Option<AbsolutePosition> {
         let lookup = |id: Id| {
             // structs the document has not received yet
             if store.get_state(id.client) <= id.clock {

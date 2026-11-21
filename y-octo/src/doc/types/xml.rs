@@ -306,7 +306,7 @@ fn format_xml_type(out: &mut String, root: &YType) {
                     stack.push(XmlFrame::Close(node_name));
                     push_xml_children(&mut stack, ty);
                 }
-                YTypeKind::XMLFragment => {
+                YTypeKind::XMLFragment | YTypeKind::Unknown => {
                     push_xml_children(&mut stack, ty);
                 }
                 YTypeKind::XMLText => {
@@ -320,7 +320,6 @@ fn format_xml_type(out: &mut String, root: &YType) {
                     // Object.prototype.toString().
                     out.push_str("[object Object]");
                 }
-                YTypeKind::Unknown => {}
             },
         }
     }

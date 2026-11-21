@@ -378,7 +378,7 @@ impl YTypeKind {
 #[macro_export(local_inner_macros)]
 macro_rules! impl_variants {
     ({$($name: ident: $codec_ref: literal),*}) => {
-        #[derive(Debug, Clone, Copy, PartialEq, Default)]
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
         pub enum YTypeKind {
             $($name,)*
             #[default]

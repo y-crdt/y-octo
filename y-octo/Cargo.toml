@@ -30,14 +30,14 @@ ordered-float = { workspace = true }
 rand          = { workspace = true, optional = true }
 ryu-js        = { workspace = true }
 serde         = { workspace = true, features = ["derive"] }
-serde_json    = { workspace = true }
+serde_json    = { workspace = true, features = ["float_roundtrip"] }
 smol_str      = { workspace = true }
 thiserror     = { workspace = true }
 
 [features]
 bench      = []
 debug      = []
-default    = ["random"]
+default    = ["random", "session"]
 large_refs = []
 # Random default client IDs and GUIDs (`DocOptions::default`, `Doc::new`) and
 # runtime hash keys, through getrandom. Without it (for example on
@@ -45,6 +45,7 @@ large_refs = []
 # `DocOptions::from_identity` and no JS randomness backend is needed.
 random     = ["dep:rand", "dep:nanoid", "ahash/runtime-rng"]
 serde_json = []
+session    = []
 
 [target.'cfg(fuzzing)'.dependencies]
 arbitrary     = { workspace = true }
@@ -52,7 +53,7 @@ ordered-float = { workspace = true, features = ["arbitrary"] }
 
 [target.'cfg(loom)'.dependencies]
 indexmap = "2"
-loom = { workspace = true }
+loom     = { workspace = true }
 # override the dev-dependencies feature
 async-lock = { workspace = true }
 

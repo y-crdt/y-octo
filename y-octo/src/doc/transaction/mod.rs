@@ -668,7 +668,13 @@ impl<'doc> TransactionMut<'doc> {
             }
             return Err(JwstCodecError::ClientIdRequired);
         }
-        debug_assert!(store.collector.is_empty());
+        if !store.collector.is_empty() {
+            drop(store);
+            if let Some(origin) = origin {
+                after_unlock(move || drop(origin));
+            }
+            return Err(JwstCodecError::OpenTransactionFrame);
+        }
         let before_state = store.get_state_vector();
         Ok(Self {
             store,
@@ -778,151 +784,206 @@ impl<'doc> TransactionMut<'doc> {
 
     /// Steps 1 to 6 of the commit pipeline, under the write lock.
     fn commit(&mut self) {
-        self.commit_with_origin(None);
+        let _ = self.commit_with_origin(None, false);
     }
 
-    fn commit_with_origin(&mut self, maintenance_origin: Option<Origin>) {
-        let local = self.local;
-        let store = &mut *self.store;
-        let collector = mem::take(&mut store.collector);
-        let after_state = store.get_state_vector();
-        // Save format identities before GC/merge can erase their content.
-        let cleanup = if !local {
-            text::cleanup::CleanupPlan::after_remote(
-                store,
-                &self.before_state,
-                &after_state,
-                &collector.changed,
-                &collector.deleted,
-            )
-        } else {
-            text::cleanup::CleanupPlan::default()
-        };
+    fn commit_with_origin(
+        &mut self,
+        maintenance_origin: Option<Origin>,
+        capture_event: bool,
+    ) -> (Option<CommitEvent>, Option<CommitEvent>) {
+        commit_store(
+            &mut self.store,
+            &mut self.before_state,
+            &mut self.local,
+            &mut self.capture_history,
+            &self.origin,
+            &mut self.incoming,
+            maintenance_origin,
+            capture_event,
+        )
+    }
+}
 
-        // 1. what changed
-        let changes = !collector.deleted.is_empty()
-            || !collector.changed.is_empty()
-            || after_state
-                .iter()
-                .any(|(client, clock)| *clock > self.before_state.get(client));
-        let hub = changes.then(|| store.events.clone());
-        // Keep subscription changes serialized with enqueue, including when
-        // there are no subscribers and we skip encoding.
-        let subscribers = hub.as_ref().map(|hub| hub.subscribers.lock().unwrap());
-        let deliver = subscribers.as_ref().is_some_and(|guard| !guard.1.is_empty());
-        // only built for someone who reads it
-        let summary = (deliver || (changes && self.capture_history && store.history_hook.is_some())).then(|| {
-            let mut inserted = DeleteSet::default();
-            for (client, clock) in after_state.iter() {
-                let before = self.before_state.get(client);
-                if *clock > before {
-                    inserted.add(*client, before, clock - before);
-                }
-            }
-            let (changed, ancestors) = changed_types(&collector.changed, &self.before_state);
-            CommitSummary {
-                origin: maintenance_origin.clone().or_else(|| self.origin.clone()),
-                local,
-                before_state: self.before_state.clone(),
-                after_state: after_state.clone(),
-                inserted,
-                deleted: collector.deleted.clone(),
-                changed,
-                ancestors,
-                incoming: self.incoming.take(),
-                subdocs_added: collector.subdocs_added.iter().map(|(_, guid)| guid.clone()).collect(),
-                subdocs_removed: collector.subdocs_removed.iter().cloned().collect(),
-            }
-        });
+/// Executes steps 1 to 6 of the commit pipeline directly on a locked
+/// [`DocStore`]. Returns `(primary_event, cleanup_event)` when `capture_event`
+/// is `true` and the respective step changed the document.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn commit_store(
+    store: &mut DocStore,
+    before_state: &mut StateVector,
+    local: &mut bool,
+    capture_history: &mut bool,
+    origin: &Option<Origin>,
+    incoming: &mut Option<IncomingUpdate>,
+    maintenance_origin: Option<Origin>,
+    capture_event: bool,
+) -> (Option<CommitEvent>, Option<CommitEvent>) {
+    let is_local = *local;
+    let collector = mem::take(&mut store.collector);
+    let after_state = store.get_state_vector();
+    // Save format identities before GC/merge can erase their content.
+    let cleanup = if !is_local {
+        text::cleanup::CleanupPlan::after_remote(
+            store,
+            before_state,
+            &after_state,
+            &collector.changed,
+            &collector.deleted,
+        )
+    } else {
+        text::cleanup::CleanupPlan::default()
+    };
 
-        // 2. history
-        if self.capture_history
-            && let Some(summary) = &summary
-            && let Some(mut hook) = store.history_hook.take()
-        {
-            hook.on_commit(store, summary);
-            store.history_hook = Some(hook);
+    // 1. what changed
+    let changes = !collector.deleted.is_empty()
+        || !collector.changed.is_empty()
+        || after_state
+            .iter()
+            .any(|(client, clock)| *clock > before_state.get(client));
+    let hub = changes.then(|| store.events.clone());
+    // Keep subscription changes serialized with enqueue, including when
+    // there are no subscribers and we skip encoding.
+    let subscribers = hub.as_ref().map(|hub| hub.subscribers.lock().unwrap());
+    let deliver = subscribers.as_ref().is_some_and(|guard| !guard.1.is_empty());
+    let need_event = changes && (deliver || capture_event);
+    // only built for someone who reads it
+    let summary = (need_event || (changes && *capture_history && store.history_hook.is_some())).then(|| {
+        let mut inserted = DeleteSet::default();
+        for (client, clock) in after_state.iter() {
+            let before = before_state.get(client);
+            if *clock > before {
+                inserted.add(*client, before, clock - before);
+            }
         }
-
-        // 3., 4. GC and merge of what this transaction touched
-        let Collector {
+        let (changed, ancestors) = changed_types(&collector.changed, before_state);
+        CommitSummary {
+            origin: maintenance_origin.clone().or_else(|| origin.clone()),
+            local: is_local,
+            before_state: before_state.clone(),
+            after_state: after_state.clone(),
+            inserted,
+            deleted: collector.deleted.clone(),
             changed,
-            deleted,
-            merges,
-            ..
-        } = collector;
-        // The history stage only collects released ranges: it adds merge
-        // points (children it replaced), never deletions.
-        debug_assert!(store.collector.deleted.is_empty());
-        store.collector.deleted = deleted;
-        store.collector.merges.extend(merges);
-        let client = store.client();
-        let client_clock_advanced = !local && after_state.get(&client) != self.before_state.get(&client);
-        store.optimize(store.gc, after_state);
-        debug_assert!(store.collector.is_empty());
-
-        // 5. remote changes move items under the search markers of the types
-        // they touch (Yjs `AbstractType._callObserver`)
-        if !local {
-            for ty in changed.keys() {
-                // SAFETY: store write lock held, no type borrowed.
-                if let Some(mut ty) = unsafe { ty.ty_mut() }
-                    && let Some(markers) = &mut ty.markers
-                {
-                    markers.clear();
-                }
-            }
+            ancestors,
+            incoming: incoming.take(),
+            subdocs_added: collector.subdocs_added.iter().map(|(_, guid)| guid.clone()).collect(),
+            subdocs_removed: collector.subdocs_removed.iter().cloned().collect(),
         }
+    });
 
-        // Another client advanced our clock: it uses our client ID. Yjs
-        // `cleanupTransactions` switches to a new ID so our next edits cannot
-        // collide with theirs.
-        if client_clock_advanced {
-            // Without randomness the host assigns identities: refuse local
-            // writes until it sets a new one.
-            #[cfg(feature = "random")]
-            store.set_client(random_client_id());
-            #[cfg(not(feature = "random"))]
+    // 2. history
+    if *capture_history
+        && let Some(summary) = &summary
+        && let Some(mut hook) = store.history_hook.take()
+    {
+        hook.on_commit(store, summary);
+        store.history_hook = Some(hook);
+    }
+
+    // 3., 4. GC and merge of what this transaction touched
+    let Collector {
+        changed,
+        deleted,
+        merges,
+        ..
+    } = collector;
+    // The history stage only collects released ranges: it adds merge
+    // points (children it replaced), never deletions.
+    debug_assert!(store.collector.deleted.is_empty());
+    store.collector.deleted = deleted;
+    store.collector.merges.extend(merges);
+    let client = store.client();
+    let client_clock_advanced = !is_local && after_state.get(&client) != before_state.get(&client);
+    store.optimize(store.gc, after_state);
+    debug_assert!(store.collector.is_empty());
+
+    // 5. remote changes move items under the search markers of the types
+    // they touch (Yjs `AbstractType._callObserver`)
+    if !is_local {
+        for ty in changed.keys() {
+            // SAFETY: store write lock held, no type borrowed.
+            if let Some(mut ty) = unsafe { ty.ty_mut() }
+                && let Some(markers) = &mut ty.markers
             {
-                store.client_required = true;
+                markers.clear();
             }
         }
+    }
 
-        // 6. the event
-        if changes {
-            store.commit_seq += 1;
+    // Another client advanced our clock: it uses our client ID. Yjs
+    // `cleanupTransactions` switches to a new ID so our next edits cannot
+    // collide with theirs.
+    if client_clock_advanced {
+        // Without randomness the host assigns identities: refuse local
+        // writes until it sets a new one.
+        #[cfg(feature = "random")]
+        store.set_client(random_client_id());
+        #[cfg(not(feature = "random"))]
+        {
+            store.client_required = true;
         }
-        // Release the subscription lock even when no event is encoded, before
-        // the independent cleanup transaction takes its own subscription view.
-        let subscribers = subscribers.filter(|_| deliver);
-        if let (Some(summary), Some(subscribers)) = (summary, subscribers) {
-            let update = encode_commit(store, &summary.before_state, &summary.deleted)
-                .expect("the store encodes its own structs");
+    }
+
+    // 6. the event
+    if changes {
+        store.commit_seq += 1;
+    }
+    // Release the subscription lock even when no event is encoded, before
+    // the independent cleanup transaction takes its own subscription view.
+    let subscribers = subscribers.filter(|_| deliver);
+    let mut captured_primary = None;
+    if need_event && let Some(summary) = summary {
+        let update =
+            encode_commit(store, &summary.before_state, &summary.deleted).expect("the store encodes its own structs");
+        let event = CommitEvent {
+            seq: store.commit_seq,
+            summary,
+            update,
+        };
+        if let Some(subscribers) = subscribers {
+            if capture_event {
+                captured_primary = Some(event.clone());
+            }
             let ready = store.events.enqueue(
-                CommitEvent {
-                    seq: store.commit_seq,
-                    summary,
-                    update,
-                },
+                event,
                 subscribers.1.iter().map(|(_, callback)| callback.clone()).collect(),
             );
             drop(subscribers);
             AfterUnlock::Deliver(store.events.clone(), ready).schedule();
+        } else if capture_event {
+            captured_primary = Some(event);
         }
-        if !cleanup.is_empty() {
-            // Separate collector, origin and event boundary, with no
-            // intervening writer. Both commits are queued before unlocking and
-            // callbacks.
-            self.before_state = self.store.get_state_vector();
-            self.local = true;
-            self.capture_history = false;
-            self.incoming = None;
-            cleanup.run(&mut self.store);
-            // Keep the original origin owned by this transaction so its
-            // destructor can defer release until the outermost unlock.
-            self.commit_with_origin(Some(Origin::new(text::cleanup::FormattingCleanup)));
-        }
+    } else {
+        drop(subscribers);
     }
+
+    let mut captured_cleanup = None;
+    if !cleanup.is_empty() {
+        // Separate collector, origin and event boundary, with no
+        // intervening writer. Both commits are queued before unlocking and
+        // callbacks.
+        *before_state = store.get_state_vector();
+        *local = true;
+        *capture_history = false;
+        *incoming = None;
+        cleanup.run(store);
+        // Keep the original origin owned by this transaction so its
+        // destructor can defer release until the outermost unlock.
+        let (cleanup_ev, _) = commit_store(
+            store,
+            before_state,
+            local,
+            capture_history,
+            origin,
+            incoming,
+            Some(Origin::new(text::cleanup::FormattingCleanup)),
+            capture_event,
+        );
+        captured_cleanup = cleanup_ev;
+    }
+
+    (captured_primary, captured_cleanup)
 }
 
 /// A local transaction that creates no structs of its own (history
@@ -956,6 +1017,21 @@ pub(crate) fn transact_mut_with<R>(
     let result = f(&mut tx);
     tx.commit();
     result
+}
+
+/// Runs `f` in a write transaction, commits it, and returns `(result, primary,
+/// cleanup)` where `primary` and optional `cleanup` are the committed
+/// [`CommitEvent`]s captured synchronously under the store lock.
+pub(crate) fn transact_mut_with_events<R>(
+    store_ref: &StoreRef,
+    origin: Option<Origin>,
+    local: bool,
+    f: impl FnOnce(&mut TransactionMut<'_>) -> JwstCodecResult<R>,
+) -> JwstCodecResult<(R, Option<CommitEvent>, Option<CommitEvent>)> {
+    let mut tx = TransactionMut::begin(store_ref, origin, local)?;
+    let result = f(&mut tx);
+    let (primary, cleanup) = tx.commit_with_origin(None, true);
+    result.map(|value| (value, primary, cleanup))
 }
 
 /// Changed types reported like Yjs `addChangedTypeToTransaction`: only types

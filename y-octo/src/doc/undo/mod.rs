@@ -77,6 +77,21 @@ impl UndoOrigin {
     pub fn stack(&self) -> UndoStack {
         self.stack
     }
+
+    #[cfg(feature = "session")]
+    pub(crate) fn new_for_session(manager: u64, stack: UndoStack) -> Self {
+        Self { manager, stack }
+    }
+
+    #[cfg(feature = "session")]
+    pub(crate) fn manager(&self) -> u64 {
+        self.manager
+    }
+}
+
+#[cfg(feature = "session")]
+pub(crate) fn next_manager_id() -> u64 {
+    NEXT_MANAGER.fetch_add(1, Ordering::Relaxed)
 }
 
 /// Options of an [UndoManager], after Yjs `UndoManagerOptions`.
@@ -122,7 +137,7 @@ pub struct UndoItem<M> {
 }
 
 #[derive(Debug)]
-struct StackItem {
+pub(crate) struct StackItem {
     id: u64,
     insertions: DeleteSet,
     deletions: DeleteSet,
@@ -135,10 +150,10 @@ struct StackItem {
 }
 
 /// Type-erased caller metadata, see [UndoManager].
-type Meta = Arc<dyn StdAny + Send + Sync>;
+pub(crate) type Meta = Arc<dyn StdAny + Send + Sync>;
 
 /// The metadata of an [UndoManager<M>] as `M`.
-fn downcast<M: Send + Sync + 'static>(meta: Meta) -> Arc<M> {
+pub(crate) fn downcast<M: Send + Sync + 'static>(meta: Meta) -> Arc<M> {
     meta.downcast()
         .unwrap_or_else(|_| unreachable!("metadata of this manager's type"))
 }
@@ -162,7 +177,7 @@ type OriginMatcher = fn(&Origin) -> bool;
 /// The manager's state. It lives in the store as its history hook, so it is
 /// only touched under the document lock. No caller code runs there: no
 /// clock, metadata only as shared pointers, origins compared by identity.
-struct UndoState {
+pub(in crate::doc) struct UndoState {
     manager: u64,
     scope: Vec<Scope>,
     tracked: Vec<Option<Origin>>,
@@ -316,12 +331,12 @@ impl<M: Send + Sync + 'static> UndoManager<M> {
 
     /// The next commit starts a new stack item (Yjs `stopCapturing`).
     pub fn stop_capturing(&self) -> JwstCodecResult {
-        self.write(None, |state, _, _| state.last_change = 0)
+        self.write_maintenance(|state, _| state.last_change = 0)
     }
 
     /// Empties the given stacks and releases the content they retained.
     pub fn clear(&self, undo: bool, redo: bool) -> JwstCodecResult {
-        self.write(None, |state, store, _| {
+        self.write_maintenance(|state, store| {
             if undo {
                 state.drop_items(UndoStack::Undo);
             }
@@ -347,7 +362,7 @@ impl<M: Send + Sync + 'static> UndoManager<M> {
         // stays here if the transaction cannot start, to be released like
         // any other caller value
         let mut meta = Some(Arc::new(meta) as Meta);
-        let result = self.write(None, |state, _, _| {
+        let result = self.write_maintenance(|state, _| {
             let stack = match stack {
                 UndoStack::Undo => &mut state.undo,
                 UndoStack::Redo => &mut state.redo,
@@ -367,14 +382,14 @@ impl<M: Send + Sync + 'static> UndoManager<M> {
     /// Extends the scope (Yjs `addToScope`).
     pub fn add_to_scope(&self, scope: UndoScope) -> JwstCodecResult {
         check_store(&scope.0, &self.store)?;
-        self.write(None, |state, _, _| state.add_to_scope(scope))?
+        self.write_maintenance(|state, _| state.add_to_scope(scope))?
     }
 
     /// Captures commits with `origin` (or a clone of it).
     pub fn add_tracked_origin(&self, origin: Option<Origin>) -> JwstCodecResult {
         // an origin already tracked comes back and is dropped here
         let mut origin = Some(origin);
-        let result = self.write(None, |state, _, _| state.track(origin.take().expect("taken once")));
+        let result = self.write_maintenance(|state, _| state.track(origin.take().expect("taken once")));
         release_later(origin);
         release_later(result?);
         Ok(())
@@ -383,7 +398,7 @@ impl<M: Send + Sync + 'static> UndoManager<M> {
     /// Stops capturing commits with `origin` (or a clone of it).
     pub fn remove_tracked_origin(&self, origin: &Option<Origin>) -> JwstCodecResult {
         // the removed origins are dropped after the lock is released
-        let removed = self.write(None, |state, _, _| {
+        let removed = self.write_maintenance(|state, _| {
             let (removed, kept) = std::mem::take(&mut state.tracked)
                 .into_iter()
                 .partition::<Vec<_>, _>(|tracked| same_origin(tracked, origin));
@@ -397,24 +412,45 @@ impl<M: Send + Sync + 'static> UndoManager<M> {
     /// Captures commits whose origin holds a `T`, whatever its value (Yjs
     /// tracking an origin's constructor).
     pub fn track_origin_type<T: 'static>(&self) -> JwstCodecResult {
-        self.write(None, |state, _, _| {
+        self.write_maintenance(|state, _| {
             state.tracked_types.push(|origin| origin.downcast_ref::<T>().is_some());
         })
     }
 
     fn pop(&self, stack: UndoStack) -> JwstCodecResult<Option<UndoItem<M>>> {
+        Ok(self.pop_with_event(stack)?.map(|(item, _)| item))
+    }
+
+    pub(crate) fn pop_with_event(
+        &self,
+        stack: UndoStack,
+    ) -> JwstCodecResult<Option<(UndoItem<M>, Option<CommitEvent>)>> {
         let origin = Origin::new(UndoOrigin {
             manager: self.manager,
             stack,
         });
         // the popped item's metadata is moved out under the lock, before the
         // commit event is delivered
-        let performed = self.write(Some(origin), |state, store, store_ref| {
-            state.pop(store, store_ref, stack)
+        let (performed, event, _) = transact_mut_with_events(&self.store, Some(origin), true, |tx| {
+            let store_ref = tx.store_ref();
+            let store = tx.store_mut();
+            let mut hook = store.history_hook.take();
+            let state = hook
+                .as_deref_mut()
+                .and_then(|hook| hook.as_any_mut().downcast_mut::<UndoState>())
+                .expect("the manager owns the history hook");
+            let result = state.pop(store, store_ref, stack);
+            store.history_hook = hook;
+            Ok(result)
         })?;
-        Ok(performed.map(|(id, meta)| UndoItem {
-            id,
-            meta: meta.map(downcast),
+        Ok(performed.map(|(id, meta)| {
+            (
+                UndoItem {
+                    id,
+                    meta: meta.map(downcast),
+                },
+                event,
+            )
         }))
     }
 
@@ -423,16 +459,10 @@ impl<M: Send + Sync + 'static> UndoManager<M> {
         f(state(store.history_hook.as_deref()))
     }
 
-    /// Runs `f` on the state: an undo or redo (with its origin) edits the
-    /// document; everything else is bookkeeping, which runs also while the
-    /// document waits for a client ID from the host.
-    fn write<R>(
-        &self,
-        origin: Option<Origin>,
-        f: impl FnOnce(&mut UndoState, &mut DocStore, &StoreRef) -> R,
-    ) -> JwstCodecResult<R> {
-        let run = |tx: &mut TransactionMut<'_>| {
-            let store_ref = tx.store_ref();
+    /// Runs bookkeeping `f` on the state inside a maintenance transaction,
+    /// which runs also while the document waits for a client ID from the host.
+    fn write_maintenance<R>(&self, f: impl FnOnce(&mut UndoState, &mut DocStore) -> R) -> JwstCodecResult<R> {
+        transact_maintenance(&self.store, |tx| {
             let store = tx.store_mut();
             // the commit runs the hook, after it is back in place
             let mut hook = store.history_hook.take();
@@ -440,14 +470,10 @@ impl<M: Send + Sync + 'static> UndoManager<M> {
                 .as_deref_mut()
                 .and_then(|hook| hook.as_any_mut().downcast_mut::<UndoState>())
                 .expect("the manager owns the history hook");
-            let result = f(state, store, store_ref);
+            let result = f(state, store);
             store.history_hook = hook;
             Ok(result)
-        };
-        match origin {
-            Some(origin) => transact_mut_with(&self.store, Some(origin), true, run),
-            None => transact_maintenance(&self.store, run),
-        }
+        })
     }
 }
 
@@ -494,6 +520,102 @@ fn release_manager(store: &StoreRef, manager: u64) -> JwstCodecResult {
 
 impl CommitHook for UndoState {
     fn on_commit(&mut self, store: &mut DocStore, summary: &CommitSummary) {
+        let (released, retained) = self.on_commit_raw(store, summary);
+        if released {
+            self.release(store);
+        } else if !retained.is_empty() {
+            store.add_retained(&retained);
+        }
+    }
+
+    fn as_any(&self) -> &dyn StdAny {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn StdAny {
+        self
+    }
+}
+
+impl UndoState {
+    #[cfg(feature = "session")]
+    pub(crate) fn new_for_session(
+        manager: u64,
+        scopes: Vec<YTypeRef>,
+        tracked: Vec<Option<Origin>>,
+        capture_timeout: u64,
+        now: Arc<AtomicU64>,
+    ) -> JwstCodecResult<Self> {
+        let mut state = Self {
+            manager,
+            scope: Vec::new(),
+            tracked: Vec::new(),
+            tracked_types: Vec::new(),
+            capture_timeout,
+            now,
+            undo: Vec::new(),
+            redo: Vec::new(),
+            last_change: 0,
+            next_item: 0,
+        };
+        for origin in tracked {
+            state.track(origin);
+        }
+        if scopes.is_empty() {
+            state.scope.push(Scope::Doc);
+        } else {
+            for ty in scopes {
+                state.add_to_scope(UndoScope(Scope::Type(ty)))?;
+            }
+        }
+        Ok(state)
+    }
+
+    #[cfg(feature = "session")]
+    pub(crate) fn manager_id(&self) -> u64 {
+        self.manager
+    }
+
+    #[cfg(feature = "session")]
+    pub(crate) fn can_undo_redo(&self) -> (bool, bool) {
+        (!self.undo.is_empty(), !self.redo.is_empty())
+    }
+
+    #[cfg(feature = "session")]
+    pub(crate) fn stack_slices(&self) -> [&[StackItem]; 2] {
+        [self.undo.as_slice(), self.redo.as_slice()]
+    }
+
+    #[cfg(feature = "session")]
+    pub(crate) fn clear_stacks(&mut self, undo: bool, redo: bool) {
+        if undo {
+            self.drop_items(UndoStack::Undo);
+        }
+        if redo {
+            self.drop_items(UndoStack::Redo);
+        }
+    }
+
+    #[cfg(feature = "session")]
+    pub(crate) fn stop_capturing(&mut self) {
+        self.last_change = 0;
+    }
+
+    #[cfg(feature = "session")]
+    pub(crate) fn set_top_meta(&mut self, stack: UndoStack, meta: Meta) -> (bool, Option<Meta>) {
+        let stack = match stack {
+            UndoStack::Undo => &mut self.undo,
+            UndoStack::Redo => &mut self.redo,
+        };
+        match stack.last_mut() {
+            Some(top) => (true, top.meta.replace(meta)),
+            None => (false, Some(meta)),
+        }
+    }
+
+    /// Processes a commit against this stack without updating `store.retained`.
+    /// Returns `(released, newly_retained)`.
+    pub(crate) fn on_commit_raw(&mut self, store: &DocStore, summary: &CommitSummary) -> (bool, DeleteSet) {
         let popped = summary
             .origin
             .as_ref()
@@ -501,7 +623,7 @@ impl CommitHook for UndoState {
             .filter(|origin| origin.manager == self.manager)
             .map(|origin| origin.stack);
         if !self.scope_changed(summary) || popped.is_none() && !self.tracks(summary) {
-            return;
+            return (false, DeleteSet::default());
         }
 
         let undoing = popped == Some(UndoStack::Undo);
@@ -549,23 +671,18 @@ impl CommitHook for UndoState {
             self.last_change = now;
         }
 
-        if released {
-            self.release(store);
-        } else {
-            store.add_retained(&retained);
+        (released, retained)
+    }
+
+    /// Computes the union of retained ranges required by this stack without
+    /// modifying `store.retained`.
+    pub(crate) fn retained_set(&self) -> DeleteSet {
+        let mut retained = DeleteSet::default();
+        for item in self.undo.iter().chain(&self.redo) {
+            retained.merge(&item.retained);
         }
+        retained
     }
-
-    fn as_any(&self) -> &dyn StdAny {
-        self
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn StdAny {
-        self
-    }
-}
-
-impl UndoState {
     fn stack(&self, stack: UndoStack) -> &[StackItem] {
         match stack {
             UndoStack::Undo => &self.undo,
@@ -638,16 +755,27 @@ impl UndoState {
     /// Retains exactly what the remaining stack items need and collects the
     /// rest.
     fn release(&self, store: &mut DocStore) {
-        let mut retained = DeleteSet::default();
-        for item in self.undo.iter().chain(&self.redo) {
-            retained.merge(&item.retained);
-        }
-        store.set_retained(retained);
+        store.set_retained(self.retained_set());
     }
 
     /// Yjs `popStackItem`, in the transaction of an undo or redo.
     /// Returns the id and metadata of the item that changed the document.
     fn pop(&mut self, store: &mut DocStore, store_ref: &StoreRef, stack: UndoStack) -> Option<(u64, Option<Meta>)> {
+        let performed = self.pop_with_extra_stacks(store, store_ref, stack, &[]);
+        self.release(store);
+        performed
+    }
+
+    /// Pops one stack item while consulting `other_stacks` in addition to this
+    /// stack's own undo/redo stacks. Does **not** call `store.set_retained`;
+    /// the caller is responsible for recomputing the combined retained set.
+    pub(crate) fn pop_with_extra_stacks(
+        &mut self,
+        store: &mut DocStore,
+        store_ref: &StoreRef,
+        stack: UndoStack,
+        other_stacks: &[&[StackItem]],
+    ) -> Option<(u64, Option<Meta>)> {
         let mut performed = None;
         while performed.is_none() {
             let popped = match stack {
@@ -710,12 +838,17 @@ impl UndoState {
                 }
             }
 
+            let mut all_stacks: Vec<&[StackItem]> = Vec::with_capacity(2 + other_stacks.len());
+            all_stacks.push(self.undo.as_slice());
+            all_stacks.push(self.redo.as_slice());
+            all_stacks.extend_from_slice(other_stacks);
+
             let mut changed = false;
             let ctx = RedoContext {
                 store_ref,
                 redo_ids: &redo_ids,
                 insertions: &item.insertions,
-                stacks: [self.undo.as_slice(), self.redo.as_slice()],
+                stacks: &all_stacks,
             };
             for item_ref in &to_redo {
                 changed |= redo_item(store, &ctx, item_ref).is_some();
@@ -745,7 +878,6 @@ impl UndoState {
             }
         }
 
-        self.release(store);
         performed
     }
 }
@@ -903,7 +1035,7 @@ struct RedoContext<'a> {
     redo_ids: &'a HashSet<Id>,
     /// The insertions of the popped item, which this pop deletes.
     insertions: &'a DeleteSet,
-    stacks: [&'a [StackItem]; 2],
+    stacks: &'a [&'a [StackItem]],
 }
 
 impl RedoContext<'_> {

@@ -8,6 +8,8 @@ mod read;
 mod redo;
 mod relative_position;
 mod retention;
+#[cfg(feature = "session")]
+pub mod session;
 mod store;
 #[cfg(test)]
 mod tests;
@@ -32,7 +34,7 @@ pub use awareness::{Awareness, AwarenessEvent};
 pub use codec::*;
 pub use common::*;
 pub(crate) use document::subdocument;
-pub use document::{Doc, DocOptions, LocalUpdate};
+pub use document::{Doc, DocOptions, LocalUpdate, revert_update_v1};
 #[cfg(feature = "debug")]
 pub use document::{DocMemoryLayout, memory_layout, profiling_counters, reset_profiling_counters};
 pub use hasher::ClientMap;
@@ -49,7 +51,7 @@ pub use transaction::{
 };
 pub(crate) use transaction::{
     CommitHook, EventHub, after_unlock, or_released, read_store, read_store_or_panic, transact_maintenance,
-    transact_mut_with, write_store,
+    transact_mut_with, transact_mut_with_events, write_store,
 };
 pub use types::*;
 pub use undo::{UndoItem, UndoManager, UndoOptions, UndoOrigin, UndoScope, UndoStack};
