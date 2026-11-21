@@ -44,7 +44,8 @@ use smol_str::SmolStr;
 pub(crate) use store::DocStore;
 pub use transaction::{
     ArrayRead, ArrayWrite, ChangedType, CommitEvent, CommitSummary, IncomingUpdate, MapRead, MapWrite, Origin,
-    Subscription, TextRead, TextWrite, Transaction, TransactionMut,
+    Subscription, TextRead, TextWrite, Transaction, TransactionMut, XMLElementRead, XMLElementWrite, XMLFragmentRead,
+    XMLFragmentWrite, XMLHookRead, XMLHookWrite, XMLTextRead, XMLTextWrite,
 };
 pub(crate) use transaction::{
     CommitHook, EventHub, after_unlock, or_released, read_store, read_store_or_panic, transact_maintenance,

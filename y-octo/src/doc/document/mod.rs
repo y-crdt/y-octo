@@ -241,6 +241,10 @@ const _: fn() = || {
     send_sync::<Array>();
     send_sync::<Map>();
     send_sync::<Text>();
+    send_sync::<XMLElement>();
+    send_sync::<XMLFragment>();
+    send_sync::<XMLText>();
+    send_sync::<XMLHook>();
     send_sync::<Value>();
     send_sync::<Update>();
 };
@@ -807,6 +811,67 @@ impl Doc {
             .with_kind(YTypeKind::Map)
             .set_name(str.to_string())
             .build_exists()
+    }
+
+    pub fn get_or_create_xml_fragment<S: AsRef<str>>(&self, name: S) -> JwstCodecResult<XMLFragment> {
+        YTypeBuilder::new(self.store.clone())
+            .with_kind(YTypeKind::XMLFragment)
+            .set_name(name.as_ref().to_string())
+            .build()
+    }
+
+    /// Creates an editable preliminary XML fragment.
+    pub fn create_xml_fragment(&self) -> JwstCodecResult<XMLFragment> {
+        YTypeBuilder::new(self.store.clone())
+            .with_kind(YTypeKind::XMLFragment)
+            .build()
+    }
+
+    /// Gets or creates a root XML element with default tag `"UNDEFINED"`,
+    /// matching Yjs `doc.getXmlElement(name)`.
+    pub fn get_or_create_xml_element<S: AsRef<str>>(&self, name: S) -> JwstCodecResult<XMLElement> {
+        YTypeBuilder::new(self.store.clone())
+            .with_kind(YTypeKind::XMLElement)
+            .set_name(name.as_ref().to_string())
+            .set_tag_name(xml::DEFAULT_XML_ELEMENT_TAG.to_string())
+            .build()
+    }
+
+    /// Creates an editable preliminary XML element with the given `tag`.
+    pub fn create_xml_element<S: Into<String>>(&self, tag: S) -> JwstCodecResult<XMLElement> {
+        YTypeBuilder::new(self.store.clone())
+            .with_kind(YTypeKind::XMLElement)
+            .set_tag_name(tag.into())
+            .build()
+    }
+
+    pub fn get_or_create_xml_text<S: AsRef<str>>(&self, name: S) -> JwstCodecResult<XMLText> {
+        YTypeBuilder::new(self.store.clone())
+            .with_kind(YTypeKind::XMLText)
+            .set_name(name.as_ref().to_string())
+            .build()
+    }
+
+    /// Creates an editable preliminary XML text.
+    pub fn create_xml_text(&self) -> JwstCodecResult<XMLText> {
+        YTypeBuilder::new(self.store.clone())
+            .with_kind(YTypeKind::XMLText)
+            .build()
+    }
+
+    pub fn get_or_create_xml_hook<S: AsRef<str>>(&self, name: S) -> JwstCodecResult<XMLHook> {
+        YTypeBuilder::new(self.store.clone())
+            .with_kind(YTypeKind::XMLHook)
+            .set_name(name.as_ref().to_string())
+            .build()
+    }
+
+    /// Creates an editable preliminary XML hook with the given `hook_name`.
+    pub fn create_xml_hook<S: Into<String>>(&self, hook_name: S) -> JwstCodecResult<XMLHook> {
+        YTypeBuilder::new(self.store.clone())
+            .with_kind(YTypeKind::XMLHook)
+            .set_tag_name(hook_name.into())
+            .build()
     }
 
     pub fn encode_update_v1(&self) -> JwstCodecResult<Vec<u8>> {

@@ -27,6 +27,7 @@ resolver = "2"
     "json",
     "rustls",
   ] }
+  ryu-js = "1"
   serde = "1"
   serde_json = "1"
   smol_str = "0.3"

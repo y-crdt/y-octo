@@ -44,6 +44,34 @@ impl Value {
         }
     }
 
+    pub fn to_xml_element(&self) -> Option<XMLElement> {
+        match self {
+            Value::XMLElement(element) => Some(element.clone()),
+            _ => None,
+        }
+    }
+
+    pub fn to_xml_fragment(&self) -> Option<XMLFragment> {
+        match self {
+            Value::XMLFragment(fragment) => Some(fragment.clone()),
+            _ => None,
+        }
+    }
+
+    pub fn to_xml_text(&self) -> Option<XMLText> {
+        match self {
+            Value::XMLText(text) => Some(text.clone()),
+            _ => None,
+        }
+    }
+
+    pub fn to_xml_hook(&self) -> Option<XMLHook> {
+        match self {
+            Value::XMLHook(hook) => Some(hook.clone()),
+            _ => None,
+        }
+    }
+
     pub fn from_vec<T: Into<Any>>(el: Vec<T>) -> Self {
         Value::Any(Any::Array(el.into_iter().map(|item| item.into()).collect::<Vec<_>>()))
     }
@@ -128,6 +156,10 @@ impl Display for Value {
         match self {
             Value::Any(any) => write!(f, "{any}"),
             Value::Text(text) => write!(f, "{text}"),
+            Value::XMLElement(element) => write!(f, "{element}"),
+            Value::XMLFragment(fragment) => write!(f, "{fragment}"),
+            Value::XMLHook(_) => write!(f, "[object Object]"),
+            Value::XMLText(text) => write!(f, "{text}"),
             _ => write!(f, ""),
         }
     }
@@ -143,14 +175,11 @@ impl serde::Serialize for Value {
             Self::Array(array) => array.serialize(serializer),
             Self::Map(map) => map.serialize(serializer),
             Self::Text(text) => text.serialize(serializer),
-            // Self::XMLElement(xml_element) =>
-            // xml_element.serialize(serializer),
-            // Self::XMLFragment(xml_fragment) =>
-            // xml_fragment.serialize(serializer), Self::XMLHook(xml_hook) =>
-            // xml_hook.serialize(serializer), Self::XMLText(xml_text) =>
-            // xml_text.serialize(serializer), Self::Doc(doc) =>
-            // doc.serialize(serializer),
-            _ => serializer.serialize_none(),
+            Self::XMLElement(xml_element) => xml_element.serialize(serializer),
+            Self::XMLFragment(xml_fragment) => xml_fragment.serialize(serializer),
+            Self::XMLHook(xml_hook) => xml_hook.serialize(serializer),
+            Self::XMLText(xml_text) => xml_text.serialize(serializer),
+            Self::Doc(_) => serializer.serialize_none(),
         }
     }
 }
