@@ -10,6 +10,13 @@ mod sync;
 pub use codec::*;
 #[cfg(feature = "random")]
 pub use doc::random_client_id;
+#[cfg(feature = "session")]
+pub use doc::session;
+#[cfg(feature = "session")]
+pub use doc::session::{
+    DocSession, PathSegment, SessionChangedType, SessionCommit, SessionConfig, SessionOriginKind, SessionReadValue,
+    SessionTxOrigin, SessionUndoConfig, SessionValue, TypePath, TypeStatus, TypeTarget, UndoStackId,
+};
 pub use doc::{
     AbsolutePosition, Any, ArrayRead, ArrayWrite, Awareness, AwarenessEvent, ChangedType, Client, ClientMap, Clock,
     CommitEvent, CommitSummary, CrdtRead, CrdtReader, CrdtWrite, CrdtWriter, DeleteSet, Doc, DocOptions,
@@ -20,6 +27,7 @@ pub use doc::{
     UndoManager, UndoOptions, UndoOrigin, UndoScope, UndoStack, Update, Value, XMLElementRead, XMLElementWrite,
     XMLFragmentRead, XMLFragmentWrite, XMLHookRead, XMLHookWrite, XMLTextRead, XMLTextWrite, YTypeKind, diff_update_v1,
     encode_awareness_as_message, encode_state_vector_from_update_v1, encode_update_as_message, merge_updates_v1,
+    revert_update_v1,
     types::{
         array::Array,
         map::Map,
@@ -95,6 +103,8 @@ pub enum JwstCodecError {
     ClientIdRequired,
     #[error("Unexpected type, expect {0}")]
     UnexpectedType(&'static str),
+    #[error("Operation is not allowed while a deferred transaction frame is open")]
+    OpenTransactionFrame,
 }
 
 pub type JwstCodecResult<T = ()> = Result<T, JwstCodecError>;

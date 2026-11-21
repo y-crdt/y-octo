@@ -683,7 +683,11 @@ impl Doc {
         })
     }
 
-    fn integrate_update(store: &mut DocStore, store_ref: &StoreRef, mut update: Update) -> JwstCodecResult {
+    pub(in crate::doc) fn integrate_update(
+        store: &mut DocStore,
+        store_ref: &StoreRef,
+        mut update: Update,
+    ) -> JwstCodecResult {
         let mut retry = false;
 
         loop {
@@ -990,7 +994,7 @@ pub enum LocalUpdate {
 
 impl IncomingUpdate {
     /// What `update` itself declares.
-    fn of(update: &Update) -> Self {
+    pub(in crate::doc) fn of(update: &Update) -> Self {
         let mut structs = DeleteSet::default();
         for (&client, nodes) in &update.structs {
             let mut run: Option<std::ops::Range<Clock>> = None;
@@ -1037,6 +1041,131 @@ fn missing_dependencies(update: &Update, state: StateVector) -> StateVector {
         missing.insert(*client, state.get(client));
     }
     missing
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct RevertOrigin;
+
+fn derive_revert_client(current: &[u8], target: &[u8], used: &HashSet<u64>) -> u64 {
+    // Deterministic 53-bit FNV-1a mix so `revert_update_v1` needs no RNG and
+    // stays exact in JS hosts.
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in current.iter().chain(target.iter()) {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0100_0000_01b3);
+    }
+    let mut candidate = (hash & ((1u64 << 53) - 1)).max(1);
+    while used.contains(&candidate) {
+        candidate = (candidate + 1) & ((1u64 << 53) - 1);
+        if candidate == 0 {
+            candidate = 1;
+        }
+    }
+    candidate
+}
+
+fn delete_set_covers(outer: &DeleteSet, inner: &DeleteSet) -> bool {
+    for (client, inner_ranges) in inner.iter() {
+        let inner_vec = inner_ranges.canonical_ranges();
+        if inner_vec.is_empty() {
+            continue;
+        }
+        let Some(outer_ranges) = outer.get(client) else {
+            return false;
+        };
+        let outer_vec = outer_ranges.canonical_ranges();
+        let mut oi = 0;
+        for r in inner_vec {
+            while oi < outer_vec.len() && outer_vec[oi].end <= r.start {
+                oi += 1;
+            }
+            if oi >= outer_vec.len() || outer_vec[oi].start > r.start || outer_vec[oi].end < r.end {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+/// Computes a V1 delta update that reverts `current_snapshot` back to the
+/// content of its ancestor `target_snapshot`, including both undoing insertions
+/// and recreating items deleted since `target_snapshot`.
+///
+/// Both snapshots must belong to the **same CRDT document lineage** (where a
+/// given `(client, clock)` uniquely identifies the same operation). Rejects
+/// snapshots with unresolved pending dependencies, inverted/diverged
+/// histories (`target > current`), or delete sets in `target_snapshot` not
+/// covered by `current_snapshot` with [`JwstCodecError::IncompleteDocument`].
+pub fn revert_update_v1(current_snapshot: &[u8], target_snapshot: &[u8]) -> JwstCodecResult<Vec<u8>> {
+    let target_update = Update::decode_v1(target_snapshot)?;
+    let current_update = Update::decode_v1(current_snapshot)?;
+    let target_ds = target_update.delete_set.clone();
+    let current_ds = current_update.delete_set.clone();
+
+    let current_sv_bytes = encode_state_vector_from_update_v1(current_snapshot)?;
+    let current_sv = StateVector::decode_v1(&current_sv_bytes)?;
+
+    let mut used_clients = HashSet::new();
+    for client in current_sv
+        .keys()
+        .chain(current_update.structs.keys())
+        .chain(current_update.delete_set.keys())
+        .chain(target_update.structs.keys())
+        .chain(target_update.delete_set.keys())
+    {
+        used_clients.insert(*client);
+    }
+
+    let shadow_client = derive_revert_client(current_snapshot, target_snapshot, &used_clients);
+    let mut shadow = DocOptions::from_identity(shadow_client, "revert".into())
+        .auto_gc(false)
+        .build();
+    shadow.apply_update(target_update)?;
+    if shadow.has_pending_updates() {
+        return Err(JwstCodecError::IncompleteDocument(
+            "target snapshot has unresolved pending updates".into(),
+        ));
+    }
+
+    let target_sv = shadow.get_state_vector();
+    for (client, target_clock) in target_sv.iter() {
+        if current_sv.get(client) < *target_clock {
+            return Err(JwstCodecError::IncompleteDocument(
+                "target snapshot is not an ancestor of current snapshot".into(),
+            ));
+        }
+    }
+    if !delete_set_covers(&current_ds, &target_ds) {
+        return Err(JwstCodecError::IncompleteDocument(
+            "target snapshot delete set is not covered by current snapshot".into(),
+        ));
+    }
+
+    let target_sv_bytes = target_sv.encode_v1()?;
+    let diff_bytes = diff_update_v1(current_snapshot, &target_sv_bytes)?;
+    let diff_update = Update::decode_v1(&diff_bytes)?;
+
+    let revert_origin = Origin::new(RevertOrigin);
+    let undo = UndoManager::<()>::new(
+        &shadow,
+        [(&shadow).into()],
+        UndoOptions {
+            capture_timeout: u64::MAX,
+            tracked_origins: vec![Some(revert_origin.clone())],
+        },
+    )?;
+
+    shadow.apply_update_with_origin(diff_update, revert_origin)?;
+    if shadow.has_pending_updates() || shadow.get_state_vector() != current_sv {
+        return Err(JwstCodecError::IncompleteDocument(
+            "current snapshot has unresolved pending updates or diverged state".into(),
+        ));
+    }
+
+    match undo.pop_with_event(UndoStack::Undo)? {
+        Some((_, Some(event))) => Ok(event.update),
+        _ => Ok(vec![0, 0]),
+    }
 }
 
 #[cfg(test)]

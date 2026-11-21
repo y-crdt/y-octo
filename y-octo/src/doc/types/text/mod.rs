@@ -131,12 +131,37 @@ pub(crate) fn text_delta(ty: &YType) -> TextDelta {
     ops
 }
 
+/// Validates that all `Retain` and `Delete` operations in `delta` stay within
+/// a text sequence of `len` units before mutating the store.
+pub(crate) fn validate_delta_against_len(len: u64, delta: &[TextDeltaOp]) -> JwstCodecResult {
+    let mut remaining = len;
+    for op in delta {
+        match op {
+            TextDeltaOp::Insert { .. } => {}
+            TextDeltaOp::Retain { retain, .. } => {
+                if *retain > remaining {
+                    return Err(JwstCodecError::IndexOutOfBound(*retain));
+                }
+                remaining -= *retain;
+            }
+            TextDeltaOp::Delete { delete } => {
+                if *delete > remaining {
+                    return Err(JwstCodecError::IndexOutOfBound(*delete));
+                }
+                remaining -= *delete;
+            }
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn apply_text_delta(
     parent: &YTypeRef,
     store: &mut DocStore,
     ty: &mut YType,
     delta: &[TextDeltaOp],
 ) -> JwstCodecResult {
+    validate_delta_against_len(ty.len, delta)?;
     {
         let mut pos = TextPosition::new(parent.clone(), ty.start.clone());
 
