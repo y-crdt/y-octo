@@ -632,7 +632,7 @@ fn a_panic_inside_a_transaction_poisons_the_document() {
 }
 
 /// Without the `random` feature the document waits for the host instead
-/// (`client_identity_tests`).
+/// (`client_identity`).
 #[test]
 #[cfg(feature = "random")]
 fn remote_use_of_our_client_id_switches_it() {

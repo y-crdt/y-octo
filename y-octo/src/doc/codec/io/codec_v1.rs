@@ -1,4 +1,4 @@
-use std::io::Cursor;
+use std::io::{Cursor, Write};
 
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 
@@ -158,6 +158,10 @@ pub struct RawEncoder {
 impl RawEncoder {
     pub fn into_inner(self) -> Vec<u8> {
         self.buffer.into_inner()
+    }
+
+    pub(crate) fn write_raw(&mut self, bytes: &[u8]) -> JwstCodecResult {
+        self.buffer.write_all(bytes).map_err(writer::map_write_error)
     }
 }
 

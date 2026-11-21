@@ -17,9 +17,10 @@ pub use doc::{
     OrderRange, Origin, RawDecoder, RawEncoder, ReadAny, ReadArray, ReadDoc, ReadError, ReadLimits, ReadMap, ReadText,
     ReadTextRun, ReadValue, RelativePosition, StateVector, StoreHistory, Subscription, TextAttributes, TextDelta,
     TextDeltaOp, TextIdentityRun, TextInsert, TextRead, TextWrite, Transaction, TransactionMut, TypeIdentity, UndoItem,
-    UndoManager, UndoOptions, UndoOrigin, UndoScope, UndoStack, Update, Value, YTypeKind, encode_awareness_as_message,
-    encode_update_as_message, merge_updates_v1,
+    UndoManager, UndoOptions, UndoOrigin, UndoScope, UndoStack, Update, Value, YTypeKind, diff_update_v1,
+    encode_awareness_as_message, encode_state_vector_from_update_v1, encode_update_as_message, merge_updates_v1,
     types::{array::Array, map::Map, text::Text},
+    validate_update_v1,
 };
 pub(crate) use doc::{Content, Item};
 #[cfg(feature = "debug")]

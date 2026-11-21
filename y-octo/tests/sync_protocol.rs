@@ -229,12 +229,6 @@ fn handle_doc_message_propagates_origin_and_drops_outside_lock() {
     assert_eq!(remote_text.to_string(), ">hello!");
 }
 
-/// The delete set of the whole document as it goes on the wire (an update
-/// without structs), built from the deleted structs of the store.
-fn wire_delete_set(doc: &Doc) -> Vec<u8> {
-    doc.encode_state_as_update_v1(&doc.get_state_vector()).unwrap()
-}
-
 #[derive(Default)]
 struct Network {
     online: Vec<bool>,
@@ -427,9 +421,7 @@ impl TestConnector {
                 "text of replica {index}"
             );
             assert_eq!(doc.get_state_vector(), first.get_state_vector(), "replica {index}");
-            // `get_delete_sets` records the deletions as each replica learned
-            // them; compare what the stores encode instead
-            assert_eq!(wire_delete_set(doc), wire_delete_set(first), "replica {index}");
+            assert_eq!(doc.get_delete_sets(), first.get_delete_sets(), "replica {index}");
             assert!(doc.store_compare(first), "store of replica {index}");
         }
     }
