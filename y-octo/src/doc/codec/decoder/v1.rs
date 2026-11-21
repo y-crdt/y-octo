@@ -1,6 +1,6 @@
 use std::ops::Range;
 
-use serde::{Deserialize, de::IgnoredAny};
+use serde::Deserialize;
 
 use super::{CrdtReader, Id, JwstCodecError, JwstCodecResult, RawDecoder, item_flags};
 
@@ -89,6 +89,7 @@ pub(crate) struct ItemMeta<'a> {
     pub(crate) origin_right: Option<Id>,
     pub(crate) parent: WireParent<'a>,
     pub(crate) parent_sub: Option<WireStr<'a>>,
+    pub(crate) raw_range: Range<usize>,
 }
 
 pub(crate) enum ContentAtom<'a> {
@@ -189,14 +190,7 @@ impl<'a> Decoder<'a> {
             sink.begin_client(client, count)?;
             for _ in 0..count {
                 let id = Id::new(client, clock);
-                let len = self.read_struct(&mut sink, id)?;
-                if len == 0 {
-                    return Err(JwstCodecError::IncompleteDocument("zero-length struct".into()).into());
-                }
-                clock = clock.checked_add(len).ok_or(JwstCodecError::StructClockInvalid {
-                    expect: clock,
-                    actually: u64::MAX,
-                })?;
+                clock = self.read_struct(&mut sink, id)?;
             }
         }
 
@@ -228,19 +222,35 @@ impl<'a> Decoder<'a> {
         sink.finish()
     }
 
+    fn advance_clock(clock: u64, len: u64) -> Result<u64> {
+        if len == 0 {
+            return Err(JwstCodecError::IncompleteDocument("zero-length struct".into()).into());
+        }
+        clock.checked_add(len).ok_or_else(|| {
+            JwstCodecError::StructClockInvalid {
+                expect: clock,
+                actually: u64::MAX,
+            }
+            .into()
+        })
+    }
+
     fn read_struct<S: Sink<'a>>(&mut self, sink: &mut S, id: Id) -> Result<u64> {
+        let struct_start = self.raw.position();
         let info = self.raw.read_info()?;
         let tag = info & 0b1_1111;
         match tag {
             0 => {
                 let len = self.raw.read_var_u64()?;
+                let next_clock = Self::advance_clock(id.clock, len)?;
                 sink.gc(id, len)?;
-                Ok(len)
+                Ok(next_clock)
             }
             10 => {
                 let len = self.raw.read_var_u64()?;
+                let next_clock = Self::advance_clock(id.clock, len)?;
                 sink.skip(id, len)?;
-                Ok(len)
+                Ok(next_clock)
             }
             _ => {
                 let has_left = info & item_flags::ITEM_HAS_LEFT_ID != 0;
@@ -264,7 +274,9 @@ impl<'a> Decoder<'a> {
                 };
                 let content_start = self.raw.position();
                 let (content, len) = self.read_content(sink, tag)?;
-                self.add_content_bytes(self.raw.position() - content_start)?;
+                let struct_end = self.raw.position();
+                self.add_content_bytes(struct_end - content_start)?;
+                let next_clock = Self::advance_clock(id.clock, len)?;
                 sink.item(
                     id,
                     len,
@@ -273,10 +285,11 @@ impl<'a> Decoder<'a> {
                         origin_right,
                         parent,
                         parent_sub,
+                        raw_range: struct_start..struct_end,
                     },
                     content,
                 )?;
-                Ok(len)
+                Ok(next_clock)
             }
         }
     }
@@ -436,7 +449,7 @@ impl<'a> Decoder<'a> {
     fn read_json(&mut self) -> JwstCodecResult<WireStr<'a>> {
         let value = self.read_str()?;
         let mut decoder = serde_json::Deserializer::from_str(value.value);
-        IgnoredAny::deserialize(&mut decoder)
+        JsonAnyValidator::deserialize(&mut decoder)
             .and_then(|_| decoder.end())
             .map_err(|_| JwstCodecError::DamagedDocumentJson)?;
         Ok(value)
@@ -498,6 +511,117 @@ impl<'a> Decoder<'a> {
             return Err(Error::Resource("content bytes"));
         }
         Ok(())
+    }
+}
+
+/// Zero-allocation JSON validator whose acceptance set matches
+/// `serde_json::from_str::<Any>`: unlike `IgnoredAny`, `deserialize_any`
+/// invokes `serde_json`'s number range parsing and 128-level recursion limit.
+struct JsonAnyValidator;
+
+impl<'de> Deserialize<'de> for JsonAnyValidator {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct ValidatorVisitor;
+
+        impl<'de> serde::de::Visitor<'de> for ValidatorVisitor {
+            type Value = JsonAnyValidator;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("any valid JSON value")
+            }
+
+            #[inline]
+            fn visit_bool<E>(self, _value: bool) -> std::result::Result<Self::Value, E> {
+                Ok(JsonAnyValidator)
+            }
+
+            #[inline]
+            fn visit_i64<E>(self, _value: i64) -> std::result::Result<Self::Value, E> {
+                Ok(JsonAnyValidator)
+            }
+
+            #[inline]
+            fn visit_u64<E>(self, _value: u64) -> std::result::Result<Self::Value, E> {
+                Ok(JsonAnyValidator)
+            }
+
+            #[inline]
+            fn visit_f64<E>(self, _value: f64) -> std::result::Result<Self::Value, E> {
+                Ok(JsonAnyValidator)
+            }
+
+            #[inline]
+            fn visit_str<E>(self, _value: &str) -> std::result::Result<Self::Value, E> {
+                Ok(JsonAnyValidator)
+            }
+
+            #[inline]
+            fn visit_borrowed_str<E>(self, _value: &'de str) -> std::result::Result<Self::Value, E> {
+                Ok(JsonAnyValidator)
+            }
+
+            #[inline]
+            fn visit_none<E>(self) -> std::result::Result<Self::Value, E> {
+                Ok(JsonAnyValidator)
+            }
+
+            #[inline]
+            fn visit_unit<E>(self) -> std::result::Result<Self::Value, E> {
+                Ok(JsonAnyValidator)
+            }
+
+            fn visit_seq<V>(self, mut visitor: V) -> std::result::Result<Self::Value, V::Error>
+            where
+                V: serde::de::SeqAccess<'de>,
+            {
+                while visitor.next_element::<JsonAnyValidator>()?.is_some() {}
+                Ok(JsonAnyValidator)
+            }
+
+            fn visit_map<V>(self, mut visitor: V) -> std::result::Result<Self::Value, V::Error>
+            where
+                V: serde::de::MapAccess<'de>,
+            {
+                while visitor.next_entry::<JsonKeyValidator, JsonAnyValidator>()?.is_some() {}
+                Ok(JsonAnyValidator)
+            }
+        }
+
+        deserializer.deserialize_any(ValidatorVisitor)
+    }
+}
+
+struct JsonKeyValidator;
+
+impl<'de> Deserialize<'de> for JsonKeyValidator {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct KeyVisitor;
+
+        impl<'de> serde::de::Visitor<'de> for KeyVisitor {
+            type Value = JsonKeyValidator;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a JSON object key string")
+            }
+
+            #[inline]
+            fn visit_str<E>(self, _value: &str) -> std::result::Result<Self::Value, E> {
+                Ok(JsonKeyValidator)
+            }
+
+            #[inline]
+            fn visit_borrowed_str<E>(self, _value: &'de str) -> std::result::Result<Self::Value, E> {
+                Ok(JsonKeyValidator)
+            }
+        }
+
+        deserializer.deserialize_str(KeyVisitor)
     }
 }
 

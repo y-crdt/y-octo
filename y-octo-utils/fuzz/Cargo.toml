@@ -97,3 +97,9 @@ doc  = false
 name = "apply_update"
 path = "fuzz_targets/apply_update.rs"
 test = false
+
+[[bin]]
+doc  = false
+name = "wire_ops"
+path = "fuzz_targets/wire_ops.rs"
+test = false

@@ -10,6 +10,8 @@ mod refs;
 mod update;
 #[cfg(test)]
 mod utils;
+#[forbid(unsafe_code)]
+mod wire;
 
 pub use any::Any;
 pub(crate) use content::Content;
@@ -26,5 +28,6 @@ pub(crate) use refs::NodeLen;
 pub use update::Update;
 #[cfg(test)]
 pub(crate) use utils::*;
+pub use wire::{diff_update_v1, encode_state_vector_from_update_v1, validate_update_v1};
 
 use super::*;

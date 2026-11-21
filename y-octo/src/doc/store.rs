@@ -69,7 +69,6 @@ impl DeleteFrame {
 pub(crate) struct DocStore {
     client: Client,
     pub items: ClientMap<VecDeque<Node>>,
-    pub delete_set: DeleteSet,
     // Monotonic for integrated structs, including wire GC and ContentDeleted
     // that never pass through the ordinary delete collector.
     has_deleted_structs: bool,
@@ -140,7 +139,7 @@ impl DocStore {
 
     #[cfg(feature = "debug")]
     pub fn total_delete_sets(&self) -> usize {
-        self.delete_set
+        Self::generate_delete_set(&self.items)
             .values()
             .map(|v| match v {
                 OrderRange::Range(_) => 1,
@@ -182,7 +181,7 @@ impl DocStore {
     }
 
     pub fn get_delete_sets(&self) -> DeleteSet {
-        self.delete_set.clone()
+        Self::generate_delete_set(&self.items)
     }
 
     fn items_as_state_vector(items: &ClientMap<VecDeque<Node>>) -> StateVector {
@@ -819,8 +818,7 @@ impl DocStore {
     /// Records ranges deleted for the first time.
     fn add_deleted(&mut self, ranges: HashMap<u64, Vec<Range<u64>>>) {
         for (client, ranges) in ranges {
-            self.collector.deleted.batch_add_ranges(client, ranges.clone());
-            self.delete_set.batch_add_ranges(client, ranges);
+            self.collector.deleted.batch_add_ranges(client, ranges);
         }
     }
 
@@ -1232,7 +1230,7 @@ impl DocStore {
 
     /// Full GC and merge over the whole delete set and every struct.
     pub fn optimize_all(&mut self) {
-        self.collector.deleted.merge(&self.delete_set.clone());
+        self.collector.deleted = Self::generate_delete_set(&self.items);
         self.last_optimized_state = StateVector::default();
         self.optimize(true, self.get_state_vector())
     }
@@ -1870,9 +1868,8 @@ mod tests {
 
             store.add_node(Node::Item(Somr::new(item1))).unwrap();
             store.add_node(Node::Item(Somr::new(item2))).unwrap();
-            store.delete_set.add_range(1, 0..4);
 
-            let ds = store.delete_set.clone();
+            let ds = store.get_delete_sets();
             store.gc_delete_set(&ds);
 
             assert_eq!(
@@ -1898,7 +1895,7 @@ mod tests {
             arr.remove(0, 1).unwrap();
             assert_eq!(arr.len(), 0);
             let mut store = doc.store.write().unwrap();
-            let ds = store.delete_set.clone();
+            let ds = store.get_delete_sets();
             store.gc_delete_set(&ds);
 
             assert_eq!(
@@ -1938,7 +1935,7 @@ mod tests {
                 .unwrap()
                 .flags
                 .set_keep();
-            let ds = store.delete_set.clone();
+            let ds = store.get_delete_sets();
             store.gc_delete_set(&ds);
 
             assert!(matches!(
@@ -1974,7 +1971,7 @@ mod tests {
             pages.remove("page1");
 
             let mut store = doc.store.write().unwrap();
-            let ds = store.delete_set.clone();
+            let ds = store.get_delete_sets();
             store.gc_delete_set(&ds);
 
             assert_eq!(

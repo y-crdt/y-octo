@@ -425,8 +425,12 @@ impl Builder {
                 let end = self.locate(Id::new(client, range.end - 1))?.0;
                 let ids = self.clients[&client][start..=end].to_vec();
                 for id in ids {
-                    if self.nodes[id as usize].kind() == RawNodeKind::Item {
-                        self.delete_node(id)?;
+                    match self.nodes[id as usize].kind() {
+                        RawNodeKind::Item => self.delete_node(id)?,
+                        RawNodeKind::Gc => {}
+                        RawNodeKind::Skip => {
+                            return Err(ReadError::IncompleteSnapshot("delete-set targets missing skip range"));
+                        }
                     }
                 }
             }
