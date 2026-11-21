@@ -74,12 +74,95 @@ impl Awareness {
         }
     }
 
-    /// Applies remote states, keeping each one newer than the known state.
+    /// Rotates the local client ID (for example after `Doc::client_required()`
+    /// detects a client ID collision on a host without `random`).
+    ///
+    /// Marks the old local ID as offline (`"null"`) and, if the local client
+    /// currently holds an active state, re-announces that state under
+    /// `new_local_id` with a clock strictly greater than any known state for
+    /// `new_local_id`. Returns the resulting [`AwarenessEvent`].
+    pub fn set_local_id(&mut self, new_local_id: u64) -> AwarenessEvent {
+        let mut event = AwarenessEventBuilder::new();
+        if new_local_id == self.local_id {
+            return event.build();
+        }
+
+        let old_id = self.local_id;
+        let old_active_content = self
+            .awareness
+            .get(&old_id)
+            .filter(|state| !state.is_deleted())
+            .map(|state| state.content.clone());
+
+        if let Some(old_state) = self.awareness.get_mut(&old_id)
+            && !old_state.is_deleted()
+        {
+            old_state.delete();
+            event.remove(old_id);
+        }
+
+        self.local_id = new_local_id;
+        self.local_clock_floor = self.awareness.get(&new_local_id).map(|state| state.clock).unwrap_or(0);
+
+        if let Some(content) = old_active_content {
+            let existed = self.awareness.contains_key(&new_local_id);
+            self.mut_local_state().set_content(content);
+            if existed {
+                event.update(new_local_id);
+            } else {
+                event.add(new_local_id);
+            }
+        }
+
+        let built = event.build();
+        if !built.is_empty()
+            && let Some(cb) = self.callback.as_ref()
+        {
+            cb(self, built.clone());
+        }
+        built
+    }
+
+    /// Encodes the selected client states (or all known states when `clients`
+    /// is `None`) in `y-protocols` awareness binary format (without the outer
+    /// `DocMessage::Awareness` tag).
+    pub fn encode_update(&self, clients: Option<&[u64]>) -> JwstCodecResult<Vec<u8>> {
+        let subset: AwarenessStates = match clients {
+            Some(ids) => ids
+                .iter()
+                .filter_map(|id| self.awareness.get(id).map(|s| (*id, s.clone())))
+                .collect(),
+            None => self.awareness.clone(),
+        };
+        let mut buf = Vec::new();
+        crate::protocol::write_awareness(&mut buf, &subset)
+            .map_err(|e| JwstCodecError::InvalidWriteBuffer(e.to_string()))?;
+        Ok(buf)
+    }
+
+    /// Decodes a `y-protocols` awareness binary update (without the outer
+    /// `DocMessage::Awareness` tag) and applies it, returning the event.
+    pub fn apply_update_v1(&mut self, bytes: &[u8]) -> JwstCodecResult<AwarenessEvent> {
+        let (tail, states) = crate::protocol::read_awareness(bytes)
+            .map_err(|e| JwstCodecError::IncompleteDocument(format!("invalid awareness update: {e}")))?;
+        if !tail.is_empty() {
+            return Err(JwstCodecError::UpdateNotFullyConsumed(tail.len()));
+        }
+        Ok(self.apply_update_returning_event(states))
+    }
+
+    /// Applies remote states, keeping each one newer than the known state
+    /// (and accepting equal-clock `null` offline broadcasts from
+    /// `y-protocols@1.0.6`).
     ///
     /// States for `local_id` are never stored, unlike `y-protocols`
     /// `applyAwarenessUpdate`: they only raise the clock of the local state
     /// so its next broadcast supersedes them.
     pub fn apply_update(&mut self, update: AwarenessStates) {
+        let _ = self.apply_update_returning_event(update);
+    }
+
+    fn apply_update_returning_event(&mut self, update: AwarenessStates) -> AwarenessEvent {
         let mut event = AwarenessEventBuilder::new();
 
         for (client_id, state) in update {
@@ -94,12 +177,17 @@ impl Awareness {
                         continue;
                     }
 
-                    if prev_state.clock < state.clock {
-                        if state.is_deleted() {
-                            prev_state.delete();
-                            event.remove(client_id);
+                    let equal_clock_offline =
+                        prev_state.clock == state.clock && state.is_deleted() && !prev_state.is_deleted();
+                    if prev_state.clock < state.clock || equal_clock_offline {
+                        let was_deleted = prev_state.is_deleted();
+                        let now_deleted = state.is_deleted();
+                        *prev_state = state;
+                        if now_deleted {
+                            if !was_deleted {
+                                event.remove(client_id);
+                            }
                         } else {
-                            *prev_state = state;
                             event.update(client_id);
                         }
                     }
@@ -111,18 +199,24 @@ impl Awareness {
                     self.local_clock_floor = max(self.local_clock_floor, state.clock);
                 }
                 Entry::Vacant(entry) => {
+                    let is_deleted = state.is_deleted();
                     entry.insert(state);
-                    event.add(client_id);
+                    if !is_deleted {
+                        event.add(client_id);
+                    }
                 }
             }
         }
 
+        let built = event.build();
         if let Some(cb) = self.callback.as_ref() {
-            cb(self, event.build());
+            cb(self, built.clone());
         }
+        built
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AwarenessEvent {
     added: Vec<u64>,
     updated: Vec<u64>,
@@ -130,6 +224,22 @@ pub struct AwarenessEvent {
 }
 
 impl AwarenessEvent {
+    pub fn added(&self) -> &[u64] {
+        &self.added
+    }
+
+    pub fn updated(&self) -> &[u64] {
+        &self.updated
+    }
+
+    pub fn removed(&self) -> &[u64] {
+        &self.removed
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.added.is_empty() && self.updated.is_empty() && self.removed.is_empty()
+    }
+
     pub fn get_updated(&self, states: &AwarenessStates) -> AwarenessStates {
         states
             .iter()
@@ -229,7 +339,8 @@ mod tests {
                 new_states.insert(1, AwarenessState::new(3, "test update".to_string()));
                 // not exists in local awareness: add
                 new_states.insert(2, AwarenessState::new(1, "test update".to_string()));
-                // not exists in local awareness: add
+                // not exists in local awareness and null: tombstone only, no
+                // added event
                 new_states.insert(3, AwarenessState::new(1, "null".to_string()));
                 // not exists in local awareness: add
                 new_states.insert(4, AwarenessState::new(1, "test update".to_string()));
@@ -249,7 +360,8 @@ mod tests {
 
                 let mut added = event.added.clone();
                 added.sort();
-                assert_eq!(added, [2, 3, 4]);
+                assert_eq!(added, [2, 4]);
+                assert!(awareness.get_states().get(&3).unwrap().is_deleted());
                 assert_eq!(event.updated, [1]);
 
                 assert_eq!(
@@ -292,5 +404,104 @@ mod tests {
         let local = awareness.get_states().get(&7).unwrap();
         assert_eq!(local.clock(), u64::MAX);
         assert_eq!(local.content(), "still mine");
+    }
+
+    #[test]
+    fn test_awareness_equal_clock_null_offline_and_clock_preservation() {
+        let mut awareness = Awareness::new(1);
+
+        // Remote peer 2 comes online at clock 5.
+        let mut online = AwarenessStates::new();
+        online.insert(2, AwarenessState::new(5, r#"{"user":"alice"}"#.to_string()));
+        let ev1 = awareness.apply_update_returning_event(online);
+        assert_eq!(ev1.added(), &[2]);
+        assert!(!awareness.get_states().get(&2).unwrap().is_deleted());
+
+        // y-protocols@1.0.6 offline broadcast with EQUAL clock (5) and content
+        // "null".
+        let mut offline_same_clock = AwarenessStates::new();
+        offline_same_clock.insert(2, AwarenessState::new(5, "null".to_string()));
+        let ev2 = awareness.apply_update_returning_event(offline_same_clock);
+        assert_eq!(ev2.removed(), &[2]);
+        assert!(awareness.get_states().get(&2).unwrap().is_deleted());
+        assert_eq!(awareness.get_states().get(&2).unwrap().clock(), 5);
+
+        // Duplicate equal-clock null is ignored (no duplicate remove).
+        let mut dup_offline = AwarenessStates::new();
+        dup_offline.insert(2, AwarenessState::new(5, "null".to_string()));
+        let ev3 = awareness.apply_update_returning_event(dup_offline);
+        assert!(ev3.is_empty());
+
+        // Remote higher-clock deletion preserves remote clock so stale online
+        // packets cannot resurrect the peer.
+        let mut peer3_online = AwarenessStates::new();
+        peer3_online.insert(3, AwarenessState::new(2, r#"{"user":"bob"}"#.to_string()));
+        awareness.apply_update(peer3_online);
+
+        let mut peer3_offline = AwarenessStates::new();
+        peer3_offline.insert(3, AwarenessState::new(10, "null".to_string()));
+        let ev4 = awareness.apply_update_returning_event(peer3_offline);
+        assert_eq!(ev4.removed(), &[3]);
+        assert_eq!(awareness.get_states().get(&3).unwrap().clock(), 10);
+
+        let mut stale_online = AwarenessStates::new();
+        stale_online.insert(3, AwarenessState::new(6, r#"{"user":"bob-stale"}"#.to_string()));
+        let ev5 = awareness.apply_update_returning_event(stale_online);
+        assert!(ev5.is_empty());
+        assert!(awareness.get_states().get(&3).unwrap().is_deleted());
+    }
+
+    #[test]
+    fn test_awareness_rotate_local_id_reannounces_and_clears_old() {
+        let mut awareness = Awareness::new(100);
+        awareness.set_local_state(r#"{"cursor":42}"#.to_string());
+
+        // Suppose another peer already had state under 200 at clock 7.
+        let mut remote = AwarenessStates::new();
+        remote.insert(200, AwarenessState::new(7, r#"{"cursor":1}"#.to_string()));
+        awareness.apply_update(remote);
+
+        let ev = awareness.set_local_id(200);
+        assert_eq!(awareness.local_id(), 200);
+        assert_eq!(ev.removed(), &[100]);
+        assert_eq!(ev.updated(), &[200]);
+
+        // Old ID is marked deleted, new ID has our state with clock > 7.
+        assert!(awareness.get_states().get(&100).unwrap().is_deleted());
+        let new_state = awareness.get_states().get(&200).unwrap();
+        assert_eq!(new_state.content(), r#"{"cursor":42}"#);
+        assert_eq!(new_state.clock(), 8);
+
+        // Wire roundtrip of encoded update: peer sees 200 added; 100 is already
+        // deleted ("null") so it records the clock floor without emitting
+        // added.
+        let bytes = awareness.encode_update(Some(&[100, 200])).unwrap();
+        let mut peer = Awareness::new(999);
+        let peer_ev = peer.apply_update_v1(&bytes).unwrap();
+        assert_eq!(peer_ev.added(), &[200]);
+        assert!(peer_ev.updated().is_empty());
+        assert!(peer_ev.removed().is_empty());
+        assert!(peer.get_states().get(&100).unwrap().is_deleted());
+        assert_eq!(peer.get_states().get(&200).unwrap().content(), r#"{"cursor":42}"#);
+    }
+
+    #[test]
+    fn first_packet_offline_null_does_not_emit_added_and_records_clock_floor() {
+        let mut peer = Awareness::new(1);
+        let mut offline = AwarenessStates::new();
+        offline.insert(42, AwarenessState::new(5, "null".to_string()));
+        let ev = peer.apply_update_returning_event(offline);
+        assert!(ev.added().is_empty(), "first-seen offline null must not emit added");
+        assert!(ev.updated().is_empty());
+        assert!(ev.removed().is_empty());
+        assert!(peer.get_states().get(&42).unwrap().is_deleted());
+        assert_eq!(peer.get_states().get(&42).unwrap().clock(), 5);
+
+        // Stale online packet with older clock must not resurrect client 42.
+        let mut stale = AwarenessStates::new();
+        stale.insert(42, AwarenessState::new(4, r#"{"user":"stale"}"#.to_string()));
+        let ev_stale = peer.apply_update_returning_event(stale);
+        assert!(ev_stale.is_empty());
+        assert!(peer.get_states().get(&42).unwrap().is_deleted());
     }
 }
