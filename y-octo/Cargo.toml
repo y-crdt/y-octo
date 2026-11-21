@@ -7,6 +7,7 @@ authors = [
 ]
 description = "High-performance and thread-safe CRDT implementation compatible with Yjs"
 edition = "2024"
+exclude = ["tests/oracle/**/*"]
 homepage = "https://github.com/toeverything/y-octo"
 include = ["src/**/*", "benches/**/*", "bin/**/*", "LICENSE", "README.md"]
 keywords = ["collaboration", "crdt", "crdts", "yjs", "yata"]
@@ -14,7 +15,7 @@ license = "MIT"
 name = "y-octo"
 readme = "README.md"
 repository = "https://github.com/toeverything/y-octo"
-version = "0.2.0"
+version = "0.3.0"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 

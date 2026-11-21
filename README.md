@@ -41,14 +41,14 @@ The default decoder accepts `Any` nesting up to 128 levels. For trusted inputs, 
 
 ## Performance
 
-| Tasks | automerge v0.12.0 (2026-09-16) | loro v1.18.0 (2026-11-16) | diamond-types v1.0.0 (2022-08-25) | y-octo v0.2.0 (2026-11-20) | yrs v0.28.2 (2026-11-19) |
+| Tasks | automerge v0.12.0 (2026-09-16) | loro v1.18.0 (2026-11-16) | diamond-types v1.0.0 (2022-08-25) | y-octo v0.3.0 | yrs v0.28.2 (2026-11-19) |
 | :---- | :---- | :---- | :---- | :---- | :---- |
-| automerge - apply | 2136.55 ± 8.88 ms | 49.37 ± 0.43 ms | 9.57 ± 0.07 ms | 189.98 ± 1.27 ms | 2358.02 ± 20.35 ms |
-| automerge - decode time | 210.56 ± 2.51 ms | 106.23 ± 0.21 us | 1.46 ± 0.01 ms | 4.80 ± 0.03 ms | 2.45 ± 0.02 ms |
-| automerge - encode time | 155.90 ± 1.51 us | 174.01 ± 1.31 us | 717.02 ± 3.28 us | 566.79 ± 3.97 us | 426.80 ± 6.78 us |
-| concurrent list inserts | 77.62 ± 0.36 ms | 102.69 ± 1.65 ms | 35.17 ± 0.25 ms | 7.92 ± 0.18 ms | 7.76 ± 0.07 ms |
-| list_random_insert_1k | 337.38 ± 4.14 ms | 8.20 ± 0.12 ms | 2.56 ± 0.00 ms | 1.77 ± 0.01 ms | 3.19 ± 0.02 ms |
-| parallel applying automerge edits | 8351.01 ± 15.00 ms | 182.84 ± 1.47 ms | 91.69 ± 0.79 ms | 379.84 ± 5.76 ms | 6264.56 ± 126.42 ms |
+| automerge - apply | 2136.55 ± 8.88 ms | 49.37 ± 0.43 ms | 9.57 ± 0.07 ms | 173.53 ± 0.19 ms | 2358.02 ± 20.35 ms |
+| automerge - decode time | 210.56 ± 2.51 ms | 106.23 ± 0.21 us | 1.46 ± 0.01 ms | 4.15 ± 0.01 ms | 2.45 ± 0.02 ms |
+| automerge - encode time | 155.90 ± 1.51 us | 174.01 ± 1.31 us | 717.02 ± 3.28 us | 565.71 ± 1.83 us | 426.80 ± 6.78 us |
+| concurrent list inserts | 77.62 ± 0.36 ms | 102.69 ± 1.65 ms | 35.17 ± 0.25 ms | 7.70 ± 0.02 ms | 7.76 ± 0.07 ms |
+| list_random_insert_1k | 337.38 ± 4.14 ms | 8.20 ± 0.12 ms | 2.56 ± 0.00 ms | 1.75 ± 0.00 ms | 3.19 ± 0.02 ms |
+| parallel applying automerge edits | 8351.01 ± 15.00 ms | 182.84 ± 1.47 ms | 91.69 ± 0.79 ms | 366.23 ± 4.90 ms | 6264.56 ± 126.42 ms |
 
 Measured on Apple M5 Max with rustc 1.96.0 and crdt-bench-native revision `0452093`. Each value is the Criterion mean ± standard error across 10 samples. The y-octo adapter uses Update V1 with `large_refs`; the Yrs adapter uses Update V2.
 
@@ -58,40 +58,34 @@ Ref: https://github.com/darkskygit/crdt-bench-native
 
 ## Features
 
-- ✅ Collaborative Text
-  - ✅ Read and write styled Unicode compatible data.
-  - ✅ Add, modify and delete text styles.
-  - ✅ Embedded JS data types.
-  - 🚧 Embedded collaborative types.
-  - ✅ Collaborative types of thread-safe.
-- Collaborative Array
-  - ✅ Add, modify, and delete basic JS data types.
-  - ✅ Recursively add, modify, and delete collaborative types.
-  - ✅ Collaborative types of thread-safe.
-  - ✅ Recursive event subscription
-- Collaborative Map
-  - ✅ Add, modify, and delete basic JS data types.
-  - ✅ Recursively add, modify, and delete collaborative types.
-  - ✅ Collaborative types of thread-safe.
-  - ✅ Recursive event subscription
-- 🚧 Collaborative Xml (Fragment / Element)
-- ✅ Collaborative Doc Container
-  - ✅ YATA CRDT state apply/diff compatible with [yjs]
-  - ✅ State sync of thread-safe.
-  - ✅ Store all collaborative types and JS data types
-  - ✅ Update event subscription.
-  - ✅ Sub Document.
-- ✅ Collaborative Tools
-  - ✅ Undo/Redo Manager
-  - ✅ RelativePosition / AbsolutePosition
-  - ✅ Yjs style transact (not real transaction, see yjs's [doc](https://docs.yjs.dev/getting-started/working-with-shared-types#transactions))
-  - ✅ y-protocols/sync
-- ✅ Yjs binary encoding
-  - ✅ Awareness encoding.
-  - ✅ Primitive type encoding.
-  - ✅ Sync Protocol encoding.
-  - ✅ Yjs update v1 encoding.
-  - 🚧 Yjs update v2 encoding.
+- ✅: Supported by yjs; supported and compatible with y-octo
+- 🚧: Supported by yjs; in development for y-octo
+- ➕: Exclusive to y-octo
+
+- **Collaborative text**
+  - ✅ Rich-text deltas, formatting attributes, and UTF-16 offsets
+  - ✅ Embedded JavaScript values (`Any`)
+  - 🚧 Inserting shared types as text embeds
+- **Shared collections and XML**
+  - ✅ Arrays and maps containing plain values or nested shared types
+  - ✅ XML fragments, elements, text nodes, and hooks
+- **Documents and transactions**
+  - ✅ Group edits into a transaction and observe changes to a document or subtree
+  - ✅ Track subdocuments added or removed by a transaction
+  - ➕ Share document and type handles across Rust threads
+- **Editor tools**
+  - ✅ Scoped undo and redo with tracked origins and independent undo stacks
+  - ✅ Relative positions for cursors and selections across peer edits
+  - ➕ Manage nested transaction frames, type paths, and undo stacks by ID with `DocSession`
+- **Updates and protocols**
+  - ✅ Encode and apply Update V1, exchange state vectors, and diff or merge encoded updates
+  - ✅ Exchange sync and awareness messages with `y-protocols` peers
+  - 🚧 Update V2 encoding and decoding
+  - ➕ Validate a complete V1 update with `validate_update_v1`
+  - ➕ Query a full V1 update through the read-only `ReadDoc` view
+  - ➕ Compute a V1 delta back to an ancestor snapshot with `revert_update_v1`
+- **WebAssembly**
+  - ➕ Use `DocSession` from JavaScript through a Wasm module with no host imports
 
 ## Testing & Linting
 
