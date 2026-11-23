@@ -4,28 +4,28 @@ impl_type!(Array);
 
 impl ListType for Array {}
 
-/// The value at `index` of the array type `parent` (data `ty`). The caller
-/// holds the store lock.
-pub(crate) fn array_get(parent: &YTypeRef, ty: &YType, index: u64) -> Option<Value> {
-    let (item, offset) = item_at(parent, ty, index)?;
-    item.get().and_then(|item| {
+/// The value at `index` of the array type `ty`. The caller holds the store
+/// lock.
+pub(crate) fn array_get(cx: TypeCx<'_>, ty: &YType, index: u64) -> Option<Value> {
+    let (item, offset) = item_at(&cx.types.items, ty, index)?;
+    item.and_then(|i| cx.types.items.get(i)).and_then(|item| {
         // TODO: rewrite to content.read(&mut [Any])
         match &item.content {
             Content::Any(any) => any.get(offset as usize).map(|any| Value::Any(any.clone())),
-            _ => Some(Value::from(&item.content)),
+            _ => Some(Value::from_content(cx, &item.content)),
         }
     })
 }
 
 /// The values of an array type. The caller holds the store lock while
 /// iterating.
-pub(crate) fn array_values(ty: &YType) -> impl Iterator<Item = Value> + '_ {
-    ListIterator::new(ty)
+pub(crate) fn array_values<'a>(cx: TypeCx<'a>, ty: &'a YType) -> impl Iterator<Item = Value> + 'a {
+    ListIterator::new(&cx.types.items, ty)
         .filter(|item| item.countable())
-        .flat_map(|item| -> Box<dyn Iterator<Item = Value> + '_> {
+        .flat_map(move |item| -> Box<dyn Iterator<Item = Value> + 'a> {
             match &item.content {
                 Content::Any(any) if !any.is_empty() => Box::new(any.iter().cloned().map(Value::Any)),
-                content => Box::new(std::iter::once(Value::from(content))),
+                content => Box::new(std::iter::once(Value::from_content(cx, content))),
             }
         })
 }
@@ -48,25 +48,21 @@ impl Array {
 
     pub fn get(&self, index: u64) -> Option<Value> {
         let parent = self.as_inner();
-        or_released(parent.read(|_, ty| array_get(parent, ty, index)))
+        or_released(parent.read(|store, ty| array_get(parent.cx(store), ty, index)))
     }
 
     /// A snapshot of the values, taken under one store read lock.
     pub fn iter(&self) -> std::vec::IntoIter<Value> {
-        or_released(self.as_inner().read(|_, ty| array_values(ty).collect::<Vec<_>>())).into_iter()
+        let parent = self.as_inner();
+        or_released(parent.read(|store, ty| array_values(parent.cx(store), ty).collect::<Vec<_>>())).into_iter()
     }
 
     pub fn push<V: Into<Value>>(&mut self, val: V) -> JwstCodecResult {
-        let parent = self.as_inner();
-        let content: Content = val.into().into();
-        parent.write(|store, ty| {
-            let len = ty.len;
-            list_insert(parent, store, ty, len, content)
-        })
+        self.push_value(val.into())
     }
 
     pub fn insert<V: Into<Value>>(&mut self, idx: u64, val: V) -> JwstCodecResult {
-        self.insert_at(idx, val.into().into())
+        self.insert_value_at(idx, val.into())
     }
 
     pub fn remove(&mut self, idx: u64, len: u64) -> JwstCodecResult {

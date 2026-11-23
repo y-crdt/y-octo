@@ -362,7 +362,7 @@ fn split_and_merge_keep_resolution() {
 }
 
 /// A redo chain old -> middle -> new of a nested text, where old and middle
-/// have been garbage collected into `Node::GC`: the range map still leads to
+/// have been garbage collected into GC blocks: the range map still leads to
 /// the newest copy (Yjs loses the chain with the collected item), and without
 /// following redos the position is gone.
 #[test]

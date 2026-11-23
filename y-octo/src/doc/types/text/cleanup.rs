@@ -1,7 +1,10 @@
 //! Formatting cleanup ported from Yjs v13.6.33 `types/YText.js` (MIT).
 
 use super::*;
-use crate::{YTypeKind, doc::DeleteSet};
+use crate::{
+    YTypeKind,
+    doc::{Carrier, DeleteSet},
+};
 
 /// Values plus their originating format item. JS object/array attributes use
 /// reference equality in cleanupFormattingGap, not structural Any equality.
@@ -94,37 +97,41 @@ fn number(value: &Any) -> Option<f64> {
 
 pub(super) fn cleanup_formatting_gap(
     store: &mut DocStore,
-    ty: &mut YType,
+    ty: TypeIdx,
     mut start: ItemRef,
     curr: &ItemRef,
     start_attrs: &FormatAttributes,
     curr_attrs: &mut FormatAttributes,
 ) {
-    let mut end = start.clone();
+    let mut end = start;
     let mut end_formats = BTreeMap::new();
-    while let Some(item) = end.get() {
+    while let Some(item) = end.and_then(|i| store.type_arena.items.get(i)) {
         if item.countable() && !item.deleted() {
             break;
         }
         if !item.deleted()
-            && let Content::Format { key, .. } = &item.content
+            && let Some((key, _)) = item.content.as_format()
         {
             end_formats.insert(key.clone(), item.id);
         }
-        end = item.right.clone();
+        end = item.right;
     }
     let mut reached_curr = false;
-    while !start.ptr_eq(&end) {
-        if curr.ptr_eq(&start) {
+    while !(start == end) {
+        if *curr == start {
             reached_curr = true;
         }
-        let item = start.get().expect("gap end is reachable");
+        let item = start
+            .and_then(|i| store.type_arena.items.get(i))
+            .expect("gap end is reachable");
+        let next = item.right;
+        let mut remove = false;
         if !item.deleted()
-            && let Content::Format { key, value } = &item.content
+            && let Some((key, value)) = item.content.as_format()
         {
             let same_start = start_attrs.matches(key, value, item.id);
             if end_formats.get(key) != Some(&item.id) || same_start {
-                store.delete_item(item, Some(ty));
+                remove = true;
                 if !reached_curr && curr_attrs.matches(key, value, item.id) && !same_start {
                     if let Some(entry) = start_attrs.0.get(key) {
                         curr_attrs.0.insert(key.clone(), entry.clone());
@@ -133,57 +140,62 @@ pub(super) fn cleanup_formatting_gap(
                     }
                 }
             }
-            if !reached_curr && !item.deleted() {
+            if !reached_curr && !remove {
                 curr_attrs.update(key, value, item.id);
             }
         }
-        start = item.right.clone();
+        if remove {
+            store.delete_item(start.expect("current item"), Some(ty));
+        }
+        start = next;
     }
 }
 
-fn cleanup_contextless_gap(store: &mut DocStore, ty: &mut YType, mut item_ref: ItemRef) {
-    while let Some(item) = item_ref.get() {
+fn cleanup_contextless_gap(store: &mut DocStore, ty: TypeIdx, mut item_ref: ItemRef) {
+    while let Some(item) = item_ref.and_then(|i| store.type_arena.items.get(i)) {
         if item
             .right
-            .get()
+            .and_then(|i| store.type_arena.items.get(i))
             .is_none_or(|right| right.countable() && !right.deleted())
         {
             break;
         }
-        item_ref = item.right.clone();
+        item_ref = item.right;
     }
     let mut attrs = std::collections::BTreeSet::new();
-    while let Some(item) = item_ref.get() {
+    while let Some(item) = item_ref.and_then(|i| store.type_arena.items.get(i)) {
+        let next = item.left;
         if item.countable() && !item.deleted() {
             break;
         }
         if !item.deleted()
-            && let Content::Format { key, .. } = &item.content
+            && let Some((key, _)) = item.content.as_format()
             && !attrs.insert(key.clone())
         {
-            store.delete_item(item, Some(ty));
+            store.delete_item(item_ref.expect("current item"), Some(ty));
         }
-        item_ref = item.left.clone();
+        item_ref = next;
     }
 }
 
-fn cleanup_text(store: &mut DocStore, ty: &mut YType) {
-    let mut start = ty.start.clone();
-    let mut end = start.clone();
+fn cleanup_text(store: &mut DocStore, ty: TypeIdx) {
+    let mut start = store.type_arena[ty].start;
+    let mut end = start;
     let mut start_attrs = FormatAttributes::default();
     let mut current_attrs = FormatAttributes::default();
-    while let Some(item) = end.get() {
+    while let Some(item) = end.and_then(|i| store.type_arena.items.get(i)) {
+        let next = item.right;
         if !item.deleted() {
             match &item.content {
-                Content::Format { key, value } => current_attrs.update(key, value, item.id),
+                Content::Format(format) => current_attrs.update(&format.key, &format.value, item.id),
                 _ => {
                     cleanup_formatting_gap(store, ty, start, &end, &start_attrs, &mut current_attrs);
                     start_attrs = current_attrs.clone();
-                    start = end.clone();
+                    start = end;
                 }
             }
         }
-        end = item.right.clone();
+        end = next;
     }
 }
 
@@ -194,8 +206,8 @@ pub(in crate::doc) struct FormattingCleanup;
 
 #[derive(Default)]
 pub(in crate::doc) struct CleanupPlan {
-    full: std::collections::HashSet<YTypeRef>,
-    gaps: Vec<(YTypeRef, Id)>,
+    full: std::collections::HashSet<TypeIdx>,
+    gaps: Vec<(TypeIdx, Id)>,
 }
 impl CleanupPlan {
     pub(in crate::doc) fn after_remote(
@@ -208,13 +220,16 @@ impl CleanupPlan {
         // Same gate as YText._callObserver: a pre-existing formatted text was
         // touched by a remote transaction. New nested types are not observers.
         let needed = changed.keys().any(|parent| {
-            parent.ty().is_some_and(|ty| {
+            store.type_arena.get(*parent).is_some_and(|ty| {
                 matches!(ty.kind(), YTypeKind::Text | YTypeKind::XMLText)
                     && ty.has_formatting
-                    && ty
-                        .item
-                        .get()
-                        .is_none_or(|item| !item.deleted() && item.id.clock < before.get(&item.id.client))
+                    && match ty.carrier(&store.type_arena.items) {
+                        Carrier::Live(item) => !item.deleted() && item.id.clock < before.get(&item.id.client),
+                        // a root
+                        Carrier::Unset => true,
+                        // nothing is left in a retired type
+                        Carrier::Retired => false,
+                    }
             })
         });
         let mut plan = Self::default();
@@ -226,10 +241,10 @@ impl CleanupPlan {
             if *clock > start {
                 visit_items(store, *client, start..*clock, |item| {
                     if !item.deleted()
-                        && matches!(item.content, Content::Format { .. })
-                        && let Some(Parent::Type(parent)) = &item.parent
+                        && matches!(item.content, Content::Format(_))
+                        && let Some(parent) = &item.parent
                     {
-                        plan.full.insert(parent.clone());
+                        plan.full.insert(*parent);
                     }
                 });
             }
@@ -237,16 +252,16 @@ impl CleanupPlan {
         for (client, ranges) in deleted.iter() {
             for range in ranges {
                 visit_items(store, *client, range, |item| {
-                    let Some(Parent::Type(parent)) = &item.parent else {
+                    let Some(parent) = &item.parent else {
                         return;
                     };
-                    if !parent.ty().is_some_and(|ty| ty.has_formatting) {
+                    if !store.type_arena.get(*parent).is_some_and(|ty| ty.has_formatting) {
                         return;
                     }
-                    if matches!(item.content, Content::Format { .. }) {
-                        plan.full.insert(parent.clone());
+                    if matches!(item.content, Content::Format(_)) {
+                        plan.full.insert(*parent);
                     } else {
-                        plan.gaps.push((parent.clone(), item.id));
+                        plan.gaps.push((*parent, item.id));
                     }
                 });
             }
@@ -263,18 +278,13 @@ impl CleanupPlan {
             }
             // GC/merge may have replaced the old struct. Resolve by clock,
             // rather than keeping a temporary Item reference across commit.
-            let Some(Node::Item(item)) = store.get_node(id) else {
+            let Some(item) = store.get_node(id).and_then(|n| n.as_item()) else {
                 continue;
             };
-            // SAFETY: document write lock held, no type data is borrowed.
-            let mut ty = unsafe { parent.ty_mut() }.unwrap();
-            cleanup_contextless_gap(store, &mut ty, item);
+            cleanup_contextless_gap(store, parent, Some(item));
         }
         for parent in self.full {
-            // SAFETY: document write lock held; each type is visited
-            // separately.
-            let mut ty = unsafe { parent.ty_mut() }.unwrap();
-            cleanup_text(store, &mut ty);
+            cleanup_text(store, parent);
         }
     }
 }
@@ -285,9 +295,13 @@ fn visit_items(store: &DocStore, client: u64, range: std::ops::Range<u64>, mut v
     let Some(start) = DocStore::get_node_index(nodes, range.start) else {
         return;
     };
-    for node in nodes.iter().skip(start).take_while(|node| node.clock() < range.end) {
-        if let Node::Item(item) = node {
-            visit(item.get().unwrap());
+    for node in nodes
+        .nodes(client)
+        .skip(start)
+        .take_while(|node| node.clock() < range.end)
+    {
+        if let Some(item) = node.as_item() {
+            visit(store.type_arena.items.get(item).expect("stored item"));
         }
     }
 }

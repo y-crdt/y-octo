@@ -17,25 +17,26 @@ impl Text {
     /// Deleted content is absent; use the document delete set for causal
     /// checks.
     pub fn identity_runs(&self) -> JwstCodecResult<Vec<TextIdentityRun>> {
-        self.as_inner().read(|_, ty| {
-            ty.identity()?;
-            identity_runs(ty)
+        self.as_inner().read(|store, ty| {
+            ty.identity(&store.type_arena.items)?;
+            identity_runs(&store.type_arena.items, ty)
         })?
     }
 }
 
 /// The caller holds the store lock.
-pub(crate) fn identity_runs(ty: &YType) -> JwstCodecResult<Vec<TextIdentityRun>> {
+pub(crate) fn identity_runs(items: &crate::doc::ItemSpace, ty: &YType) -> JwstCodecResult<Vec<TextIdentityRun>> {
     {
         let mut runs = Vec::new();
         let mut attributes = TextAttributes::new();
-        for item in ListIterator::new(ty) {
+        for item in ListIterator::new(items, ty) {
             let insert = match &item.content {
-                Content::Format { key, value } => {
+                Content::Format(format) => {
+                    let (key, value) = (&format.key, &format.value);
                     if is_nullish(value) {
                         attributes.remove(key.as_str());
                     } else {
-                        attributes.insert(key.to_string(), value.as_ref().clone());
+                        attributes.insert(key.to_string(), value.clone());
                     }
                     continue;
                 }

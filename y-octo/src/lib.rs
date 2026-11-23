@@ -1,9 +1,7 @@
-// The wire codecs need no unsafe code; the lint level on a `mod` item covers
-// the whole module. `doc` relies on `unsafe` for `Somr`.
-#[forbid(unsafe_code)]
+#![forbid(unsafe_code)]
+
 mod codec;
 mod doc;
-#[forbid(unsafe_code)]
 mod protocol;
 mod sync;
 
@@ -39,7 +37,6 @@ pub use doc::{
 pub(crate) use doc::{Content, Item};
 #[cfg(feature = "debug")]
 pub use doc::{DocMemoryLayout, memory_layout, profiling_counters, reset_profiling_counters};
-use log::warn;
 use nom::IResult;
 pub use protocol::{
     AwarenessState, AwarenessStates, DocMessage, SyncMessage, SyncMessageScanner, read_doc_message, read_sync_message,

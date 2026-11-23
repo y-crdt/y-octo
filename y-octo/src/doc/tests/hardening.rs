@@ -278,6 +278,80 @@ fn deep_nesting_deletes_and_collects_without_recursion() {
     });
 }
 
+// Mounting deeply nested preliminary types used to recurse once per level
+// during capture, integration, and drop.
+#[test]
+#[cfg_attr(miri, ignore)]
+fn deep_preliminary_nesting_mounts_without_recursion() {
+    on_small_stack(|| {
+        let doc = Doc::with_client(1);
+        let mut root = doc.get_or_create_array("root").unwrap();
+        let outermost = doc.create_array().unwrap();
+        let mut current = outermost.clone();
+        for _ in 1..DEEP {
+            let child = doc.create_array().unwrap();
+            current.push(child.clone()).unwrap();
+            current = child;
+        }
+        current.push(1).unwrap();
+        assert_eq!(doc.get_state_vector().get(&1), 0);
+
+        root.push(outermost).unwrap();
+        assert_eq!(doc.get_state_vector().get(&1), (DEEP + 1) as u64);
+
+        let mut cursor = root;
+        for _ in 0..DEEP {
+            let Some(Value::Array(next)) = cursor.get(0) else {
+                panic!("expected nested array");
+            };
+            cursor = next;
+        }
+        assert_eq!(cursor.get(0), Some(Value::Any(Any::Integer(1))));
+    });
+}
+
+// Shallow preliminary tree with a nested type in the middle (followed by
+// siblings) and reverse-inserted map keys must preserve exact DFS pre-order
+// clock allocation and V1 wire bytes matching the original recursive
+// PreparedType implementation.
+#[test]
+fn preliminary_shallow_tree_preserves_dfs_preorder_and_wire_bytes() {
+    let doc = Doc::with_client(42);
+    let mut root = doc.get_or_create_array("root").unwrap();
+    let mut outer = doc.create_map().unwrap();
+    let mut mid = doc.create_array().unwrap();
+    let mut inner = doc.create_map().unwrap();
+
+    inner.insert("b".to_string(), 2).unwrap();
+    inner.insert("a".to_string(), 1).unwrap();
+
+    mid.push("first").unwrap();
+    mid.push(inner.clone()).unwrap();
+    mid.push("last").unwrap();
+
+    outer.insert("z_tail".to_string(), 99).unwrap();
+    outer.insert("m_mid".to_string(), mid.clone()).unwrap();
+    outer.insert("a_head".to_string(), 10).unwrap();
+
+    root.push(outer.clone()).unwrap();
+
+    assert_eq!(outer.id(), Some(Id::new(42, 0)));
+    assert_eq!(mid.id(), Some(Id::new(42, 2)));
+    assert_eq!(inner.id(), Some(Id::new(42, 4)));
+    assert_eq!(doc.get_state_vector(), StateVector::from([(42, 9)]));
+
+    let encoded = doc.encode_update_v1().unwrap();
+    // Exact V1 wire bytes verified against base commit f2146f53's recursive
+    // PreparedType implementation.
+    const EXPECTED: &[u8] = &[
+        1, 9, 42, 0, 7, 1, 4, 114, 111, 111, 116, 1, 40, 0, 42, 0, 6, 97, 95, 104, 101, 97, 100, 1, 125, 10, 39, 0, 42,
+        0, 5, 109, 95, 109, 105, 100, 0, 8, 0, 42, 2, 1, 119, 5, 102, 105, 114, 115, 116, 135, 42, 3, 1, 40, 0, 42, 4,
+        1, 97, 1, 125, 1, 40, 0, 42, 4, 1, 98, 1, 125, 2, 136, 42, 4, 1, 119, 4, 108, 97, 115, 116, 40, 0, 42, 0, 6,
+        122, 95, 116, 97, 105, 108, 1, 125, 163, 1, 0,
+    ];
+    assert_eq!(encoded.as_slice(), EXPECTED);
+}
+
 // A format item stored as a map value reads as undefined, as in Yjs,
 // whether it names its key or inherits it from its left neighbor.
 #[test]

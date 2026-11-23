@@ -486,7 +486,7 @@ mod tests {
     use crate::{
         Any, Content, CrdtWrite, CrdtWriter, Doc, DocOptions, Id, Map, RawEncoder, StateVector, TextAttributes,
         TextDeltaOp, TextInsert, Update, Value,
-        doc::{DeleteSet, HashMap, Item, Node, Parent, Somr, YType, YTypeRef},
+        doc::{DeleteSet, HashMap, TypeArena, TypeCx, WireContent, WireItem, WireParent, WireStruct, YType, YTypeRef},
     };
 
     type UpdateCase = (&'static str, fn() -> Vec<u8>);
@@ -535,48 +535,68 @@ mod tests {
         }
     }
 
-    fn mutable_content_json(content: &Content) -> JsonValue {
+    /// A stored value read under the store lock: a subdocument as its JSON, or
+    /// a value to project once the lock is released (the public readers of a
+    /// nested type take it again).
+    type Snapshot = Result<JsonValue, Value>;
+
+    fn snapshot(cx: TypeCx<'_>, content: &Content) -> Snapshot {
         match content {
-            Content::Doc { guid, opts } => serde_json::json!({
-                "guid": guid,
-                "options": opts,
-            }),
-            content => mutable_value_json(Value::from(content)),
+            Content::Doc(doc) => Ok(serde_json::json!({
+                "guid": doc.guid,
+                "options": doc.opts,
+            })),
+            content => Err(Value::from_content(cx, content)),
         }
     }
 
-    fn mutable_map_json(map: Map) -> JsonValue {
-        mutable_type_map_json(map.0.ty().unwrap())
+    fn snapshot_json(snapshot: Snapshot) -> JsonValue {
+        snapshot.unwrap_or_else(mutable_value_json)
     }
 
-    fn mutable_type_map_json(ty: &YType) -> JsonValue {
+    fn mutable_map_json(map: Map) -> JsonValue {
+        mutable_type_map_json(&map.0)
+    }
+
+    fn mutable_type_map_json(ty: &YTypeRef) -> JsonValue {
+        let entries = ty
+            .read_cx(|cx, ty| {
+                ty.map_iter()
+                    .filter_map(|(key, item)| {
+                        let item = cx.types.items.get((*item)?)?;
+                        (!item.deleted()).then(|| (key.to_string(), snapshot(cx, &item.content)))
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap();
         JsonValue::Object(
-            ty.map
-                .iter()
-                .filter_map(|(key, item)| {
-                    let item = item.get()?;
-                    (!item.deleted()).then(|| (key.to_string(), mutable_content_json(&item.content)))
-                })
+            entries
+                .into_iter()
+                .map(|(key, value)| (key, snapshot_json(value)))
                 .collect(),
         )
     }
 
-    fn mutable_xml_json(ty: &YTypeRef) -> JsonValue {
-        let ty = ty.ty().unwrap();
-        let mut list = Vec::new();
-        let mut cursor = ty.start.clone();
-        while let Some(item) = cursor.get() {
-            let right = item.right.clone();
-            if !(item.deleted() || matches!(item.content, Content::Format { .. })) {
-                list.push(mutable_content_json(&item.content));
-            }
-            cursor = right;
-        }
+    fn mutable_xml_json(ty_ref: &YTypeRef) -> JsonValue {
+        let (kind, tag, list) = ty_ref
+            .read_cx(|cx, ty| {
+                let mut list = Vec::new();
+                let mut cursor = ty.start;
+                while let Some(item) = cursor.and_then(|i| cx.types.items.get(i)) {
+                    let right = item.right;
+                    if !(item.deleted() || matches!(item.content, Content::Format(_))) {
+                        list.push(snapshot(cx, &item.content));
+                    }
+                    cursor = right;
+                }
+                (ty.kind(), ty.name().map(str::to_owned), list)
+            })
+            .unwrap();
         serde_json::json!({
-            "kind": ty.kind().as_str(),
-            "tag": ty.name.as_deref(),
-            "map": mutable_type_map_json(ty),
-            "list": list,
+            "kind": kind.as_str(),
+            "tag": tag,
+            "map": mutable_type_map_json(ty_ref),
+            "list": list.into_iter().map(snapshot_json).collect::<Vec<_>>(),
         })
     }
 
@@ -621,24 +641,47 @@ mod tests {
         }
     }
 
-    fn item(clock: u64, content: Content, parent: Option<Parent>, parent_sub: Option<&str>) -> Node {
-        Node::from(Item::new(
-            Id::new(1, clock),
-            content,
-            Somr::none(),
-            Somr::none(),
+    std::thread_local! {
+        /// The types of the hand-built items below: an item refers to its
+        /// type by the slot in the arena it is converted with.
+        static TYPES: std::cell::RefCell<TypeArena> = std::cell::RefCell::default();
+    }
+
+    fn type_content(kind: YTypeKind, name: Option<&str>) -> Content {
+        TYPES.with(|types| {
+            Content::Type(
+                types
+                    .borrow_mut()
+                    .alloc(YType::new(kind, name.map(str::to_owned)))
+                    .unwrap(),
+            )
+        })
+    }
+
+    fn item(clock: u64, content: Content, parent: Option<WireParent>, parent_sub: Option<&str>) -> WireItem {
+        let len = content.clock_len();
+        let content = TYPES.with(|types| WireContent::from_content(&types.borrow(), &content).unwrap());
+        WireItem {
+            id: Id::new(1, clock),
+            len,
+            origin_left_id: None,
+            origin_right_id: None,
             parent,
-            parent_sub.map(SmolStr::from),
-        ))
+            parent_sub: parent_sub.map(SmolStr::from),
+            flags: content.wire_flags(),
+            content,
+        }
     }
 
-    fn root_item(clock: u64, content: Content, root: &str, parent_sub: Option<&str>) -> Node {
-        item(clock, content, Some(Parent::String(root.into())), parent_sub)
+    fn root_item(clock: u64, content: Content, root: &str, parent_sub: Option<&str>) -> WireItem {
+        item(clock, content, Some(WireParent::Root(root.into())), parent_sub)
     }
 
-    fn update_bytes(items: Vec<Node>, delete_set: DeleteSet) -> Vec<u8> {
+    fn update_bytes(items: Vec<WireItem>, delete_set: DeleteSet) -> Vec<u8> {
         let mut update = Update::default();
-        update.structs.insert(1, items.into());
+        update
+            .structs
+            .insert(1, items.into_iter().map(|n| WireStruct::Item(Box::new(n))).collect());
         update.delete_set = delete_set;
         update.encode_v1().unwrap()
     }
@@ -712,10 +755,7 @@ mod tests {
             vec![
                 root_item(
                     0,
-                    Content::Doc {
-                        guid: "sub".into(),
-                        opts: Box::new(Any::from(DocOptions::new().with_guid("sub".into()))),
-                    },
+                    Content::doc("sub".into(), Any::from(DocOptions::new().with_guid("sub".into()))),
                     "docs",
                     Some("sub"),
                 ),
@@ -734,70 +774,50 @@ mod tests {
     fn xml_update() -> Vec<u8> {
         update_bytes(
             vec![
-                root_item(
-                    0,
-                    Content::Type(YTypeRef::new(YTypeKind::XMLElement, Some("div".into()))),
-                    "xml",
-                    Some("root"),
-                ),
+                root_item(0, type_content(YTypeKind::XMLElement, Some("div")), "xml", Some("root")),
                 item(
                     1,
                     Content::Any(vec![Any::String("container".into())]),
-                    Some(Parent::Id(Id::new(1, 0))),
+                    Some(WireParent::Item(Id::new(1, 0))),
                     Some("class"),
                 ),
                 item(
                     2,
-                    Content::Type(YTypeRef::new(YTypeKind::XMLText, None)),
-                    Some(Parent::Id(Id::new(1, 0))),
+                    type_content(YTypeKind::XMLText, None),
+                    Some(WireParent::Item(Id::new(1, 0))),
                     None,
                 ),
                 item(
                     3,
                     Content::String("hello".into()),
-                    Some(Parent::Id(Id::new(1, 2))),
+                    Some(WireParent::Item(Id::new(1, 2))),
                     None,
                 ),
                 item(
                     4,
-                    Content::Type(YTypeRef::new(YTypeKind::XMLElement, Some("span".into()))),
-                    Some(Parent::Id(Id::new(1, 0))),
+                    type_content(YTypeKind::XMLElement, Some("span")),
+                    Some(WireParent::Item(Id::new(1, 0))),
                     None,
                 ),
                 item(
                     5,
-                    Content::Type(YTypeRef::new(YTypeKind::XMLText, None)),
-                    Some(Parent::Id(Id::new(1, 4))),
+                    type_content(YTypeKind::XMLText, None),
+                    Some(WireParent::Item(Id::new(1, 4))),
                     None,
                 ),
                 item(
                     6,
                     Content::String("inner".into()),
-                    Some(Parent::Id(Id::new(1, 5))),
+                    Some(WireParent::Item(Id::new(1, 5))),
                     None,
                 ),
-                root_item(
-                    7,
-                    Content::Type(YTypeRef::new(YTypeKind::XMLFragment, None)),
-                    "xml-fragment",
-                    None,
-                ),
-                root_item(
-                    8,
-                    Content::Type(YTypeRef::new(YTypeKind::XMLHook, Some("hook".into()))),
-                    "xml-hook",
-                    None,
-                ),
-                root_item(
-                    9,
-                    Content::Type(YTypeRef::new(YTypeKind::XMLText, None)),
-                    "xml-text",
-                    None,
-                ),
+                root_item(7, type_content(YTypeKind::XMLFragment, None), "xml-fragment", None),
+                root_item(8, type_content(YTypeKind::XMLHook, Some("hook")), "xml-hook", None),
+                root_item(9, type_content(YTypeKind::XMLText, None), "xml-text", None),
                 item(
                     10,
                     Content::String("tail".into()),
-                    Some(Parent::Id(Id::new(1, 9))),
+                    Some(WireParent::Item(Id::new(1, 9))),
                     None,
                 ),
             ],
@@ -817,7 +837,13 @@ mod tests {
         doc.gc().unwrap();
         let bytes = doc.encode_update_v1().unwrap();
         let update = Update::decode_v1(&bytes).unwrap();
-        assert!(update.structs.values().flatten().any(Node::is_gc));
+        assert!(
+            update
+                .structs
+                .values()
+                .flatten()
+                .any(|n| matches!(n, WireStruct::Gc { .. }))
+        );
         bytes
     }
 
@@ -841,8 +867,7 @@ mod tests {
         let update = Update::decode_v1(&bytes).unwrap();
         assert!(update.structs.values().flatten().any(|node| {
             node.as_item()
-                .get()
-                .is_some_and(|item| matches!(item.content, Content::Deleted(_)))
+                .is_some_and(|item| matches!(item.content, WireContent::Deleted(_)))
         }));
         bytes
     }
@@ -999,10 +1024,10 @@ mod tests {
         let subdoc = update_bytes(
             vec![root_item(
                 0,
-                Content::Doc {
-                    guid: "wire-guid".into(),
-                    opts: Box::new(Any::Object(Box::new(HashMap::from_iter([("gc".into(), Any::False)])))),
-                },
+                Content::doc(
+                    "wire-guid".into(),
+                    Any::Object(Box::new(HashMap::from_iter([("gc".into(), Any::False)]))),
+                ),
                 "docs",
                 Some("sub"),
             )],
@@ -1019,7 +1044,7 @@ mod tests {
         }
         let encoded = Update::decode_v1(doc.encode_update_v1().unwrap()).unwrap();
         let item = encoded.structs[&1][0].as_item();
-        let Content::Doc { guid, opts } = &item.get().unwrap().content else {
+        let WireContent::Doc { guid, opts } = &item.unwrap().content else {
             panic!("expected subdocument content");
         };
         assert_eq!(guid, "wire-guid");
@@ -1052,7 +1077,7 @@ mod tests {
         let other = Update::decode_v1(doc2.encode_update_v1().unwrap()).unwrap();
 
         let gapped = Update::merge([low, high, other]);
-        assert!(gapped.structs.get(&1).unwrap().iter().any(Node::is_skip));
+        assert!(gapped.structs.get(&1).unwrap().iter().any(WireStruct::is_skip));
 
         let bytes = gapped.encode_v1().unwrap();
         assert!(Doc::try_from_binary_v1(&bytes).unwrap().has_pending_updates());
@@ -1181,20 +1206,13 @@ mod tests {
         ));
         for clock in [0, 1, 2, 99] {
             for right in [false, true] {
-                let mut invalid = Item::new(
-                    Id::new(1, 0),
-                    Content::String("x".into()),
-                    Somr::none(),
-                    Somr::none(),
-                    Some(Parent::String("text".into())),
-                    None,
-                );
+                let mut invalid = root_item(0, Content::String("x".into()), "text", None);
                 if right {
                     invalid.origin_right_id = Some(Id::new(1, clock));
                 } else {
                     invalid.origin_left_id = Some(Id::new(1, clock));
                 }
-                let bytes = update_bytes(vec![Node::from(invalid)], DeleteSet::default());
+                let bytes = update_bytes(vec![invalid], DeleteSet::default());
                 assert!(matches!(
                     ReadDoc::from_full_update_v1(bytes),
                     Err(ReadError::InvalidUpdate(_))
@@ -1202,16 +1220,9 @@ mod tests {
             }
         }
 
-        let mut dependent = Item::new(
-            Id::new(1, 0),
-            Content::String("x".into()),
-            Somr::none(),
-            Somr::none(),
-            Some(Parent::String("text".into())),
-            None,
-        );
+        let mut dependent = root_item(0, Content::String("x".into()), "text", None);
         dependent.origin_left_id = Some(Id::new(99, 0));
-        let missing_dependency = update_bytes(vec![Node::from(dependent)], DeleteSet::default());
+        let missing_dependency = update_bytes(vec![dependent], DeleteSet::default());
 
         // wire-legal types nesting in a cycle: the first names a parent at or
         // after itself in its own client, which counts as missing (as in
@@ -1220,14 +1231,14 @@ mod tests {
             vec![
                 item(
                     0,
-                    Content::Type(YTypeRef::new(YTypeKind::Map, None)),
-                    Some(Parent::Id(Id::new(1, 1))),
+                    type_content(YTypeKind::Map, None),
+                    Some(WireParent::Item(Id::new(1, 1))),
                     None,
                 ),
                 item(
                     1,
-                    Content::Type(YTypeRef::new(YTypeKind::Map, None)),
-                    Some(Parent::Id(Id::new(1, 0))),
+                    type_content(YTypeKind::Map, None),
+                    Some(WireParent::Item(Id::new(1, 0))),
                     None,
                 ),
             ],

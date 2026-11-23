@@ -7,40 +7,19 @@ use std::{
 use super::*;
 use crate::doc::{StateVector, codec::decoder::v1 as decoder, find_missing_dependency};
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct Update {
-    pub(crate) structs: ClientMap<VecDeque<Node>>,
+    pub(crate) structs: ClientMap<VecDeque<WireStruct>>,
     pub(crate) delete_set: DeleteSet,
 
     /// all unapplicable items that we can't integrate into doc
     /// any item with inconsistent id clock or missing dependency will be put
     /// here
-    pub(crate) pending_structs: ClientMap<VecDeque<Node>>,
+    pub(crate) pending_structs: ClientMap<VecDeque<WireStruct>>,
     /// missing state vector after applying updates
     pub(crate) missing_state: StateVector,
     /// all unapplicable delete set
     pub(crate) pending_delete_set: DeleteSet,
-}
-
-/// Cloning copies every struct: the structs of an update become part of a
-/// document when it is applied, so a clone must not share them.
-impl Clone for Update {
-    fn clone(&self) -> Self {
-        fn copy(structs: &ClientMap<VecDeque<Node>>) -> ClientMap<VecDeque<Node>> {
-            structs
-                .iter()
-                .map(|(client, nodes)| (*client, nodes.iter().map(Node::detached_clone).collect()))
-                .collect()
-        }
-
-        Self {
-            structs: copy(&self.structs),
-            delete_set: self.delete_set.clone(),
-            pending_structs: copy(&self.pending_structs),
-            missing_state: self.missing_state.clone(),
-            pending_delete_set: self.pending_delete_set.clone(),
-        }
-    }
 }
 
 impl<'a> CrdtRead<RawDecoder<'a>> for Update {
@@ -106,7 +85,7 @@ impl OwnedUpdateSink {
 
 impl<'a> decoder::Sink<'a> for OwnedUpdateSink {
     type Output = Update;
-    type Content = Content;
+    type Content = WireContent;
     type Any = Any;
 
     fn begin_client(&mut self, client: u64, count: usize) -> decoder::Result<()> {
@@ -121,7 +100,7 @@ impl<'a> decoder::Sink<'a> for OwnedUpdateSink {
             .structs
             .get_mut(&id.client)
             .unwrap()
-            .push_back(Node::new_gc(id, len));
+            .push_back(WireStruct::Gc { id, len });
         Ok(())
     }
 
@@ -130,69 +109,54 @@ impl<'a> decoder::Sink<'a> for OwnedUpdateSink {
             .structs
             .get_mut(&id.client)
             .unwrap()
-            .push_back(Node::new_skip(id, len));
+            .push_back(WireStruct::Skip { id, len });
         Ok(())
     }
 
-    fn item(&mut self, id: Id, len: u64, meta: decoder::ItemMeta<'a>, content: Content) -> decoder::Result<()> {
+    fn item(&mut self, id: Id, len: u64, meta: decoder::ItemMeta<'a>, content: WireContent) -> decoder::Result<()> {
         let parent = match meta.parent {
-            decoder::WireParent::Root(name) => Some(Parent::String(SmolStr::new(name.value))),
-            decoder::WireParent::Item(id) => Some(Parent::Id(id)),
+            decoder::WireParent::Root(name) => Some(WireParent::Root(SmolStr::new(name.value))),
+            decoder::WireParent::Item(id) => Some(WireParent::Item(id)),
             decoder::WireParent::Inherit => None,
         };
-        let item = Somr::new(Item {
+        let item = Box::new(WireItem {
             id,
             len,
             origin_left_id: meta.origin_left,
             origin_right_id: meta.origin_right,
-            left: Somr::none(),
-            right: Somr::none(),
             parent,
             parent_sub: meta.parent_sub.map(|value| SmolStr::new(value.value)),
-            flags: ItemFlag::from(if content.countable() {
-                item_flags::ITEM_COUNTABLE
-            } else {
-                0
-            }),
+            flags: content.wire_flags(),
             content,
         });
-        if matches!(item.get().unwrap().content, Content::Deleted(_)) {
-            item.get().unwrap().flags.set_deleted();
-        }
-        // SAFETY: the decoded type is detached and owned by this update.
-        if let Content::Type(ty) = &item.get().unwrap().content
-            && let Some(mut ty) = unsafe { ty.ty_mut() }
-        {
-            ty.item = item.clone();
-        }
         self.update
             .structs
             .get_mut(&id.client)
             .unwrap()
-            .push_back(Node::Item(item));
+            .push_back(WireStruct::Item(item));
         Ok(())
     }
 
-    fn content_atom(&mut self, atom: decoder::ContentAtom<'a>) -> decoder::Result<Content> {
+    fn content_atom(&mut self, atom: decoder::ContentAtom<'a>) -> decoder::Result<WireContent> {
         Ok(match atom {
-            decoder::ContentAtom::Deleted(len) => Content::Deleted(len),
-            decoder::ContentAtom::Binary(value) => Content::Binary(value.value.to_vec()),
-            decoder::ContentAtom::String(value) => Content::String(value.value.to_string()),
-            decoder::ContentAtom::Embed(value) => Content::Embed(Box::new(
+            decoder::ContentAtom::Deleted(len) => WireContent::Deleted(len),
+            decoder::ContentAtom::Binary(value) => WireContent::Binary(value.value.to_vec()),
+            decoder::ContentAtom::String(value) => WireContent::String(value.value.to_string()),
+            decoder::ContentAtom::Embed(value) => WireContent::Embed(Box::new(
                 serde_json::from_str(value.value)
                     .map_err(|_| decoder::Error::Codec(JwstCodecError::DamagedDocumentJson))?,
             )),
-            decoder::ContentAtom::Format { key, value } => Content::Format {
+            decoder::ContentAtom::Format { key, value } => WireContent::Format {
                 key: key.value.to_string(),
                 value: Box::new(
                     serde_json::from_str(value.value)
                         .map_err(|_| decoder::Error::Codec(JwstCodecError::DamagedDocumentJson))?,
                 ),
             },
-            decoder::ContentAtom::Type { kind, tag } => Content::Type(YTypeRef::new(
-                YTypeKind::from(kind),
-                tag.map(|value| value.value.to_string()),
-            )),
+            decoder::ContentAtom::Type { kind, tag } => WireContent::Type {
+                kind: kind.into(),
+                name: tag.map(|value| value.value.to_string()),
+            },
         })
     }
 
@@ -207,8 +171,8 @@ impl<'a> decoder::Sink<'a> for OwnedUpdateSink {
         Ok(())
     }
 
-    fn json_finish(&mut self) -> decoder::Result<Content> {
-        Ok(Content::Json(std::mem::take(&mut self.json)))
+    fn json_finish(&mut self) -> decoder::Result<WireContent> {
+        Ok(WireContent::Json(std::mem::take(&mut self.json)))
     }
 
     fn any_content_start(&mut self, count: usize) -> decoder::Result<()> {
@@ -221,12 +185,12 @@ impl<'a> decoder::Sink<'a> for OwnedUpdateSink {
         Ok(())
     }
 
-    fn any_content_finish(&mut self) -> decoder::Result<Content> {
-        Ok(Content::Any(std::mem::take(&mut self.content_any)))
+    fn any_content_finish(&mut self) -> decoder::Result<WireContent> {
+        Ok(WireContent::Any(std::mem::take(&mut self.content_any)))
     }
 
-    fn doc_content(&mut self, guid: decoder::WireStr<'a>, options: Any) -> decoder::Result<Content> {
-        Ok(Content::Doc {
+    fn doc_content(&mut self, guid: decoder::WireStr<'a>, options: Any) -> decoder::Result<WireContent> {
+        Ok(WireContent::Doc {
             guid: guid.value.to_string(),
             opts: Box::new(options),
         })
@@ -499,7 +463,10 @@ impl Update {
                         break 'source;
                     }
                     if node.clock() > end {
-                        merged.push_back(Node::new_skip(Id::new(client, end), node.clock() - end));
+                        merged.push_back(WireStruct::Skip {
+                            id: Id::new(client, end),
+                            len: node.clock() - end,
+                        });
                     } else if node.clock() < end {
                         // V1 infers subsequent clocks from lengths: emit only
                         // the uncovered tail, or overlap would allocate extra
@@ -554,7 +521,7 @@ pub(crate) struct UpdateIterator<'a> {
     cur_client_id: Option<Client>,
     /// stack of previous iterating item with higher priority than updates in
     /// next iteration
-    stack: Vec<Node>,
+    stack: Vec<WireStruct>,
 }
 
 impl<'a> UpdateIterator<'a> {
@@ -619,17 +586,16 @@ impl<'a> UpdateIterator<'a> {
 
     /// tell if current update's dependencies(left, right, parent) has already
     /// been consumed and recorded and return the client of them if not.
-    fn get_missing_dep(&self, struct_info: &Node) -> Option<Client> {
-        let Node::Item(owner) = struct_info else { return None };
-        let item = owner.get()?;
+    fn get_missing_dep(&self, struct_info: &WireStruct) -> Option<Client> {
+        let item = struct_info.as_item()?;
         let parent = match &item.parent {
-            Some(Parent::Id(parent_id)) => Some(*parent_id),
+            Some(WireParent::Item(parent_id)) => Some(*parent_id),
             _ => None,
         };
         find_missing_dependency(item.id, item.origin_left_id, item.origin_right_id, parent, &self.state)
     }
 
-    fn next_candidate(&mut self) -> Option<Node> {
+    fn next_candidate(&mut self) -> Option<WireStruct> {
         let mut cur = None;
 
         if !self.stack.is_empty() {
@@ -646,7 +612,7 @@ impl<'a> UpdateIterator<'a> {
 }
 
 impl Iterator for UpdateIterator<'_> {
-    type Item = (Node, u64);
+    type Item = (WireStruct, u64);
 
     fn next(&mut self) -> Option<Self::Item> {
         // fetch the first candidate from stack or updates
@@ -725,9 +691,10 @@ impl Iterator for DeleteSetIterator<'_> {
 
     fn next(&mut self) -> Option<Self::Item> {
         while let Some(client) = self.update.delete_set.keys().next().cloned() {
-            let deletes = self.update.delete_set.get_mut(&client).unwrap();
+            let deletes = self.update.delete_set.clients.get_mut(&client).unwrap();
             let local_state = self.state.get(&client);
 
+            let mut applicable = None;
             while let Some(range) = deletes.pop() {
                 let start = range.start;
                 let end = range.end;
@@ -744,17 +711,25 @@ impl Iterator for DeleteSetIterator<'_> {
                             .pending_delete_set
                             .add(client, local_state, end - local_state);
 
-                        return Some((client, start..local_state));
+                        applicable = Some(start..local_state);
+                    } else {
+                        applicable = Some(range);
                     }
-
-                    return Some((client, range));
+                    break;
                 } else {
                     // all state missing
                     self.update.pending_delete_set.add(client, start, end - start);
                 }
             }
 
-            self.update.delete_set.remove(&client);
+            // drop the client as soon as its ranges are used up, so an
+            // iterator dropped early leaves no empty entry behind
+            if deletes.is_empty() {
+                self.update.delete_set.remove(&client);
+            }
+            if let Some(range) = applicable {
+                return Some((client, range));
+            }
         }
 
         None
@@ -771,13 +746,87 @@ mod tests {
     use super::*;
     use crate::doc::common::OrderRange;
 
-    fn struct_item(id: (Client, Clock), len: usize) -> Node {
-        Node::Item(Somr::new(
-            ItemBuilder::new()
-                .id(id.into())
-                .content(Content::String("c".repeat(len)))
-                .build(),
-        ))
+    fn struct_item(id: (Client, Clock), len: usize) -> WireStruct {
+        WireStruct::Item(Box::new(WireItem {
+            id: id.into(),
+            len: len as u64,
+            origin_left_id: None,
+            origin_right_id: None,
+            parent: None,
+            parent_sub: None,
+            flags: item_flags::ITEM_COUNTABLE,
+            content: WireContent::String("c".repeat(len)),
+        }))
+    }
+
+    #[test]
+    fn cloned_nested_updates_apply_independently() {
+        loom_model!(128 << 10, {
+            let source = Doc::with_client(1);
+            let mut root = source.get_or_create_map("root").unwrap();
+            let mut child = source.create_text().unwrap();
+            root.insert("child".into(), child.clone()).unwrap();
+            child.insert(0, "base").unwrap();
+
+            let update = source.encode_update().unwrap();
+            let original = update.encode_v1().unwrap();
+            let mut copy = update.clone();
+            let WireStruct::Item(carrier) = &mut copy.structs.get_mut(&1).unwrap()[0] else {
+                unreachable!()
+            };
+            assert!(matches!(
+                carrier.content,
+                WireContent::Type {
+                    kind: YTypeKind::Text,
+                    ..
+                }
+            ));
+            carrier.parent_sub = Some("copy".into());
+            let mut first = Doc::with_client(2);
+            first.apply_update(copy).unwrap();
+            let mut first_child = first
+                .get_or_create_map("root")
+                .unwrap()
+                .get("copy")
+                .unwrap()
+                .to_text()
+                .unwrap();
+            first_child.insert(4, "!").unwrap();
+            assert_eq!(update.encode_v1().unwrap(), original);
+            let mut second = Doc::with_client(3);
+            second.apply_update(update).unwrap();
+            assert_eq!(
+                second
+                    .get_or_create_map("root")
+                    .unwrap()
+                    .get("child")
+                    .unwrap()
+                    .to_text()
+                    .unwrap()
+                    .to_string(),
+                "base"
+            );
+            assert_eq!(first_child.to_string(), "base!");
+        });
+    }
+
+    #[test]
+    fn merge_truncates_inside_utf16_pair() {
+        loom_model!({
+            let source = Doc::with_client(1);
+            source.get_or_create_text("text").unwrap().insert(0, "a😀b").unwrap();
+            let full = source.encode_update().unwrap();
+            let mut prefix = full.clone();
+            let nodes = prefix.structs.get_mut(&1).unwrap();
+            let (left, right) = nodes.pop_front().unwrap().split_at(2).unwrap();
+            assert_eq!(left.as_item().unwrap().content, WireContent::String("a�".into()));
+            nodes.push_back(left);
+            let merged = Update::merge([prefix, full]);
+            assert_eq!(merged.structs[&1][1], right);
+            assert_eq!(right.as_item().unwrap().content, WireContent::String("�b".into()));
+            let replay = Doc::try_from_binary_v1(merged.encode_v1().unwrap()).unwrap();
+            assert_eq!(replay.get_or_create_text("text").unwrap().to_string(), "a��b");
+        });
     }
 
     fn parse_doc_update(input: Vec<u8>) -> JwstCodecResult<Update> {
@@ -865,21 +914,21 @@ mod tests {
                         VecDeque::from([
                             struct_item((0, 0), 1),
                             struct_item((0, 1), 1),
-                            Node::new_skip((0, 2).into(), 1),
+                            WireStruct::Skip {
+                                id: (0, 2).into(),
+                                len: 1,
+                            },
                         ]),
                     ),
                     (
                         1,
-                        VecDeque::from([
-                            struct_item((1, 0), 1),
-                            Node::Item(Somr::new(
-                                ItemBuilder::new()
-                                    .id((1, 1).into())
-                                    .left_id(Some((0, 1).into()))
-                                    .content(Content::String("c".repeat(2)))
-                                    .build(),
-                            )),
-                        ]),
+                        VecDeque::from([struct_item((1, 0), 1), {
+                            let WireStruct::Item(mut item) = struct_item((1, 1), 2) else {
+                                unreachable!()
+                            };
+                            item.origin_left_id = Some((0, 1).into());
+                            WireStruct::Item(item)
+                        }]),
                     ),
                 ]),
                 ..Update::default()
@@ -954,29 +1003,53 @@ mod tests {
                 let (sources, expected) = match case {
                     0 => (
                         [
-                            vec![Node::new_gc((0, 5).into(), 1)],
+                            vec![WireStruct::Gc {
+                                id: (0, 5).into(),
+                                len: 1,
+                            }],
                             vec![struct_item((0, 0), 1), struct_item((0, 5), 1)],
                         ],
                         vec![
                             struct_item((0, 0), 1),
-                            Node::new_skip((0, 1).into(), 4),
+                            WireStruct::Skip {
+                                id: (0, 1).into(),
+                                len: 4,
+                            },
                             struct_item((0, 5), 1),
                         ],
                     ),
                     1 => (
                         [
-                            vec![Node::new_gc((0, 0).into(), 3), Node::new_gc((0, 5).into(), 1)],
+                            vec![
+                                WireStruct::Gc {
+                                    id: (0, 0).into(),
+                                    len: 3,
+                                },
+                                WireStruct::Gc {
+                                    id: (0, 5).into(),
+                                    len: 1,
+                                },
+                            ],
                             vec![struct_item((0, 0), 1), struct_item((0, 5), 1)],
                         ],
                         vec![
-                            Node::new_gc((0, 0).into(), 3),
-                            Node::new_skip((0, 3).into(), 2),
+                            WireStruct::Gc {
+                                id: (0, 0).into(),
+                                len: 3,
+                            },
+                            WireStruct::Skip {
+                                id: (0, 3).into(),
+                                len: 2,
+                            },
                             struct_item((0, 5), 1),
                         ],
                     ),
                     _ => (
                         [
-                            vec![Node::new_gc((0, 1).into(), 1)],
+                            vec![WireStruct::Gc {
+                                id: (0, 1).into(),
+                                len: 1,
+                            }],
                             vec![struct_item((0, 0), 1), struct_item((0, 1), 1)],
                         ],
                         vec![struct_item((0, 0), 1), struct_item((0, 1), 1)],
@@ -998,7 +1071,10 @@ mod tests {
                         struct_item((0, 0), 1),
                         struct_item((0, 1), 1),
                         struct_item((0, 10), 1),
-                        Node::new_gc((0, 20).into(), 10),
+                        WireStruct::Gc {
+                            id: (0, 20).into(),
+                            len: 10,
+                        },
                     ]),
                 )]),
                 ..Default::default()
@@ -1011,20 +1087,38 @@ mod tests {
                 &VecDeque::from([
                     struct_item((0, 0), 1),
                     struct_item((0, 1), 1),
-                    Node::new_skip((0, 2).into(), 8),
+                    WireStruct::Skip {
+                        id: (0, 2).into(),
+                        len: 8
+                    },
                     struct_item((0, 10), 1),
-                    Node::new_skip((0, 11).into(), 9),
-                    Node::new_gc((0, 20).into(), 10),
+                    WireStruct::Skip {
+                        id: (0, 11).into(),
+                        len: 9
+                    },
+                    WireStruct::Gc {
+                        id: (0, 20).into(),
+                        len: 10
+                    },
                 ])
             );
             let fill = Update {
                 structs: ClientMap::from_iter([(
                     0,
                     VecDeque::from([
-                        Node::new_skip((0, 0).into(), 2),
+                        WireStruct::Skip {
+                            id: (0, 0).into(),
+                            len: 2,
+                        },
                         struct_item((0, 2), 8),
-                        Node::new_skip((0, 10).into(), 15),
-                        Node::new_gc((0, 25).into(), 10),
+                        WireStruct::Skip {
+                            id: (0, 10).into(),
+                            len: 15,
+                        },
+                        WireStruct::Gc {
+                            id: (0, 25).into(),
+                            len: 10,
+                        },
                     ]),
                 )]),
                 ..Default::default()
@@ -1052,7 +1146,7 @@ mod tests {
                 ..Default::default()
             };
             let mut merged = Update::merge([merged, pending]);
-            assert!(!merged.structs[&0].iter().any(Node::is_skip));
+            assert!(!merged.structs[&0].iter().any(WireStruct::is_skip));
             assert_eq!(merged.missing_state, StateVector::from([(0, 10), (1, 0)]));
             assert_eq!(merged.delete_set[&0].canonical_ranges(), vec![12..15]);
             assert!(merged.is_pending_empty());
@@ -1102,7 +1196,7 @@ mod tests {
                     let merged = Update::merge(inputs.map(|bytes| Update::decode_v1(bytes).unwrap()));
                     let structs = &merged.structs[&1];
                     assert_eq!(structs.front().unwrap().clock(), 0);
-                    assert_eq!(structs.iter().map(Node::len).sum::<u64>(), 4);
+                    assert_eq!(structs.iter().map(WireStruct::len).sum::<u64>(), 4);
                     assert_eq!(merged.delete_set[&1].canonical_ranges(), vec![1..2]);
                     let bytes = merged.encode_v1().unwrap();
                     let expected = if reverse {
@@ -1139,7 +1233,7 @@ mod tests {
                         &text[text.len() - 1..]
                     );
                     let recovered = Update::merge([partial, Update::decode_v1(full).unwrap()]);
-                    assert_eq!(recovered.structs[&1].iter().map(Node::len).sum::<u64>(), 4);
+                    assert_eq!(recovered.structs[&1].iter().map(WireStruct::len).sum::<u64>(), 4);
                     assert_eq!(recovered.delete_set[&1].canonical_ranges(), vec![0..3]);
                 });
             }
@@ -1227,7 +1321,10 @@ mod tests {
                         struct_item((0, 0), 1),
                         struct_item((0, 1), 1),
                         struct_item((0, 10), 1),
-                        Node::new_gc((0, 20).into(), 10),
+                        WireStruct::Gc {
+                            id: (0, 20).into(),
+                            len: 10,
+                        },
                     ]),
                 )]),
                 ..Default::default()
@@ -1238,7 +1335,13 @@ mod tests {
             let update2 = Update {
                 structs: ClientMap::from_iter([(
                     0,
-                    VecDeque::from([struct_item((0, 30), 1), Node::new_gc((0, 32).into(), 1)]),
+                    VecDeque::from([
+                        struct_item((0, 30), 1),
+                        WireStruct::Gc {
+                            id: (0, 32).into(),
+                            len: 1,
+                        },
+                    ]),
                 )]),
                 ..Default::default()
             };
@@ -1247,5 +1350,42 @@ mod tests {
 
             assert_eq!(merged2.structs.get(&0).unwrap().len(), 9);
         });
+    }
+
+    fn state(client: Client, clock: Clock) -> StateVector {
+        let mut state = StateVector::default();
+        state.insert(client, clock);
+        state
+    }
+
+    #[test]
+    fn delete_set_iter_dropped_after_fully_applicable_range_leaves_no_client() {
+        let mut update = Update {
+            delete_set: DeleteSet::from([(1, vec![0..2])]),
+            ..Update::default()
+        };
+        assert_eq!(update.delete_set_iter(state(1, 5)).next(), Some((1, 0..2)));
+
+        assert!(update.is_empty());
+        assert!(update.is_pending_empty());
+        assert!(update.delete_set.get(&1).is_none());
+        let encoded = update.encode_v1().unwrap();
+        assert_eq!(encoded, Update::default().encode_v1().unwrap());
+        assert!(Update::decode_v1(encoded).unwrap().is_empty());
+    }
+
+    #[test]
+    fn delete_set_iter_dropped_after_partially_applicable_range_leaves_no_client() {
+        let mut update = Update {
+            delete_set: DeleteSet::from([(1, vec![0..4])]),
+            ..Update::default()
+        };
+        assert_eq!(update.delete_set_iter(state(1, 1)).next(), Some((1, 0..1)));
+
+        assert!(update.is_empty());
+        assert!(!update.is_pending_empty());
+        assert!(update.delete_set.get(&1).is_none());
+        assert_eq!(update.encode_v1().unwrap(), Update::default().encode_v1().unwrap());
+        assert_eq!(update.pending_delete_set.get(&1), Some(&OrderRange::from(1..4)));
     }
 }

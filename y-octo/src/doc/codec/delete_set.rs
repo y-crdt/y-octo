@@ -1,6 +1,6 @@
 use std::{
     collections::hash_map::Entry,
-    ops::{Deref, DerefMut, Range},
+    ops::{Deref, Range},
 };
 
 use super::*;
@@ -30,47 +30,56 @@ fn write_ranges<W: CrdtWriter>(ranges: &[Range<u64>], encoder: &mut W) -> JwstCo
     Ok(())
 }
 
+/// Deleted clock ranges per client. Read it through `Deref`; change it with
+/// the methods below, which keep every client's ranges canonical and drop
+/// clients with nothing deleted.
 #[derive(Debug, Default, Clone, PartialEq)]
-pub struct DeleteSet(pub ClientMap<OrderRange>);
+pub struct DeleteSet {
+    // a named field: a tuple struct's `pub(crate)` constructor would make the
+    // glob re-exports of `DeleteSet` ambiguous in visibility
+    pub(crate) clients: ClientMap<OrderRange>,
+}
 
 impl Deref for DeleteSet {
     type Target = ClientMap<OrderRange>;
 
     fn deref(&self) -> &Self::Target {
-        &self.0
+        &self.clients
     }
 }
 
 impl<const N: usize> From<[(Client, Vec<Range<u64>>); N]> for DeleteSet {
     fn from(value: [(Client, Vec<Range<u64>>); N]) -> Self {
         let mut map = ClientMap::with_capacity(N);
+        // a later entry for the same client replaces the earlier one, an
+        // empty one removes it
         for (client, ranges) in value {
-            map.insert(client, ranges.into());
+            let ranges = OrderRange::from(ranges);
+            if ranges.is_empty() {
+                map.remove(&client);
+            } else {
+                map.insert(client, ranges);
+            }
         }
-        Self(map)
-    }
-}
-
-impl DerefMut for DeleteSet {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
+        Self { clients: map }
     }
 }
 
 impl DeleteSet {
+    /// Adds the half-open range `from..from.saturating_add(len)`: a range
+    /// reaching past `u64::MAX` is cut there. Nothing is added when the
+    /// range is empty (`len == 0` or `from == u64::MAX`).
     pub fn add(&mut self, client: Client, from: Clock, len: Clock) {
-        self.add_range(client, from..from + len);
+        self.add_range(client, from..from.saturating_add(len));
     }
 
     pub fn add_range(&mut self, client: Client, range: Range<u64>) {
-        match self.0.entry(client) {
+        if range.is_empty() {
+            return;
+        }
+        match self.clients.entry(client) {
             Entry::Occupied(e) => {
-                let r = e.into_mut();
-                if r.is_empty() {
-                    *r = range.into();
-                } else {
-                    r.push(range);
-                }
+                e.into_mut().push(range);
             }
             Entry::Vacant(e) => {
                 e.insert(range.into());
@@ -79,27 +88,45 @@ impl DeleteSet {
     }
 
     pub fn batch_add_ranges(&mut self, client: Client, ranges: Vec<Range<u64>>) {
-        match self.0.entry(client) {
+        match self.clients.entry(client) {
             Entry::Occupied(e) => {
                 e.into_mut().extend(ranges);
             }
             Entry::Vacant(e) => {
-                e.insert(ranges.into());
+                // `ranges` may come in any order (e.g. the clocks of a map's
+                // children); `From` sorts and merges them so later pushes see
+                // a canonical list
+                let ranges = OrderRange::from(ranges);
+                if !ranges.is_empty() {
+                    e.insert(ranges);
+                }
             }
         }
     }
 
     pub fn merge(&mut self, other: &Self) {
-        for (client, range) in &other.0 {
-            match self.0.entry(*client) {
+        for (client, range) in &other.clients {
+            match self.clients.entry(*client) {
                 Entry::Occupied(e) => {
                     e.into_mut().merge(range.clone());
                 }
                 Entry::Vacant(e) => {
-                    e.insert(range.clone());
+                    if !range.is_empty() {
+                        e.insert(range.clone());
+                    }
                 }
             }
         }
+    }
+
+    /// Removes the ranges of `client`, returning them.
+    pub fn remove(&mut self, client: &Client) -> Option<OrderRange> {
+        self.clients.remove(client)
+    }
+
+    /// Removes every client.
+    pub fn clear(&mut self) {
+        self.clients.clear();
     }
 }
 
@@ -144,7 +171,7 @@ mod tests {
         {
             let mut delete_set = delete_set.clone();
             delete_set.add(1, 5, 25);
-            assert_eq!(delete_set.get(&1), Some(&OrderRange::Range(0..30)));
+            assert_eq!(delete_set.get(&1), Some(&OrderRange::from(0..30)));
         }
 
         {
@@ -166,7 +193,7 @@ mod tests {
         {
             let mut delete_set = delete_set.clone();
             delete_set.batch_add_ranges(1, vec![0..5, 10..20]);
-            assert_eq!(delete_set.get(&1), Some(&OrderRange::Range(0..30)));
+            assert_eq!(delete_set.get(&1), Some(&OrderRange::from(0..30)));
         }
 
         {
@@ -174,6 +201,132 @@ mod tests {
             delete_set.batch_add_ranges(1, vec![40..50, 10..20]);
             assert_eq!(delete_set.get(&1), Some(&OrderRange::from(vec![0..30, 40..50])));
         }
+    }
+
+    fn assert_canonical(range: &OrderRange) {
+        let ranges = range.into_iter().collect::<Vec<_>>();
+        assert!(ranges.iter().all(|r| !r.is_empty()), "empty range in {range:?}");
+        for pair in ranges.windows(2) {
+            assert!(pair[0].end < pair[1].start, "unsorted or touching ranges in {range:?}");
+        }
+        assert_eq!(range.ranges_len(), ranges.len(), "{range:?}");
+    }
+
+    #[test]
+    fn test_delete_set_batch_add_unsorted_vacant() {
+        let sorted = || {
+            let mut set = DeleteSet::default();
+            set.batch_add_ranges(1, vec![2..4, 6..8, 10..12]);
+            set
+        };
+        let mut unsorted = DeleteSet::default();
+        unsorted.batch_add_ranges(1, vec![10..12, 2..4, 6..8]);
+        assert_eq!(unsorted, sorted());
+        assert_canonical(&unsorted[&1]);
+
+        // later additions in the same transaction keep every range
+        let follow_up = |set: &mut DeleteSet| {
+            set.add_range(1, 4..5);
+            set.batch_add_ranges(1, vec![13..14, 8..9]);
+            set.add_range(1, 0..1);
+            set.add(1, 20, 2);
+        };
+        let mut expected = sorted();
+        follow_up(&mut expected);
+        follow_up(&mut unsorted);
+        assert_eq!(unsorted, expected);
+        assert_eq!(
+            unsorted[&1],
+            OrderRange::from(vec![0..1, 2..5, 6..9, 10..12, 13..14, 20..22])
+        );
+        assert_canonical(&unsorted[&1]);
+    }
+
+    #[test]
+    fn test_delete_set_skips_empty() {
+        let mut set = DeleteSet::default();
+        set.add_range(1, 5..5);
+        set.add(2, 3, 0);
+        set.batch_add_ranges(3, vec![]);
+        set.batch_add_ranges(4, vec![7..7, 9..9]);
+        set.merge(&DeleteSet::from([(5, vec![6..6])]));
+        assert!(set.is_empty(), "{set:?}");
+
+        let set = DeleteSet::from([(1, vec![]), (2, vec![4..4]), (3, vec![5..6, 0..1])]);
+        assert_eq!(set.len(), 1);
+        assert_eq!(set[&3], OrderRange::from(vec![0..1, 5..6]));
+        assert_canonical(&set[&3]);
+    }
+
+    #[test]
+    fn test_delete_set_merge() {
+        let other = DeleteSet::from([(1, vec![10..12, 2..4, 3..6, 8..8]), (2, vec![1..2])]);
+
+        let mut set = DeleteSet::from([(2, vec![2..3])]);
+        set.merge(&other);
+        assert_eq!(set.len(), 2, "{set:?}");
+        assert_eq!(set[&1], OrderRange::from(vec![2..6, 10..12]));
+        assert_eq!(set[&2], OrderRange::from(1..3));
+        assert_canonical(&set[&1]);
+
+        set.add_range(1, 6..10);
+        assert_eq!(set[&1], OrderRange::from(2..12));
+    }
+
+    #[test]
+    fn test_delete_set_remove_and_clear() {
+        let mut set = DeleteSet::from([(1, vec![0..1]), (2, vec![3..5])]);
+        assert_eq!(set.remove(&1), Some(OrderRange::from(0..1)));
+        assert_eq!(set.remove(&1), None);
+        assert_eq!(set.len(), 1);
+        set.clear();
+        assert!(set.is_empty());
+    }
+
+    fn encode(delete_set: DeleteSet) -> Vec<u8> {
+        Update {
+            delete_set,
+            ..Update::default()
+        }
+        .encode_v1()
+        .unwrap()
+    }
+
+    #[test]
+    fn test_delete_set_from_later_entry_replaces_earlier() {
+        let set = DeleteSet::from([(1, vec![0..2]), (2, vec![7..8]), (1, vec![5..6])]);
+        assert_eq!(set.len(), 2);
+        assert_eq!(set[&1], OrderRange::from(5..6));
+        assert_eq!(encode(set), encode(DeleteSet::from([(2, vec![7..8]), (1, vec![5..6])])));
+
+        for empty in [vec![], vec![5..5]] {
+            let set = DeleteSet::from([(1, vec![0..2]), (2, vec![7..8]), (1, empty.clone())]);
+            assert_eq!(set.len(), 1, "{empty:?}");
+            assert!(set.get(&1).is_none(), "{empty:?}");
+            assert_eq!(encode(set), encode(DeleteSet::from([(2, vec![7..8])])), "{empty:?}");
+
+            let set = DeleteSet::from([(1, vec![0..2]), (1, empty.clone())]);
+            assert!(set.is_empty(), "{empty:?}");
+            assert_eq!(encode(set), encode(DeleteSet::default()), "{empty:?}");
+        }
+    }
+
+    #[test]
+    fn test_delete_set_add_saturates() {
+        let mut set = DeleteSet::default();
+        // up to u64::MAX exactly
+        set.add(1, u64::MAX - 2, 2);
+        assert_eq!(set[&1], OrderRange::from(u64::MAX - 2..u64::MAX));
+        // one past it is cut at u64::MAX
+        set.add(2, u64::MAX - 2, 3);
+        assert_eq!(set[&2], OrderRange::from(u64::MAX - 2..u64::MAX));
+        set.add(2, 0, u64::MAX);
+        assert_eq!(set[&2], OrderRange::from(vec![0..u64::MAX]));
+        // empty ranges add nothing
+        set.add(3, u64::MAX, 1);
+        set.add(4, u64::MAX, u64::MAX);
+        set.add(5, 5, 0);
+        assert_eq!(set.len(), 2, "{set:?}");
     }
 
     #[test]

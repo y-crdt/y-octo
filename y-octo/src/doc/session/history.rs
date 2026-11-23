@@ -7,8 +7,7 @@ use super::UndoStackId;
 use crate::{
     DeleteSet, JwstCodecError, JwstCodecResult, Origin, UndoStack,
     doc::{
-        CommitHook, CommitSummary, DocStore, YTypeRef, after_unlock,
-        store::StoreRef,
+        CommitHook, CommitSummary, DocStore, TypeArena, YTypeRef, after_unlock,
         undo::{Meta, StackItem, UndoState, next_manager_id},
     },
 };
@@ -36,8 +35,10 @@ impl SessionHistoryHub {
         }
     }
 
+    /// `types` is the arena of the document the `scopes` belong to.
     pub(crate) fn create_stack(
         &mut self,
+        types: &TypeArena,
         scopes: Vec<YTypeRef>,
         tracked: Vec<Option<Origin>>,
         capture_timeout: u64,
@@ -45,7 +46,7 @@ impl SessionHistoryHub {
         let id = UndoStackId(self.next_id);
         self.next_id = self.next_id.checked_add(1).ok_or(JwstCodecError::Unexpected)?;
         let manager = next_manager_id();
-        let state = UndoState::new_for_session(manager, scopes, tracked, capture_timeout, self.now.clone())?;
+        let state = UndoState::new_for_session(types, manager, scopes, tracked, capture_timeout, self.now.clone())?;
         self.stacks.push((id, state));
         Ok((id, manager))
     }
@@ -88,7 +89,6 @@ impl SessionHistoryHub {
         &mut self,
         id: UndoStackId,
         store: &mut DocStore,
-        store_ref: &StoreRef,
         which: UndoStack,
     ) -> JwstCodecResult<Option<(u64, Option<Meta>)>> {
         let Some(pos) = self.stacks.iter().position(|(sid, _)| *sid == id) else {
@@ -102,9 +102,9 @@ impl SessionHistoryHub {
             other_slices.push(u);
             other_slices.push(r);
         }
-        let performed = target.pop_with_extra_stacks(store, store_ref, which, &other_slices);
+        let performed = target.pop_with_extra_stacks(store, which, &other_slices);
         self.sync_retained(store);
-        Ok(performed)
+        performed
     }
 
     pub(crate) fn clear_stack(

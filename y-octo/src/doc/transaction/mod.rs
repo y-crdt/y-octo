@@ -130,7 +130,8 @@ thread_local! {
 
 #[derive(Default)]
 struct StoreLocks {
-    held: Vec<usize>,
+    first: Option<usize>,
+    nested: Vec<usize>,
     deferred: Vec<AfterUnlock>,
 }
 
@@ -140,30 +141,42 @@ fn store_key(store: &StoreRef) -> usize {
 
 struct HeldStoreLock(usize);
 
-fn enter(key: usize) -> JwstCodecResult<(HeldStoreLock, bool)> {
-    LOCKS.with(|locks| {
-        let mut locks = locks.borrow_mut();
-        if locks.held.contains(&key) {
-            return Err(JwstCodecError::Reentrant);
+impl StoreLocks {
+    // Keep the usual single document in the thread-local registration itself.
+    // The vector is needed only when a thread holds several documents.
+    fn enter(&mut self, key: usize) -> Option<(HeldStoreLock, bool)> {
+        if let Some(first) = self.first {
+            if first == key || self.nested.contains(&key) {
+                return None;
+            }
+            self.nested.push(key);
+            Some((HeldStoreLock(key), true))
+        } else {
+            self.first = Some(key);
+            Some((HeldStoreLock(key), false))
         }
-        let nested = !locks.held.is_empty();
-        locks.held.push(key);
-        Ok((HeldStoreLock(key), nested))
-    })
+    }
+
+    fn release(&mut self, key: usize) -> Option<Vec<AfterUnlock>> {
+        if self.first == Some(key) {
+            self.first = self.nested.pop();
+        } else {
+            let pos = self.nested.iter().position(|k| *k == key).expect("registered lock");
+            self.nested.swap_remove(pos);
+        }
+        (self.first.is_none() && !self.deferred.is_empty()).then(|| mem::take(&mut self.deferred))
+    }
+}
+
+#[inline]
+fn enter(key: usize) -> Option<(HeldStoreLock, bool)> {
+    LOCKS.with(|locks| locks.borrow_mut().enter(key))
 }
 
 impl Drop for HeldStoreLock {
+    #[inline]
     fn drop(&mut self) {
-        let actions = LOCKS.with(|locks| {
-            let mut locks = locks.borrow_mut();
-            let pos = locks
-                .held
-                .iter()
-                .position(|key| *key == self.0)
-                .expect("registered lock");
-            locks.held.swap_remove(pos);
-            locks.held.is_empty().then(|| mem::take(&mut locks.deferred))
-        });
+        let actions = LOCKS.with(|locks| locks.borrow_mut().release(self.0));
         if let Some(actions) = actions {
             AfterUnlock::run(actions);
         }
@@ -198,7 +211,7 @@ pub(crate) fn read_store(store: &StoreRef) -> JwstCodecResult<StoreReadGuard<'_>
 }
 
 fn read_store_with_order(store: &StoreRef, ordered_pair: bool) -> JwstCodecResult<StoreReadGuard<'_>> {
-    let (held, nested) = enter(store_key(store))?;
+    let (held, nested) = enter(store_key(store)).ok_or(JwstCodecError::Reentrant)?;
     let guard = if nested && !ordered_pair {
         store.try_read().map_err(nested_lock_error)?
     } else {
@@ -209,7 +222,7 @@ fn read_store_with_order(store: &StoreRef, ordered_pair: bool) -> JwstCodecResul
 
 /// Takes the store write lock, see [read_store].
 pub(crate) fn write_store(store: &StoreRef) -> JwstCodecResult<StoreWriteGuard<'_>> {
-    let (held, nested) = enter(store_key(store))?;
+    let (held, nested) = enter(store_key(store)).ok_or(JwstCodecError::Reentrant)?;
     let guard = if nested {
         store.try_write().map_err(nested_lock_error)?
     } else {
@@ -229,7 +242,7 @@ pub(crate) fn read_store_pair<'a>(
     left: &'a StoreRef,
     right: &'a StoreRef,
 ) -> JwstCodecResult<(StoreReadGuard<'a>, StoreReadGuard<'a>)> {
-    let top_level = LOCKS.with(|locks| locks.borrow().held.is_empty());
+    let top_level = LOCKS.with(|locks| locks.borrow().first.is_none());
     if top_level && store_key(right) < store_key(left) {
         let right = read_store(right)?;
         Ok((read_store_with_order(left, true)?, right))
@@ -378,7 +391,7 @@ impl AfterUnlock {
         // destructor. At thread exit there is no document lock to wait for.
         let _ = LOCKS.try_with(|locks| {
             let mut locks = locks.borrow_mut();
-            if !locks.held.is_empty() {
+            if locks.first.is_some() {
                 locks.deferred.push(action.take().unwrap());
             }
         });
@@ -590,51 +603,53 @@ impl<'doc> Transaction<'doc> {
     }
 
     pub fn text<'t>(&'t self, text: &'t Text) -> JwstCodecResult<TextRead<'t>> {
-        let ty = own(self.store_ref, &text.0)?;
-        Ok(TextRead::new(&self.store, &text.0, ty))
+        Ok(TextRead(own(self.store_ref, &self.store, &text.0)?))
     }
 
     pub fn map<'t>(&'t self, map: &'t Map) -> JwstCodecResult<MapRead<'t>> {
-        let ty = own(self.store_ref, &map.0)?;
-        Ok(MapRead { ty })
+        Ok(MapRead(own(self.store_ref, &self.store, &map.0)?))
     }
 
     pub fn array<'t>(&'t self, array: &'t Array) -> JwstCodecResult<ArrayRead<'t>> {
-        let ty = own(self.store_ref, &array.0)?;
-        Ok(ArrayRead { parent: &array.0, ty })
+        Ok(ArrayRead(own(self.store_ref, &self.store, &array.0)?))
     }
 
     pub fn xml_fragment<'t>(&'t self, fragment: &'t XMLFragment) -> JwstCodecResult<XMLFragmentRead<'t>> {
-        let ty = own(self.store_ref, &fragment.0)?;
-        Ok(XMLFragmentRead {
-            parent: &fragment.0,
-            ty,
-        })
+        Ok(XMLFragmentRead(own(self.store_ref, &self.store, &fragment.0)?))
     }
 
     pub fn xml_element<'t>(&'t self, element: &'t XMLElement) -> JwstCodecResult<XMLElementRead<'t>> {
-        let ty = own(self.store_ref, &element.0)?;
-        Ok(XMLElementRead { parent: &element.0, ty })
+        Ok(XMLElementRead(own(self.store_ref, &self.store, &element.0)?))
     }
 
     pub fn xml_text<'t>(&'t self, text: &'t XMLText) -> JwstCodecResult<XMLTextRead<'t>> {
-        let ty = own(self.store_ref, &text.0)?;
-        Ok(XMLTextRead { ty })
+        Ok(XMLTextRead(own(self.store_ref, &self.store, &text.0)?))
     }
 
     pub fn xml_hook<'t>(&'t self, hook: &'t XMLHook) -> JwstCodecResult<XMLHookRead<'t>> {
-        let ty = own(self.store_ref, &hook.0)?;
-        Ok(XMLHookRead { ty })
+        Ok(XMLHookRead(own(self.store_ref, &self.store, &hook.0)?))
     }
 }
 
-/// The type behind `handle` if it belongs to the document of `store_ref`.
-/// The caller holds that store's lock.
-fn own<'t>(store_ref: &StoreRef, handle: &'t YTypeRef) -> JwstCodecResult<&'t YType> {
+/// A type read inside a transaction: its data, borrowed from the locked
+/// store, and what following its nested types takes.
+#[derive(Clone, Copy)]
+struct TypeView<'t> {
+    cx: TypeCx<'t>,
+    ty: &'t YType,
+}
+
+/// The type behind `handle` if it belongs to the document of `store_ref`,
+/// whose locked store is `store`.
+fn own<'t>(store_ref: &StoreRef, store: &'t DocStore, handle: &'t YTypeRef) -> JwstCodecResult<TypeView<'t>> {
     if !std::ptr::eq(handle.store.as_ptr(), Arc::as_ptr(store_ref)) {
         return Err(JwstCodecError::ForeignType);
     }
-    handle.ty().ok_or(JwstCodecError::DocReleased)
+    let ty = store.type_arena.get(handle.idx()?).ok_or(JwstCodecError::DocReleased)?;
+    Ok(TypeView {
+        cx: handle.cx(store),
+        ty,
+    })
 }
 
 impl<'doc> TransactionMut<'doc> {
@@ -704,16 +719,12 @@ impl<'doc> TransactionMut<'doc> {
         self.store.get_state_vector()
     }
 
-    pub(crate) fn store_ref(&self) -> &'doc StoreRef {
-        self.store_ref
-    }
-
     pub(crate) fn store_mut(&mut self) -> &mut DocStore {
         &mut self.store
     }
 
     pub fn text<'t>(&'t mut self, text: &'t Text) -> JwstCodecResult<TextWrite<'t, 'doc>> {
-        own(self.store_ref, &text.0)?;
+        own(self.store_ref, &self.store, &text.0)?;
         Ok(TextWrite {
             tx: self,
             parent: &text.0,
@@ -721,7 +732,7 @@ impl<'doc> TransactionMut<'doc> {
     }
 
     pub fn map<'t>(&'t mut self, map: &'t Map) -> JwstCodecResult<MapWrite<'t, 'doc>> {
-        own(self.store_ref, &map.0)?;
+        own(self.store_ref, &self.store, &map.0)?;
         Ok(MapWrite {
             tx: self,
             parent: &map.0,
@@ -729,7 +740,7 @@ impl<'doc> TransactionMut<'doc> {
     }
 
     pub fn array<'t>(&'t mut self, array: &'t Array) -> JwstCodecResult<ArrayWrite<'t, 'doc>> {
-        own(self.store_ref, &array.0)?;
+        own(self.store_ref, &self.store, &array.0)?;
         Ok(ArrayWrite {
             tx: self,
             parent: &array.0,
@@ -737,7 +748,7 @@ impl<'doc> TransactionMut<'doc> {
     }
 
     pub fn xml_fragment<'t>(&'t mut self, fragment: &'t XMLFragment) -> JwstCodecResult<XMLFragmentWrite<'t, 'doc>> {
-        own(self.store_ref, &fragment.0)?;
+        own(self.store_ref, &self.store, &fragment.0)?;
         Ok(XMLFragmentWrite {
             tx: self,
             parent: &fragment.0,
@@ -745,7 +756,7 @@ impl<'doc> TransactionMut<'doc> {
     }
 
     pub fn xml_element<'t>(&'t mut self, element: &'t XMLElement) -> JwstCodecResult<XMLElementWrite<'t, 'doc>> {
-        own(self.store_ref, &element.0)?;
+        own(self.store_ref, &self.store, &element.0)?;
         Ok(XMLElementWrite {
             tx: self,
             parent: &element.0,
@@ -753,7 +764,7 @@ impl<'doc> TransactionMut<'doc> {
     }
 
     pub fn xml_text<'t>(&'t mut self, text: &'t XMLText) -> JwstCodecResult<XMLTextWrite<'t, 'doc>> {
-        own(self.store_ref, &text.0)?;
+        own(self.store_ref, &self.store, &text.0)?;
         Ok(XMLTextWrite {
             tx: self,
             parent: &text.0,
@@ -761,7 +772,7 @@ impl<'doc> TransactionMut<'doc> {
     }
 
     pub fn xml_hook<'t>(&'t mut self, hook: &'t XMLHook) -> JwstCodecResult<XMLHookWrite<'t, 'doc>> {
-        own(self.store_ref, &hook.0)?;
+        own(self.store_ref, &self.store, &hook.0)?;
         Ok(XMLHookWrite {
             tx: self,
             parent: &hook.0,
@@ -772,14 +783,19 @@ impl<'doc> TransactionMut<'doc> {
     fn with_type<R>(
         &mut self,
         parent: &YTypeRef,
-        f: impl FnOnce(&mut DocStore, &mut YType) -> JwstCodecResult<R>,
+        f: impl FnOnce(&mut DocStore, TypeIdx) -> JwstCodecResult<R>,
     ) -> JwstCodecResult<R> {
         parent.write_locked(&mut self.store, f)
     }
 
     /// Shared view of the type behind `parent`.
-    fn view<'t>(&'t self, parent: &'t YTypeRef) -> &'t YType {
-        parent.ty().expect("checked when the view was created")
+    fn view<'t>(&'t self, parent: &'t YTypeRef) -> TypeView<'t> {
+        own(self.store_ref, &self.store, parent).expect("checked when the view was created")
+    }
+
+    /// `value` as content for a type of this transaction's document.
+    fn new_content(&self, parent: &YTypeRef, value: Value) -> NewContent {
+        NewContent::from_value(value, &parent.store)
     }
 
     /// Steps 1 to 6 of the commit pipeline, under the write lock.
@@ -856,7 +872,7 @@ pub(crate) fn commit_store(
                 inserted.add(*client, before, clock - before);
             }
         }
-        let (changed, ancestors) = changed_types(&collector.changed, before_state);
+        let (changed, ancestors) = changed_types(&store.type_arena, &collector.changed, before_state);
         CommitSummary {
             origin: maintenance_origin.clone().or_else(|| origin.clone()),
             local: is_local,
@@ -902,8 +918,7 @@ pub(crate) fn commit_store(
     // they touch (Yjs `AbstractType._callObserver`)
     if !is_local {
         for ty in changed.keys() {
-            // SAFETY: store write lock held, no type borrowed.
-            if let Some(mut ty) = unsafe { ty.ty_mut() }
+            if let Some(ty) = store.type_arena.get_mut(*ty)
                 && let Some(markers) = &mut ty.markers
             {
                 markers.clear();
@@ -1036,21 +1051,25 @@ pub(crate) fn transact_mut_with_events<R>(
 
 /// Changed types reported like Yjs `addChangedTypeToTransaction`: only types
 /// that existed before the transaction and were not deleted by it.
-fn changed_types(changed: &ChangedTypeRefs, before: &StateVector) -> (Vec<ChangedType>, Vec<TypeIdentity>) {
+fn changed_types(
+    arena: &TypeArena,
+    changed: &ChangedTypeRefs,
+    before: &StateVector,
+) -> (Vec<ChangedType>, Vec<TypeIdentity>) {
     let mut types = Vec::new();
     let mut ancestors = Vec::new();
     let mut seen = HashSet::new();
 
-    for (ty_ref, keys) in changed {
-        let Some(ty) = ty_ref.ty() else {
+    for (ty, keys) in changed {
+        let Some(ty) = arena.get(*ty) else {
             continue;
         };
-        if let Some(item) = ty.item.get()
+        if let Some(item) = ty.live_carrier(&arena.items)
             && (item.deleted() || item.id.clock >= before.get(&item.id.client))
         {
             continue;
         }
-        let Ok(identity) = ty.identity() else {
+        let Ok(identity) = ty.identity(&arena.items) else {
             // a type never inserted into the document
             continue;
         };
@@ -1059,19 +1078,19 @@ fn changed_types(changed: &ChangedTypeRefs, before: &StateVector) -> (Vec<Change
         keys.dedup();
         types.push(ChangedType { identity, keys });
 
-        let mut item = ty.item.clone();
-        while let Some(Parent::Type(parent)) = item.get().and_then(|item| item.parent.clone()) {
-            let Some(parent) = parent.ty() else {
+        let mut item = ty.live_carrier(&arena.items);
+        while let Some(parent) = item.and_then(|item| item.parent.as_ref()) {
+            let Some(parent) = arena.get(*parent) else {
                 break;
             };
-            let Ok(identity) = parent.identity() else {
+            let Ok(identity) = parent.identity(&arena.items) else {
                 break;
             };
             if !seen.insert(identity.clone()) {
                 break;
             }
             ancestors.push(identity);
-            item = parent.item.clone();
+            item = parent.live_carrier(&arena.items);
         }
     }
 
@@ -1081,13 +1100,9 @@ fn changed_types(changed: &ChangedTypeRefs, before: &StateVector) -> (Vec<Change
 /// Update V1 with the structs added since `before` and the `deleted` ranges
 /// (Yjs `writeUpdateMessageFromTransaction`).
 fn encode_commit(store: &DocStore, before: &StateVector, deleted: &DeleteSet) -> JwstCodecResult<Vec<u8>> {
-    let update = Update {
-        structs: DocStore::diff_structs(&store.items, before)?,
-        delete_set: deleted.clone(),
-        ..Update::default()
-    };
     let mut encoder = RawEncoder::default();
-    update.write(&mut encoder)?;
+    store.write_structs_since(before, &mut encoder)?;
+    deleted.write(&mut encoder)?;
     Ok(encoder.into_inner())
 }
 
@@ -1106,41 +1121,29 @@ impl Drop for TransactionMut<'_> {
 // Typed views inside transactions.
 
 /// Reads of a [Text] inside a transaction.
-pub struct TextRead<'t> {
-    _store: &'t DocStore,
-    _parent: &'t YTypeRef,
-    ty: &'t YType,
-}
+pub struct TextRead<'t>(TypeView<'t>);
 
-impl<'t> TextRead<'t> {
-    fn new(store: &'t DocStore, parent: &'t YTypeRef, ty: &'t YType) -> Self {
-        Self {
-            _store: store,
-            _parent: parent,
-            ty,
-        }
-    }
-
+impl TextRead<'_> {
     pub fn len(&self) -> u64 {
-        self.ty.len
+        self.0.ty.len
     }
 
     pub fn is_empty(&self) -> bool {
-        self.ty.len == 0
+        self.0.ty.len == 0
     }
 
     pub fn to_delta(&self) -> TextDelta {
-        text::text_delta(self.ty)
+        text::text_delta(&self.0.cx.types.items, self.0.ty)
     }
 
     pub fn identity_runs(&self) -> JwstCodecResult<Vec<TextIdentityRun>> {
-        text::identity_runs(self.ty)
+        text::identity_runs(&self.0.cx.types.items, self.0.ty)
     }
 }
 
 impl fmt::Display for TextRead<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&text::text_string(self.ty))
+        f.write_str(&text::text_string(&self.0.cx.types.items, self.0.ty))
     }
 }
 
@@ -1152,7 +1155,7 @@ pub struct TextWrite<'t, 'doc> {
 
 impl TextWrite<'_, '_> {
     pub fn read(&self) -> TextRead<'_> {
-        TextRead::new(&self.tx.store, self.parent, self.tx.view(self.parent))
+        TextRead(self.tx.view(self.parent))
     }
 
     pub fn len(&self) -> u64 {
@@ -1164,56 +1167,48 @@ impl TextWrite<'_, '_> {
     }
 
     pub fn insert<T: ToString>(&mut self, index: u64, str: T) -> JwstCodecResult {
-        let parent = self.parent;
-        self.tx.with_type(parent, |store, ty| {
-            list_insert(parent, store, ty, index, Content::String(str.to_string()))
+        self.tx.with_type(self.parent, |store, ty| {
+            list_insert(store, ty, index, Content::String(str.to_string()))
         })
     }
 
     pub fn insert_embed<V: Into<Any>>(&mut self, index: u64, embed: V) -> JwstCodecResult {
-        let parent = self.parent;
         let embed = embed.into();
-        self.tx.with_type(parent, |store, ty| {
-            text::text_insert_embed(parent, store, ty, index, embed)
+        self.tx.with_type(self.parent, |store, ty| {
+            text::text_insert_embed(store, ty, index, embed)
         })
     }
 
     pub fn format(&mut self, index: u64, len: u64, attrs: TextAttributes) -> JwstCodecResult {
-        let parent = self.parent;
-        self.tx.with_type(parent, |store, ty| {
-            text::text_format(parent, store, ty, index, len, attrs)
-        })
+        self.tx
+            .with_type(self.parent, |store, ty| text::text_format(store, ty, index, len, attrs))
     }
 
     pub fn remove(&mut self, index: u64, len: u64) -> JwstCodecResult {
-        let parent = self.parent;
         self.tx
-            .with_type(parent, |store, ty| text::text_remove(parent, store, ty, index, len))
+            .with_type(self.parent, |store, ty| text::text_remove(store, ty, index, len))
     }
 
     pub fn apply_delta(&mut self, delta: &[TextDeltaOp]) -> JwstCodecResult {
-        let parent = self.parent;
         self.tx
-            .with_type(parent, |store, ty| text::apply_text_delta(parent, store, ty, delta))
+            .with_type(self.parent, |store, ty| text::apply_text_delta(store, ty, delta))
     }
 }
 
 /// Reads of a [Map] inside a transaction.
-pub struct MapRead<'t> {
-    ty: &'t YType,
-}
+pub struct MapRead<'t>(TypeView<'t>);
 
 impl<'t> MapRead<'t> {
     pub fn get(&self, key: &str) -> Option<Value> {
-        map::map_value(self.ty, key).map(|item| Value::from(&item.content))
+        map::map_value(&self.0.cx.types.items, self.0.ty, key).map(|item| Value::from_content(self.0.cx, &item.content))
     }
 
     pub fn contains_key(&self, key: &str) -> bool {
-        map::map_value(self.ty, key).is_some()
+        map::map_value(&self.0.cx.types.items, self.0.ty, key).is_some()
     }
 
     pub fn len(&self) -> u64 {
-        map::map_entries(self.ty).count() as u64
+        map::map_entries(&self.0.cx.types.items, self.0.ty).count() as u64
     }
 
     pub fn is_empty(&self) -> bool {
@@ -1222,11 +1217,13 @@ impl<'t> MapRead<'t> {
 
     /// The visible entries, borrowed from the transaction.
     pub fn iter(&self) -> impl Iterator<Item = (&'t str, Value)> + 't {
-        map::map_entries(self.ty).map(|(key, item)| (key, Value::from(&item.content)))
+        let cx = self.0.cx;
+        map::map_entries(&self.0.cx.types.items, self.0.ty)
+            .map(move |(key, item)| (key, Value::from_content(cx, &item.content)))
     }
 
     pub fn keys(&self) -> impl Iterator<Item = &'t str> + 't {
-        map::map_entries(self.ty).map(|(key, _)| key)
+        map::map_entries(&self.0.cx.types.items, self.0.ty).map(|(key, _)| key)
     }
 }
 
@@ -1238,9 +1235,7 @@ pub struct MapWrite<'t, 'doc> {
 
 impl MapWrite<'_, '_> {
     pub fn read(&self) -> MapRead<'_> {
-        MapRead {
-            ty: self.tx.view(self.parent),
-        }
+        MapRead(self.tx.view(self.parent))
     }
 
     pub fn get(&self, key: &str) -> Option<Value> {
@@ -1256,15 +1251,13 @@ impl MapWrite<'_, '_> {
     }
 
     pub fn insert<V: Into<Value>>(&mut self, key: String, value: V) -> JwstCodecResult {
-        let parent = self.parent;
-        let content: Content = value.into().into();
+        let content = self.tx.new_content(self.parent, value.into());
         self.tx
-            .with_type(parent, |store, ty| map::map_insert(parent, store, ty, key, content))
+            .with_type(self.parent, |store, ty| map::map_insert(store, ty, key, content))
     }
 
     pub fn remove(&mut self, key: &str) {
-        let parent = self.parent;
-        let _ = self.tx.with_type(parent, |store, ty| {
+        let _ = self.tx.with_type(self.parent, |store, ty| {
             map::map_remove(store, ty, key);
             Ok(())
         });
@@ -1272,8 +1265,7 @@ impl MapWrite<'_, '_> {
 
     /// Deletes every key.
     pub fn clear(&mut self) {
-        let parent = self.parent;
-        let _ = self.tx.with_type(parent, |store, ty| {
+        let _ = self.tx.with_type(self.parent, |store, ty| {
             map::map_clear(store, ty);
             Ok(())
         });
@@ -1281,27 +1273,24 @@ impl MapWrite<'_, '_> {
 }
 
 /// Reads of an [Array] inside a transaction.
-pub struct ArrayRead<'t> {
-    parent: &'t YTypeRef,
-    ty: &'t YType,
-}
+pub struct ArrayRead<'t>(TypeView<'t>);
 
 impl<'t> ArrayRead<'t> {
     pub fn len(&self) -> u64 {
-        self.ty.len
+        self.0.ty.len
     }
 
     pub fn is_empty(&self) -> bool {
-        self.ty.len == 0
+        self.0.ty.len == 0
     }
 
     pub fn get(&self, index: u64) -> Option<Value> {
-        array::array_get(self.parent, self.ty, index)
+        array::array_get(self.0.cx, self.0.ty, index)
     }
 
     /// The values, borrowed from the transaction.
     pub fn iter(&self) -> impl Iterator<Item = Value> + 't {
-        array::array_values(self.ty)
+        array::array_values(self.0.cx, self.0.ty)
     }
 }
 
@@ -1313,10 +1302,7 @@ pub struct ArrayWrite<'t, 'doc> {
 
 impl ArrayWrite<'_, '_> {
     pub fn read(&self) -> ArrayRead<'_> {
-        ArrayRead {
-            parent: self.parent,
-            ty: self.tx.view(self.parent),
-        }
+        ArrayRead(self.tx.view(self.parent))
     }
 
     pub fn len(&self) -> u64 {
@@ -1332,10 +1318,9 @@ impl ArrayWrite<'_, '_> {
     }
 
     pub fn insert<V: Into<Value>>(&mut self, index: u64, value: V) -> JwstCodecResult {
-        let parent = self.parent;
-        let content: Content = value.into().into();
+        let content = self.tx.new_content(self.parent, value.into());
         self.tx
-            .with_type(parent, |store, ty| list_insert(parent, store, ty, index, content))
+            .with_type(self.parent, |store, ty| list_insert(store, ty, index, content))
     }
 
     pub fn push<V: Into<Value>>(&mut self, value: V) -> JwstCodecResult {
@@ -1344,49 +1329,45 @@ impl ArrayWrite<'_, '_> {
     }
 
     pub fn remove(&mut self, index: u64, len: u64) -> JwstCodecResult {
-        let parent = self.parent;
         self.tx
-            .with_type(parent, |store, ty| list_remove(parent, store, ty, index, len))
+            .with_type(self.parent, |store, ty| list_remove(store, ty, index, len))
     }
 }
 
 /// Reads of an [XMLFragment] inside a transaction.
-pub struct XMLFragmentRead<'t> {
-    parent: &'t YTypeRef,
-    ty: &'t YType,
-}
+pub struct XMLFragmentRead<'t>(TypeView<'t>);
 
 impl<'t> XMLFragmentRead<'t> {
     pub fn len(&self) -> u64 {
-        self.ty.len
+        self.0.ty.len
     }
 
     pub fn is_empty(&self) -> bool {
-        self.ty.len == 0
+        self.0.ty.len == 0
     }
 
     pub fn get(&self, index: u64) -> Option<Value> {
-        array::array_get(self.parent, self.ty, index)
+        array::array_get(self.0.cx, self.0.ty, index)
     }
 
     pub fn iter(&self) -> impl Iterator<Item = Value> + 't {
-        array::array_values(self.ty)
+        array::array_values(self.0.cx, self.0.ty)
     }
 
     pub fn first_child(&self) -> Option<Value> {
-        xml::xml_first_child(self.ty)
+        xml::xml_first_child(self.0.cx, self.0.ty)
     }
 
     pub fn parent(&self) -> Option<Value> {
-        xml::xml_parent(self.ty)
+        xml::xml_parent(self.0.cx, self.0.ty)
     }
 
     pub fn tree_walker(&self) -> std::vec::IntoIter<Value> {
-        xml::xml_tree_walker(self.ty).into_iter()
+        xml::xml_tree_walker(self.0.cx, self.0.ty).into_iter()
     }
 
     pub fn to_xml_string(&self) -> String {
-        xml::xml_to_string(self.ty)
+        xml::xml_to_string(self.0.cx.types, self.0.ty)
     }
 }
 
@@ -1404,10 +1385,7 @@ pub struct XMLFragmentWrite<'t, 'doc> {
 
 impl XMLFragmentWrite<'_, '_> {
     pub fn read(&self) -> XMLFragmentRead<'_> {
-        XMLFragmentRead {
-            parent: self.parent,
-            ty: self.tx.view(self.parent),
-        }
+        XMLFragmentRead(self.tx.view(self.parent))
     }
 
     pub fn len(&self) -> u64 {
@@ -1423,10 +1401,9 @@ impl XMLFragmentWrite<'_, '_> {
     }
 
     pub fn insert<V: Into<Value>>(&mut self, index: u64, value: V) -> JwstCodecResult {
-        let parent = self.parent;
-        let content: Content = value.into().into();
+        let content = self.tx.new_content(self.parent, value.into());
         self.tx
-            .with_type(parent, |store, ty| list_insert(parent, store, ty, index, content))
+            .with_type(self.parent, |store, ty| list_insert(store, ty, index, content))
     }
 
     pub fn push<V: Into<Value>>(&mut self, value: V) -> JwstCodecResult {
@@ -1435,73 +1412,70 @@ impl XMLFragmentWrite<'_, '_> {
     }
 
     pub fn remove(&mut self, index: u64, len: u64) -> JwstCodecResult {
-        let parent = self.parent;
         self.tx
-            .with_type(parent, |store, ty| list_remove(parent, store, ty, index, len))
+            .with_type(self.parent, |store, ty| list_remove(store, ty, index, len))
     }
 }
 
 /// Reads of an [XMLElement] inside a transaction.
-pub struct XMLElementRead<'t> {
-    parent: &'t YTypeRef,
-    ty: &'t YType,
-}
+pub struct XMLElementRead<'t>(TypeView<'t>);
 
 impl<'t> XMLElementRead<'t> {
     pub fn tag_name(&self) -> &'t str {
-        xml::xml_tag_name(self.ty)
+        xml::xml_tag_name(self.0.ty)
     }
 
     pub fn len(&self) -> u64 {
-        self.ty.len
+        self.0.ty.len
     }
 
     pub fn is_empty(&self) -> bool {
-        self.ty.len == 0
+        self.0.ty.len == 0
     }
 
     pub fn get(&self, index: u64) -> Option<Value> {
-        array::array_get(self.parent, self.ty, index)
+        array::array_get(self.0.cx, self.0.ty, index)
     }
 
     pub fn iter(&self) -> impl Iterator<Item = Value> + 't {
-        array::array_values(self.ty)
+        array::array_values(self.0.cx, self.0.ty)
     }
 
     pub fn first_child(&self) -> Option<Value> {
-        xml::xml_first_child(self.ty)
+        xml::xml_first_child(self.0.cx, self.0.ty)
     }
 
     pub fn parent(&self) -> Option<Value> {
-        xml::xml_parent(self.ty)
+        xml::xml_parent(self.0.cx, self.0.ty)
     }
 
     pub fn next_sibling(&self) -> Option<Value> {
-        xml::xml_next_sibling(self.ty)
+        xml::xml_next_sibling(self.0.cx, self.0.ty)
     }
 
     pub fn prev_sibling(&self) -> Option<Value> {
-        xml::xml_prev_sibling(self.ty)
+        xml::xml_prev_sibling(self.0.cx, self.0.ty)
     }
 
     pub fn tree_walker(&self) -> std::vec::IntoIter<Value> {
-        xml::xml_tree_walker(self.ty).into_iter()
+        xml::xml_tree_walker(self.0.cx, self.0.ty).into_iter()
     }
 
     pub fn get_attribute(&self, name: &str) -> Option<Value> {
-        map::map_value(self.ty, name).map(|item| Value::from(&item.content))
+        map::map_value(&self.0.cx.types.items, self.0.ty, name)
+            .map(|item| Value::from_content(self.0.cx, &item.content))
     }
 
     pub fn contains_attribute(&self, name: &str) -> bool {
-        map::map_value(self.ty, name).is_some()
+        map::map_value(&self.0.cx.types.items, self.0.ty, name).is_some()
     }
 
     pub fn attributes(&self) -> Vec<(String, Value)> {
-        xml::xml_attributes(self.ty)
+        xml::xml_attributes(self.0.cx, self.0.ty)
     }
 
     pub fn to_xml_string(&self) -> String {
-        xml::xml_to_string(self.ty)
+        xml::xml_to_string(self.0.cx.types, self.0.ty)
     }
 }
 
@@ -1519,10 +1493,7 @@ pub struct XMLElementWrite<'t, 'doc> {
 
 impl XMLElementWrite<'_, '_> {
     pub fn read(&self) -> XMLElementRead<'_> {
-        XMLElementRead {
-            parent: self.parent,
-            ty: self.tx.view(self.parent),
-        }
+        XMLElementRead(self.tx.view(self.parent))
     }
 
     pub fn tag_name(&self) -> &str {
@@ -1546,26 +1517,23 @@ impl XMLElementWrite<'_, '_> {
     }
 
     pub fn set_attribute<K: Into<String>, V: Into<Value>>(&mut self, name: K, value: V) -> JwstCodecResult {
-        let parent = self.parent;
-        let content: Content = value.into().into();
-        self.tx.with_type(parent, |store, ty| {
-            map::map_insert(parent, store, ty, name.into(), content)
+        let content = self.tx.new_content(self.parent, value.into());
+        self.tx.with_type(self.parent, |store, ty| {
+            map::map_insert(store, ty, name.into(), content)
         })
     }
 
     pub fn remove_attribute(&mut self, name: &str) -> JwstCodecResult {
-        let parent = self.parent;
-        self.tx.with_type(parent, |store, ty| {
+        self.tx.with_type(self.parent, |store, ty| {
             map::map_remove(store, ty, name);
             Ok(())
         })
     }
 
     pub fn insert<V: Into<Value>>(&mut self, index: u64, value: V) -> JwstCodecResult {
-        let parent = self.parent;
-        let content: Content = value.into().into();
+        let content = self.tx.new_content(self.parent, value.into());
         self.tx
-            .with_type(parent, |store, ty| list_insert(parent, store, ty, index, content))
+            .with_type(self.parent, |store, ty| list_insert(store, ty, index, content))
     }
 
     pub fn push<V: Into<Value>>(&mut self, value: V) -> JwstCodecResult {
@@ -1574,48 +1542,45 @@ impl XMLElementWrite<'_, '_> {
     }
 
     pub fn remove(&mut self, index: u64, len: u64) -> JwstCodecResult {
-        let parent = self.parent;
         self.tx
-            .with_type(parent, |store, ty| list_remove(parent, store, ty, index, len))
+            .with_type(self.parent, |store, ty| list_remove(store, ty, index, len))
     }
 }
 
 /// Reads of an [XMLText] inside a transaction.
-pub struct XMLTextRead<'t> {
-    ty: &'t YType,
-}
+pub struct XMLTextRead<'t>(TypeView<'t>);
 
-impl<'t> XMLTextRead<'t> {
+impl XMLTextRead<'_> {
     pub fn len(&self) -> u64 {
-        self.ty.len
+        self.0.ty.len
     }
 
     pub fn is_empty(&self) -> bool {
-        self.ty.len == 0
+        self.0.ty.len == 0
     }
 
     pub fn to_delta(&self) -> TextDelta {
-        text::text_delta(self.ty)
+        text::text_delta(&self.0.cx.types.items, self.0.ty)
     }
 
     pub fn identity_runs(&self) -> JwstCodecResult<Vec<TextIdentityRun>> {
-        text::identity_runs(self.ty)
+        text::identity_runs(&self.0.cx.types.items, self.0.ty)
     }
 
     pub fn parent(&self) -> Option<Value> {
-        xml::xml_parent(self.ty)
+        xml::xml_parent(self.0.cx, self.0.ty)
     }
 
     pub fn next_sibling(&self) -> Option<Value> {
-        xml::xml_next_sibling(self.ty)
+        xml::xml_next_sibling(self.0.cx, self.0.ty)
     }
 
     pub fn prev_sibling(&self) -> Option<Value> {
-        xml::xml_prev_sibling(self.ty)
+        xml::xml_prev_sibling(self.0.cx, self.0.ty)
     }
 
     pub fn to_xml_string(&self) -> String {
-        xml::xml_text_to_string(self.ty)
+        xml::xml_text_to_string(&self.0.cx.types.items, self.0.ty)
     }
 }
 
@@ -1633,9 +1598,7 @@ pub struct XMLTextWrite<'t, 'doc> {
 
 impl XMLTextWrite<'_, '_> {
     pub fn read(&self) -> XMLTextRead<'_> {
-        XMLTextRead {
-            ty: self.tx.view(self.parent),
-        }
+        XMLTextRead(self.tx.view(self.parent))
     }
 
     pub fn len(&self) -> u64 {
@@ -1647,60 +1610,52 @@ impl XMLTextWrite<'_, '_> {
     }
 
     pub fn insert<T: ToString>(&mut self, index: u64, str: T) -> JwstCodecResult {
-        let parent = self.parent;
-        self.tx.with_type(parent, |store, ty| {
-            list_insert(parent, store, ty, index, Content::String(str.to_string()))
+        self.tx.with_type(self.parent, |store, ty| {
+            list_insert(store, ty, index, Content::String(str.to_string()))
         })
     }
 
     pub fn insert_embed<V: Into<Any>>(&mut self, index: u64, embed: V) -> JwstCodecResult {
-        let parent = self.parent;
         let embed = embed.into();
-        self.tx.with_type(parent, |store, ty| {
-            text::text_insert_embed(parent, store, ty, index, embed)
+        self.tx.with_type(self.parent, |store, ty| {
+            text::text_insert_embed(store, ty, index, embed)
         })
     }
 
     pub fn format(&mut self, index: u64, len: u64, attrs: TextAttributes) -> JwstCodecResult {
-        let parent = self.parent;
-        self.tx.with_type(parent, |store, ty| {
-            text::text_format(parent, store, ty, index, len, attrs)
-        })
+        self.tx
+            .with_type(self.parent, |store, ty| text::text_format(store, ty, index, len, attrs))
     }
 
     pub fn remove(&mut self, index: u64, len: u64) -> JwstCodecResult {
-        let parent = self.parent;
         self.tx
-            .with_type(parent, |store, ty| text::text_remove(parent, store, ty, index, len))
+            .with_type(self.parent, |store, ty| text::text_remove(store, ty, index, len))
     }
 
     pub fn apply_delta(&mut self, delta: &[TextDeltaOp]) -> JwstCodecResult {
-        let parent = self.parent;
         self.tx
-            .with_type(parent, |store, ty| text::apply_text_delta(parent, store, ty, delta))
+            .with_type(self.parent, |store, ty| text::apply_text_delta(store, ty, delta))
     }
 }
 
 /// Reads of an [XMLHook] inside a transaction.
-pub struct XMLHookRead<'t> {
-    ty: &'t YType,
-}
+pub struct XMLHookRead<'t>(TypeView<'t>);
 
 impl<'t> XMLHookRead<'t> {
     pub fn hook_name(&self) -> &'t str {
-        xml::xml_hook_name(self.ty)
+        xml::xml_hook_name(self.0.ty)
     }
 
     pub fn get(&self, key: &str) -> Option<Value> {
-        map::map_value(self.ty, key).map(|item| Value::from(&item.content))
+        map::map_value(&self.0.cx.types.items, self.0.ty, key).map(|item| Value::from_content(self.0.cx, &item.content))
     }
 
     pub fn contains_key(&self, key: &str) -> bool {
-        map::map_value(self.ty, key).is_some()
+        map::map_value(&self.0.cx.types.items, self.0.ty, key).is_some()
     }
 
     pub fn len(&self) -> u64 {
-        map::map_entries(self.ty).count() as u64
+        map::map_entries(&self.0.cx.types.items, self.0.ty).count() as u64
     }
 
     pub fn is_empty(&self) -> bool {
@@ -1708,23 +1663,25 @@ impl<'t> XMLHookRead<'t> {
     }
 
     pub fn iter(&self) -> impl Iterator<Item = (&'t str, Value)> + 't {
-        map::map_entries(self.ty).map(|(key, item)| (key, Value::from(&item.content)))
+        let cx = self.0.cx;
+        map::map_entries(&self.0.cx.types.items, self.0.ty)
+            .map(move |(key, item)| (key, Value::from_content(cx, &item.content)))
     }
 
     pub fn keys(&self) -> impl Iterator<Item = &'t str> + 't {
-        map::map_entries(self.ty).map(|(key, _)| key)
+        map::map_entries(&self.0.cx.types.items, self.0.ty).map(|(key, _)| key)
     }
 
     pub fn parent(&self) -> Option<Value> {
-        xml::xml_parent(self.ty)
+        xml::xml_parent(self.0.cx, self.0.ty)
     }
 
     pub fn next_sibling(&self) -> Option<Value> {
-        xml::xml_next_sibling(self.ty)
+        xml::xml_next_sibling(self.0.cx, self.0.ty)
     }
 
     pub fn prev_sibling(&self) -> Option<Value> {
-        xml::xml_prev_sibling(self.ty)
+        xml::xml_prev_sibling(self.0.cx, self.0.ty)
     }
 }
 
@@ -1736,9 +1693,7 @@ pub struct XMLHookWrite<'t, 'doc> {
 
 impl XMLHookWrite<'_, '_> {
     pub fn read(&self) -> XMLHookRead<'_> {
-        XMLHookRead {
-            ty: self.tx.view(self.parent),
-        }
+        XMLHookRead(self.tx.view(self.parent))
     }
 
     pub fn hook_name(&self) -> &str {
@@ -1758,23 +1713,20 @@ impl XMLHookWrite<'_, '_> {
     }
 
     pub fn insert<V: Into<Value>>(&mut self, key: String, value: V) -> JwstCodecResult {
-        let parent = self.parent;
-        let content: Content = value.into().into();
+        let content = self.tx.new_content(self.parent, value.into());
         self.tx
-            .with_type(parent, |store, ty| map::map_insert(parent, store, ty, key, content))
+            .with_type(self.parent, |store, ty| map::map_insert(store, ty, key, content))
     }
 
     pub fn remove(&mut self, key: &str) -> JwstCodecResult {
-        let parent = self.parent;
-        self.tx.with_type(parent, |store, ty| {
+        self.tx.with_type(self.parent, |store, ty| {
             map::map_remove(store, ty, key);
             Ok(())
         })
     }
 
     pub fn clear(&mut self) -> JwstCodecResult {
-        let parent = self.parent;
-        self.tx.with_type(parent, |store, ty| {
+        self.tx.with_type(self.parent, |store, ty| {
             map::map_clear(store, ty);
             Ok(())
         })

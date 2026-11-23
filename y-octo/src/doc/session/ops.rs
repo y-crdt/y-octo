@@ -1,15 +1,13 @@
 use super::{PathSegment, SessionReadValue, SessionValue, TypePath, TypeTarget};
 use crate::{
-    Any, Content, JwstCodecError, JwstCodecResult, TypeIdentity, Value, YTypeKind,
+    Any, Content, JwstCodecError, JwstCodecResult, TypeIdentity, YTypeKind,
     doc::{
-        DocStore, HashMap, MarkerList, Node, Parent, Somr, YType, YTypeRef,
-        store::StoreRef,
+        Carrier, DocStore, HashMap, TypeArena, TypeIdx, YType,
         types::{
-            item_at, list_insert, map, text,
+            content_any, item_at, list_insert, map, text,
             xml::{xml_hook_name, xml_tag_name},
         },
     },
-    sync::Arc,
 };
 
 // ---------------------------------------------------------------------------
@@ -50,7 +48,7 @@ pub(crate) fn solidify_array_kind(ty: &mut YType) -> JwstCodecResult {
         YTypeKind::Unknown => {
             ty.set_kind(YTypeKind::Array)?;
             if ty.markers.is_none() {
-                ty.markers = Some(MarkerList::new());
+                ty.markers = Some(Box::default());
             }
             Ok(())
         }
@@ -64,7 +62,7 @@ pub(crate) fn solidify_text_kind(ty: &mut YType) -> JwstCodecResult {
         YTypeKind::Unknown => {
             ty.set_kind(YTypeKind::Text)?;
             if ty.markers.is_none() {
-                ty.markers = Some(MarkerList::new());
+                ty.markers = Some(Box::default());
             }
             Ok(())
         }
@@ -85,7 +83,7 @@ pub(crate) fn solidify_xml_element_kind(ty: &mut YType) -> JwstCodecResult {
         YTypeKind::Unknown => {
             ty.set_kind(YTypeKind::XMLElement)?;
             if ty.markers.is_none() {
-                ty.markers = Some(MarkerList::new());
+                ty.markers = Some(Box::default());
             }
             Ok(())
         }
@@ -146,24 +144,40 @@ pub(crate) fn validate_session_value(value: &SessionValue, depth: usize) -> Jwst
     }
 }
 
+/// How many types inserting `value` adds to the document: itself and every
+/// type nested in it. The value passed [validate_session_value], which bounds
+/// its depth.
+pub(crate) fn new_type_count(value: &SessionValue) -> usize {
+    match value {
+        SessionValue::Any(_) | SessionValue::Doc { .. } => 0,
+        SessionValue::Text(_) | SessionValue::XmlText(_) => 1,
+        SessionValue::Map(entries) | SessionValue::XmlHook { entries, .. } => {
+            1 + entries.iter().map(|(_, value)| new_type_count(value)).sum::<usize>()
+        }
+        SessionValue::Array(items)
+        | SessionValue::XmlFragment(items)
+        | SessionValue::XmlElement { children: items, .. } => 1 + items.iter().map(new_type_count).sum::<usize>(),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Store-level resolution, zero-alloc liveness, and path computation
 
-pub(crate) fn resolve_identity_raw(store: &DocStore, id: &TypeIdentity) -> JwstCodecResult<YTypeRef> {
+pub(crate) fn resolve_identity_raw(store: &DocStore, id: &TypeIdentity) -> JwstCodecResult<TypeIdx> {
     match id {
         TypeIdentity::Root(name) => store
             .types
             .get(name)
-            .cloned()
+            .copied()
             .ok_or_else(|| JwstCodecError::RootStructNotFound(name.clone())),
-        TypeIdentity::Item(item_id) => match store.get_node(*item_id) {
-            Some(Node::Item(item_ref)) => {
-                let item = item_ref.get().ok_or(JwstCodecError::InvalidParent)?;
+        TypeIdentity::Item(item_id) => match store.get_node(*item_id).and_then(|n| n.as_item()) {
+            Some(idx) => {
+                let item = store.type_arena.items.get(idx).ok_or(JwstCodecError::InvalidParent)?;
                 if item.id != *item_id {
                     return Err(JwstCodecError::InvalidParent);
                 }
                 match &item.content {
-                    Content::Type(ty_ref) => Ok(ty_ref.clone()),
+                    Content::Type(ty) => Ok(*ty),
                     _ => Err(JwstCodecError::InvalidParent),
                 }
             }
@@ -172,93 +186,96 @@ pub(crate) fn resolve_identity_raw(store: &DocStore, id: &TypeIdentity) -> JwstC
     }
 }
 
-/// Zero-allocation liveness check: walks up the `Parent::Type` chain verifying
+/// Zero-allocation liveness check: walks up the parent type chain verifying
 /// no carrier item is deleted and the root is still registered in
 /// `store.types`.
-pub(crate) fn is_type_alive(store: &DocStore, ty_ref: &YTypeRef) -> bool {
-    let mut cur = ty_ref;
+pub(crate) fn is_type_alive(store: &DocStore, ty: TypeIdx) -> bool {
+    let mut cur = ty;
     loop {
-        let Some(ty) = cur.ty() else {
+        let Some(ty) = store.type_arena.get(cur) else {
             return false;
         };
-        if let Some(root_name) = &ty.root_name {
-            return store.types.get(root_name).is_some_and(|root| root == cur);
+        if let Some(root_name) = ty.root_name() {
+            return store.types.get(root_name).is_some_and(|root| *root == cur);
         }
-        let Some(item) = ty.item.get() else {
+        let Some(item) = ty.live_carrier(&store.type_arena.items) else {
             return false;
         };
         if item.deleted() {
             return false;
         }
         match &item.parent {
-            Some(Parent::Type(parent_ref)) => cur = parent_ref,
+            Some(parent) => cur = *parent,
             _ => return false,
         }
     }
 }
 
-pub(crate) fn compute_type_path(ty_ref: &YTypeRef) -> Option<TypePath> {
+pub(crate) fn compute_type_path(types: &TypeArena, ty: TypeIdx) -> Option<TypePath> {
     let mut segments = Vec::new();
-    let mut cur = ty_ref.clone();
+    let mut cur = ty;
     loop {
-        let ty = cur.ty()?;
-        if let Some(root_name) = &ty.root_name {
+        let ty = types.get(cur)?;
+        if let Some(root_name) = ty.root_name() {
             segments.reverse();
             return Some(TypePath {
-                root: root_name.clone(),
+                root: root_name.to_owned(),
                 segments,
             });
         }
-        let item = ty.item.get()?;
+        let item = ty.live_carrier(&types.items)?;
         if item.deleted() {
             return None;
         }
-        let Some(Parent::Type(parent_ref)) = &item.parent else {
+        let Some(parent) = &item.parent else {
             return None;
         };
         if let Some(key) = &item.parent_sub {
             segments.push(PathSegment::Key(key.to_string()));
         } else {
             let mut idx = 0u64;
-            let mut left = item.left.clone();
-            while let Some(left_item) = left.get() {
+            let mut left = item.left;
+            while let Some(left_item) = left.and_then(|i| types.items.get(i)) {
                 if left_item.indexable() {
                     idx += left_item.len();
                 }
-                left = left_item.left.clone();
+                left = left_item.left;
             }
             segments.push(PathSegment::Index(idx));
         }
-        cur = parent_ref.clone();
+        cur = *parent;
     }
 }
 
-pub(crate) fn resolve_path_in_store(store: &DocStore, path: &TypePath) -> JwstCodecResult<YTypeRef> {
+pub(crate) fn resolve_path_in_store(store: &DocStore, path: &TypePath) -> JwstCodecResult<TypeIdx> {
     let mut cur = store
         .types
         .get(&path.root)
-        .cloned()
+        .copied()
         .ok_or_else(|| JwstCodecError::RootStructNotFound(path.root.clone()))?;
     for segment in &path.segments {
         let next = {
-            let ty = cur.ty().ok_or(JwstCodecError::DocReleased)?;
+            let ty = store.type_arena.get(cur).ok_or(JwstCodecError::DocReleased)?;
             match segment {
                 PathSegment::Key(key) => {
-                    let item = map::map_value(ty, key).ok_or(JwstCodecError::ParentNotFound)?;
+                    let item =
+                        map::map_value(&store.type_arena.items, ty, key).ok_or(JwstCodecError::ParentNotFound)?;
                     match &item.content {
-                        Content::Type(child) => child.clone(),
+                        Content::Type(child) => *child,
                         _ => return Err(JwstCodecError::InvalidParent),
                     }
                 }
                 PathSegment::Index(index) => {
                     let (item_ref, offset) =
-                        item_at(&cur, ty, *index).ok_or(JwstCodecError::IndexOutOfBound(*index))?;
+                        item_at(&store.type_arena.items, ty, *index).ok_or(JwstCodecError::IndexOutOfBound(*index))?;
                     if offset != 0 {
                         return Err(JwstCodecError::InvalidParent);
                     }
-                    let item = item_ref.get().ok_or(JwstCodecError::ParentNotFound)?;
+                    let item = item_ref
+                        .and_then(|i| store.type_arena.items.get(i))
+                        .ok_or(JwstCodecError::ParentNotFound)?;
                     match &item.content {
-                        Content::Type(child) => child.clone(),
+                        Content::Type(child) => *child,
                         _ => return Err(JwstCodecError::InvalidParent),
                     }
                 }
@@ -269,15 +286,15 @@ pub(crate) fn resolve_path_in_store(store: &DocStore, path: &TypePath) -> JwstCo
     Ok(cur)
 }
 
-pub(crate) fn resolve_target(store: &DocStore, target: &TypeTarget) -> JwstCodecResult<YTypeRef> {
-    let ty_ref = match target {
+pub(crate) fn resolve_target(store: &DocStore, target: &TypeTarget) -> JwstCodecResult<TypeIdx> {
+    let ty = match target {
         TypeTarget::Identity(id) => resolve_identity_raw(store, id)?,
         TypeTarget::Path(path) => resolve_path_in_store(store, path)?,
     };
-    if !is_type_alive(store, &ty_ref) {
+    if !is_type_alive(store, ty) {
         return Err(JwstCodecError::InvalidParent);
     }
-    Ok(ty_ref)
+    Ok(ty)
 }
 
 // ---------------------------------------------------------------------------
@@ -306,13 +323,13 @@ pub(crate) fn parse_json_content_elem(elem: &Option<String>) -> Any {
     }
 }
 
-pub(crate) fn read_value_from_content(content: &Content) -> SessionReadValue {
+pub(crate) fn read_value_from_content(types: &TypeArena, content: &Content) -> SessionReadValue {
     match content {
-        Content::Type(ty_ref) => {
-            let Some(ty) = ty_ref.ty() else {
+        Content::Type(ty) => {
+            let Some(ty) = types.get(*ty) else {
                 return SessionReadValue::Any(Any::Undefined);
             };
-            let Ok(identity) = ty.identity() else {
+            let Ok(identity) = ty.identity(&types.items) else {
                 return SessionReadValue::Any(Any::Undefined);
             };
             match ty.kind() {
@@ -332,32 +349,23 @@ pub(crate) fn read_value_from_content(content: &Content) -> SessionReadValue {
                 YTypeKind::Unknown => SessionReadValue::Any(Any::Undefined),
             }
         }
-        Content::Doc { guid, opts } => {
-            let gc = match opts.as_ref() {
+        Content::Doc(doc) => {
+            let guid = &doc.guid;
+            let gc = match &doc.opts {
                 Any::Object(map) => !matches!(map.get("gc"), Some(Any::False)),
                 _ => true,
             };
             SessionReadValue::Doc { guid: guid.clone(), gc }
         }
         Content::Json(items) => SessionReadValue::Any(items.last().map_or(Any::Undefined, parse_json_content_elem)),
-        other => match Value::from(other) {
-            Value::Any(any) => SessionReadValue::Any(any),
-            _ => SessionReadValue::Any(Any::Undefined),
-        },
+        other => SessionReadValue::Any(content_any(other).unwrap_or(Any::Undefined)),
     }
 }
 
-fn new_child_type(store: &mut DocStore, store_ref: &StoreRef, kind: YTypeKind, name: Option<String>) -> YTypeRef {
+fn new_child_type(store: &mut DocStore, kind: YTypeKind, name: Option<String>) -> JwstCodecResult<TypeIdx> {
     let mut ytype = YType::new(kind, name);
-    ytype.markers = kind.uses_markers().then(MarkerList::new);
-    let inner = Somr::new(ytype);
-    let ty = YTypeRef {
-        store: Arc::downgrade(store_ref),
-        inner,
-    };
-    let ty_ref = ty.clone();
-    store.dangling_types.insert(ty.inner.ptr().as_ptr() as usize, ty);
-    ty_ref
+    ytype.markers = kind.uses_markers().then(Box::default);
+    store.type_arena.alloc(ytype)
 }
 
 fn doc_content(guid: String, gc: bool) -> Content {
@@ -365,51 +373,41 @@ fn doc_content(guid: String, gc: bool) -> Content {
         ("gc".into(), gc.into()),
         ("guid".into(), guid.clone().into()),
     ])));
-    Content::Doc {
-        guid,
-        opts: Box::new(opts),
-    }
+    Content::doc(guid, opts)
 }
 
-fn populate_child_type(
-    store: &mut DocStore,
-    store_ref: &StoreRef,
-    child: &YTypeRef,
-    value: SessionValue,
-) -> JwstCodecResult {
+fn populate_child_type(store: &mut DocStore, child: TypeIdx, value: SessionValue) -> JwstCodecResult {
     match value {
         SessionValue::Map(entries) => {
             for (k, v) in entries {
-                insert_session_value(store, store_ref, child, InsertSlot::MapKey(k), v)?;
+                insert_checked(store, child, InsertSlot::MapKey(k), v)?;
             }
             Ok(())
         }
         SessionValue::Array(items) | SessionValue::XmlFragment(items) => {
             for (i, v) in items.into_iter().enumerate() {
-                insert_session_value(store, store_ref, child, InsertSlot::ListIndex(i as u64), v)?;
+                insert_checked(store, child, InsertSlot::ListIndex(i as u64), v)?;
             }
             Ok(())
         }
         SessionValue::Text(delta) | SessionValue::XmlText(delta) => {
             if !delta.is_empty() {
-                child.write_locked(store, |store, ty| text::apply_text_delta(child, store, ty, &delta))?;
+                store.edit_type(child, |store, ty| text::apply_text_delta(store, ty, &delta))?;
             }
             Ok(())
         }
         SessionValue::XmlElement { attrs, children, .. } => {
             for (k, v) in attrs {
-                child.write_locked(store, |store, ty| {
-                    map::map_insert(child, store, ty, k, Content::from(v))
-                })?;
+                store.edit_type(child, |store, ty| map::map_insert(store, ty, k, Content::from(v)))?;
             }
             for (i, c) in children.into_iter().enumerate() {
-                insert_session_value(store, store_ref, child, InsertSlot::ListIndex(i as u64), c)?;
+                insert_checked(store, child, InsertSlot::ListIndex(i as u64), c)?;
             }
             Ok(())
         }
         SessionValue::XmlHook { entries, .. } => {
             for (k, v) in entries {
-                insert_session_value(store, store_ref, child, InsertSlot::MapKey(k), v)?;
+                insert_checked(store, child, InsertSlot::MapKey(k), v)?;
             }
             Ok(())
         }
@@ -422,41 +420,54 @@ pub(crate) enum InsertSlot {
     ListIndex(u64),
 }
 
-fn mount_content(store: &mut DocStore, parent: &YTypeRef, slot: InsertSlot, content: Content) -> JwstCodecResult {
+fn mount_content(store: &mut DocStore, parent: TypeIdx, slot: InsertSlot, content: Content) -> JwstCodecResult {
     match slot {
-        InsertSlot::MapKey(key) => parent.write_locked(store, |store, ty| {
-            solidify_map_kind(ty)?;
-            map::map_insert(parent, store, ty, key, content)
+        InsertSlot::MapKey(key) => store.edit_type(parent, |store, ty| {
+            solidify_map_kind(&mut store.type_arena[ty])?;
+            map::map_insert(store, ty, key, content)
         }),
-        InsertSlot::ListIndex(index) => parent.write_locked(store, |store, ty| {
-            solidify_array_kind(ty)?;
-            list_insert(parent, store, ty, index, content)
+        InsertSlot::ListIndex(index) => store.edit_type(parent, |store, ty| {
+            solidify_array_kind(&mut store.type_arena[ty])?;
+            list_insert(store, ty, index, content)
         }),
     }
 }
 
-/// Inserts a pre-validated [`SessionValue`] into `parent` at `slot`.
+/// Validates that `parent` takes a value at `slot`: container compatibility
+/// and bounds.
+fn check_slot(store: &DocStore, parent: TypeIdx, slot: &InsertSlot) -> JwstCodecResult {
+    let ty = store.type_arena.get(parent).ok_or(JwstCodecError::DocReleased)?;
+    match slot {
+        InsertSlot::MapKey(_) => check_map_read_kind(ty),
+        InsertSlot::ListIndex(idx) => {
+            check_array_read_kind(ty)?;
+            if *idx > ty.len {
+                return Err(JwstCodecError::IndexOutOfBound(*idx));
+            }
+            Ok(())
+        }
+    }
+}
+
+/// Inserts a pre-validated [`SessionValue`] into the type `parent` of `store`
+/// at `slot`. Nothing changes unless the slot takes a value and every type of
+/// `value` fits the document.
 pub(crate) fn insert_session_value(
     store: &mut DocStore,
-    store_ref: &StoreRef,
-    parent: &YTypeRef,
+    parent: TypeIdx,
     slot: InsertSlot,
     value: SessionValue,
 ) -> JwstCodecResult {
+    check_slot(store, parent, &slot)?;
+    store.type_arena.check_capacity(new_type_count(&value))?;
+    insert_checked(store, parent, slot, value)
+}
+
+/// [insert_session_value] once the types of the whole value are known to fit.
+fn insert_checked(store: &mut DocStore, parent: TypeIdx, slot: InsertSlot, value: SessionValue) -> JwstCodecResult {
     // Validate parent container compatibility and bounds BEFORE allocating any
-    // child type into `store.dangling_types` or solidifying an `Unknown` root.
-    {
-        let ty = parent.ty().ok_or(JwstCodecError::DocReleased)?;
-        match &slot {
-            InsertSlot::MapKey(_) => check_map_read_kind(ty)?,
-            InsertSlot::ListIndex(idx) => {
-                check_array_read_kind(ty)?;
-                if *idx > ty.len {
-                    return Err(JwstCodecError::IndexOutOfBound(*idx));
-                }
-            }
-        }
-    }
+    // child type in the store's arena or solidifying an `Unknown` root.
+    check_slot(store, parent, &slot)?;
     match value {
         SessionValue::Any(any) => mount_content(store, parent, slot, Content::from(any)),
         SessionValue::Doc { guid, gc } => mount_content(store, parent, slot, doc_content(guid, gc)),
@@ -471,9 +482,19 @@ pub(crate) fn insert_session_value(
                 SessionValue::XmlHook { name, .. } => (YTypeKind::XMLHook, Some(name.clone())),
                 SessionValue::Any(_) | SessionValue::Doc { .. } => unreachable!(),
             };
-            let child = new_child_type(store, store_ref, kind, name);
-            mount_content(store, parent, slot, Content::Type(child.clone()))?;
-            populate_child_type(store, store_ref, &child, value)
+            // The child stays in the arena only once its carrier is mounted.
+            let types_before = store.type_arena.len();
+            let child = new_child_type(store, kind, name)?;
+            if let Err(err) = mount_content(store, parent, slot, Content::Type(child)) {
+                if !matches!(
+                    store.type_arena[child].carrier(&store.type_arena.items),
+                    Carrier::Live(_)
+                ) {
+                    store.type_arena.rollback(types_before);
+                }
+                return Err(err);
+            }
+            populate_child_type(store, child, value)
         }
     }
 }

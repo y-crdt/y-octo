@@ -7,116 +7,154 @@ impl YType {
         !self.published
     }
 
-    pub(super) fn id(&self) -> Option<Id> {
+    pub(super) fn id(&self, items: &ItemSpace) -> Option<Id> {
         if self.is_preliminary() {
             None
+        } else if let Carrier::Live(item) = self.carrier(items) {
+            Some(item.id)
         } else {
-            self.item.get().map(|item| item.id)
+            None
         }
     }
 }
 
-impl YTypeRef {
-    /// The caller holds the document lock. A deleted or collected type is
-    /// retired, not a fresh preliminary type.
-    pub(crate) fn preliminary_root(&self) -> JwstCodecResult<Option<Self>> {
-        let mut current = self;
+impl TypeArena {
+    /// The root of the preliminary subtree `id` is edited in, `None` for a
+    /// type of the document itself. The caller holds the document lock. A
+    /// deleted or collected type is retired, not a fresh preliminary type.
+    pub(crate) fn preliminary_root(&self, id: TypeIdx) -> JwstCodecResult<Option<TypeIdx>> {
+        let mut current = id;
         loop {
-            let ty = current.ty().ok_or(JwstCodecError::DocReleased)?;
+            let ty = self.get(current).ok_or(JwstCodecError::DocReleased)?;
+            let carrier = ty.carrier(&self.items);
             if ty.published {
-                if ty.root_name.is_none() && ty.item.get().is_none_or(|item| item.deleted()) {
+                if ty.root_name().is_none() && !matches!(carrier, Carrier::Live(item) if !item.deleted()) {
                     return Err(JwstCodecError::InvalidParent);
                 }
                 return Ok(None);
             }
-            if ty.item.is_unset() {
-                return Ok(Some(current.clone()));
+            match carrier {
+                Carrier::Unset => return Ok(Some(current)),
+                Carrier::Live(item) if !item.deleted() => {
+                    current = ty.parent_type.ok_or(JwstCodecError::InvalidParent)?;
+                }
+                Carrier::Live(_) | Carrier::Retired => return Err(JwstCodecError::InvalidParent),
             }
-            let item = ty.item.get().ok_or(JwstCodecError::InvalidParent)?;
-            if item.deleted() {
-                return Err(JwstCodecError::InvalidParent);
-            }
-            current = match &item.parent {
-                Some(Parent::Type(parent)) => parent,
-                _ => return Err(JwstCodecError::InvalidParent),
-            };
         }
     }
 }
 
 // Only current contents cross the preliminary boundary. Staging item IDs,
 // deleted items and their history are deliberately not published.
-struct PreparedType {
-    ty: YTypeRef,
+// Stored as a flat indexed tree so capture, integration, and drop stay
+// iterative and cannot overflow the stack on deeply nested preliminary types.
+pub(in crate::doc) struct PreparedType {
+    nodes: Vec<PreparedNode>,
+}
+struct PreparedNode {
+    ty: TypeIdx,
     entries: Vec<(Option<SmolStr>, PreparedValue)>,
 }
 enum PreparedValue {
     Content(Content),
-    Type(PreparedType),
-}
-impl PreparedValue {
-    fn capture(content: &Content) -> Self {
-        match content {
-            Content::Type(ty) => Self::Type(PreparedType::capture(ty)),
-            content => Self::Content(content.clone()),
-        }
-    }
-    fn content(&self) -> Content {
-        match self {
-            Self::Content(content) => content.clone(),
-            Self::Type(ty) => Content::Type(ty.ty.clone()),
-        }
-    }
+    Type(usize),
 }
 impl PreparedType {
-    fn capture(ty_ref: &YTypeRef) -> Self {
-        let ty = ty_ref.ty().unwrap();
-        let mut entries: Vec<_> = ListIterator::new(ty)
-            .map(|item| (None, PreparedValue::capture(&item.content)))
-            .collect();
-        let mut map: Vec<_> = map_entries(ty).collect();
-        map.sort_unstable_by_key(|(key, _)| *key);
-        entries.extend(
-            map.into_iter()
-                .map(|(key, item)| (Some(SmolStr::new(key)), PreparedValue::capture(&item.content))),
-        );
-        Self {
-            ty: ty_ref.clone(),
-            entries,
+    fn capture(types: &TypeArena, root: TypeIdx, mut clock: u64) -> JwstCodecResult<Self> {
+        // The new carrier and every visible entry coexist with the quarantined
+        // staging slots.
+        let mut slots = 1usize;
+        let mut nodes = vec![PreparedNode {
+            ty: root,
+            entries: Vec::new(),
+        }];
+        let mut stack = vec![0usize];
+        while let Some(node_idx) = stack.pop() {
+            let ty = &types[nodes[node_idx].ty];
+            let mut entries = Vec::new();
+            let mut prepare = |item: &Item| -> JwstCodecResult<PreparedValue> {
+                clock = clock
+                    .checked_add(item.len())
+                    .ok_or_else(|| JwstCodecError::IncompleteDocument("struct clock overflow".into()))?;
+                Ok(match &item.content {
+                    Content::Type(child_ty) => {
+                        let child_idx = nodes.len();
+                        nodes.push(PreparedNode {
+                            ty: *child_ty,
+                            entries: Vec::new(),
+                        });
+                        stack.push(child_idx);
+                        PreparedValue::Type(child_idx)
+                    }
+                    content => PreparedValue::Content(content.clone()),
+                })
+            };
+            for item in ListIterator::new(&types.items, ty) {
+                entries.push((None, prepare(item)?));
+            }
+            let mut map: Vec<_> = map_entries(&types.items, ty).collect();
+            map.sort_unstable_by_key(|(key, _)| *key);
+            for (key, item) in map {
+                entries.push((Some(SmolStr::new(key)), prepare(item)?));
+            }
+            slots = slots.saturating_add(entries.len());
+            nodes[node_idx].entries = entries;
         }
+        types.items.check_capacity(slots)?;
+        Ok(Self { nodes })
     }
-    fn integrate(self, store: &mut DocStore) -> JwstCodecResult {
+    fn integrate(mut self, store: &mut DocStore) -> JwstCodecResult {
+        struct Frame {
+            ty: TypeIdx,
+            entries: std::vec::IntoIter<(Option<SmolStr>, PreparedValue)>,
+            left: ItemRef,
+        }
+
         // Public attachment checks admitted this acyclic tree before staging
         // was taken. Every call below uses offset 0 and an explicit parent, so
-        // no split/remote ancestry error path is entered. create_item allocates
-        // the store's current clock immediately before add_node under the same
-        // document write lock: a clock mismatch is an internal invariant
-        // failure. SAFETY: the document write lock protects every type in this
-        // tree; the public insertion checks exclude aliases with the target
-        // parent.
-        let mut ty = unsafe { self.ty.ty_mut() }.unwrap();
-        ty.start = Somr::none();
-        ty.map.clear();
-        ty.len = 0;
-        if ty.markers.is_some() {
-            ty.markers = Some(MarkerList::new());
+        // no split/remote ancestry error path is entered. create_item
+        // allocates the store's current clock immediately before add_node
+        // under the same document write lock: a clock mismatch is an internal
+        // invariant failure.
+        fn init_frame(types: &mut TypeArena, nodes: &mut [PreparedNode], idx: usize) -> Frame {
+            let node = &mut nodes[idx];
+            let ty = &mut types[node.ty];
+            ty.start = None;
+            ty.clear_map();
+            ty.len = 0;
+            if let Some(markers) = &mut ty.markers {
+                markers.clear();
+            }
+            Frame {
+                ty: node.ty,
+                entries: std::mem::take(&mut node.entries).into_iter(),
+                left: None,
+            }
         }
-        let mut left = Somr::none();
-        for (key, value) in self.entries {
+
+        let mut stack = vec![init_frame(&mut store.type_arena, &mut self.nodes, 0)];
+        while let Some(frame) = stack.last_mut() {
+            let Some((key, value)) = frame.entries.next() else {
+                stack.pop();
+                continue;
+            };
+            let (content, child_idx) = match value {
+                PreparedValue::Content(content) => (content, None),
+                PreparedValue::Type(idx) => (Content::Type(self.nodes[idx].ty), Some(idx)),
+            };
             let item = store.create_item(
-                value.content(),
-                if key.is_some() { Somr::none() } else { left.clone() },
-                Somr::none(),
-                Some(Parent::Type(self.ty.clone())),
+                content,
+                if key.is_some() { None } else { frame.left },
+                None,
+                Some(frame.ty),
                 key.clone(),
             );
-            let item_ref = item.clone();
-            store.integrate(Node::Item(item), 0, Some(&mut ty))?;
+            let item_ref = store.integrate_item(item, 0, Some(frame.ty))?;
             if key.is_none() {
-                left = item_ref;
+                frame.left = item_ref;
             }
-            if let PreparedValue::Type(child) = value {
-                child.integrate(store)?;
+            if let Some(child_idx) = child_idx {
+                stack.push(init_frame(&mut store.type_arena, &mut self.nodes, child_idx));
             }
         }
         Ok(())
@@ -124,16 +162,60 @@ impl PreparedType {
 }
 
 impl DocStore {
-    /// Called only after the type's parent item entered this store, under the
-    /// document write lock. The private owners live until rebuilding finishes.
-    pub(crate) fn integrate_preliminary(&mut self, ty: &YTypeRef) -> JwstCodecResult {
-        // SAFETY: the document write lock is held; no reference to the newly
-        // inserted type's data is borrowed by the insertion caller.
-        let staging = unsafe { ty.ty_mut() }.unwrap().preliminary.take();
-        if let Some(_staging) = staging {
-            PreparedType::capture(ty).integrate(self)?;
+    pub(in crate::doc) fn prepare_preliminary(
+        &self,
+        ty: TypeIdx,
+        carrier: Id,
+        len: u64,
+    ) -> JwstCodecResult<PreparedType> {
+        let start = if carrier.client == self.client() {
+            carrier.clock.checked_add(len)
+        } else {
+            Some(self.get_state(self.client()))
+        };
+        let clock = start.ok_or_else(|| JwstCodecError::IncompleteDocument("struct clock overflow".into()))?;
+        PreparedType::capture(&self.type_arena, ty, clock)
+    }
+}
+
+impl PreparedType {
+    pub(in crate::doc) fn mount(self, store: &mut DocStore) -> JwstCodecResult {
+        let root = self.nodes[0].ty;
+        let staging = store.type_arena[root]
+            .preliminary
+            .take()
+            .expect("prepared staging store");
+        let visible: HashSet<_> = self.nodes.iter().map(|node| node.ty).collect();
+        // Mounting rebuilds visible children only. Retire all old owners
+        // and clear staging links, including those of removed children
+        // whose public type handles can still exist.
+        for (&client, blocks) in &staging.items {
+            for node in blocks.nodes(client) {
+                if let Some(idx) = node.as_item() {
+                    if let Some(Item {
+                        content: Content::Type(child),
+                        ..
+                    }) = store.type_arena.items.get(idx)
+                    {
+                        let child = *child;
+                        if store.type_arena[child].carrier_ref() == Some(idx) {
+                            let ty = &mut store.type_arena[child];
+                            if visible.contains(&child) {
+                                ty.item = None;
+                                ty.parent_type = None;
+                            } else {
+                                ty.retire();
+                            }
+                            ty.start = None;
+                            ty.clear_map();
+                            ty.len = 0;
+                        }
+                    }
+                    store.type_arena.items.retire(idx);
+                }
+            }
         }
-        Ok(())
+        self.integrate(store)
     }
 }
 

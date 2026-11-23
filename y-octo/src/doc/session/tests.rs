@@ -753,7 +753,7 @@ fn q2_path_through_undeclared_root() {
 }
 
 #[test]
-fn failed_write_does_not_solidify_unknown_root_or_leak_dangling_types() {
+fn failed_write_does_not_solidify_unknown_root_or_leak_types() {
     let doc = DocOptions::from_identity(9, "seed".into()).build();
     let mut arr = doc.get_or_create_array("items").unwrap();
     arr.push(10).unwrap();
@@ -794,12 +794,12 @@ fn failed_write_does_not_solidify_unknown_root_or_leak_dangling_types() {
         ]
     );
 
-    // Mismatched map_set on Text root must not leak a child into
-    // store.dangling_types.
+    // Mismatched map_set on Text root must not leave a child in the store's
+    // type arena.
     let text_root: TypeTarget = s.ensure_root("t", YTypeKind::Text).unwrap().into();
-    let dangling_before = {
+    let types_before = {
         let store = read_store(&s.doc_ref().store).unwrap();
-        store.dangling_types.len()
+        store.type_arena.len()
     };
     let err = s
         .map_set(
@@ -809,11 +809,69 @@ fn failed_write_does_not_solidify_unknown_root_or_leak_dangling_types() {
         )
         .unwrap_err();
     assert!(matches!(err, JwstCodecError::UnexpectedType(_)));
-    let dangling_after = {
+    let types_after = {
         let store = read_store(&s.doc_ref().store).unwrap();
-        store.dangling_types.len()
+        store.type_arena.len()
     };
-    assert_eq!(dangling_before, dangling_after);
+    assert_eq!(types_before, types_after);
+}
+
+#[test]
+fn a_write_that_does_not_fit_the_type_arena_changes_nothing() {
+    let mut s = DocSession::<Vec<u8>>::new(DocOptions::from_identity(1, "full".into()), 500);
+    let map: TypeTarget = s.ensure_root("map", YTypeKind::Map).unwrap().into();
+    let list: TypeTarget = s.ensure_root("list", YTypeKind::Array).unwrap().into();
+    let text = || SessionValue::Text(Vec::new());
+    // room for two more types
+    let types = {
+        let mut store = write_store(&s.doc_ref().store).unwrap();
+        let types = store.type_arena.len();
+        store.type_arena.set_limit(Some(types + 2));
+        types
+    };
+    let before = s.encode_update_v1().unwrap();
+    let unchanged = |s: &DocSession<Vec<u8>>| {
+        let store = read_store(&s.doc_ref().store).unwrap();
+        assert_eq!(store.type_arena.len(), types);
+        assert!(store.collector.is_empty());
+        drop(store);
+        assert_eq!(s.encode_update_v1().unwrap(), before);
+    };
+
+    // three nested types: the outer two would fit
+    let nested = SessionValue::Map(vec![(
+        "inner".into(),
+        SessionValue::Array(vec![SessionValue::Any(Any::Integer(1)), text()]),
+    )]);
+    assert!(matches!(
+        s.map_set(&map, "k".into(), nested.clone()),
+        Err(JwstCodecError::IncompleteDocument(_))
+    ));
+    unchanged(&s);
+
+    // a batch of three: the first two would fit
+    for push in [true, false] {
+        let batch = vec![text(), text(), text()];
+        let result = if push {
+            s.array_push(&list, batch)
+        } else {
+            s.array_insert(&list, 0, batch)
+        };
+        assert!(matches!(result, Err(JwstCodecError::IncompleteDocument(_))));
+        unchanged(&s);
+    }
+    assert_eq!(s.read_array(&list).unwrap(), vec![]);
+
+    // what fits is written, and the kind check still comes first
+    assert!(matches!(
+        s.map_set(&list, "k".into(), nested.clone()),
+        Err(JwstCodecError::UnexpectedType(_))
+    ));
+    assert!(s.array_push(&list, vec![text(), text()]).unwrap().is_some());
+    assert_eq!(s.read_array(&list).unwrap().len(), 2);
+    write_store(&s.doc_ref().store).unwrap().type_arena.set_limit(None);
+    assert!(s.map_set(&map, "k".into(), nested).unwrap().is_some());
+    assert_eq!(read_store(&s.doc_ref().store).unwrap().type_arena.len(), types + 5);
 }
 
 #[test]

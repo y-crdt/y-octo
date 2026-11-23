@@ -41,14 +41,14 @@ The default decoder accepts `Any` nesting up to 128 levels. For trusted inputs, 
 
 ## Performance
 
-| Tasks | automerge v0.12.0 (2026-09-16) | loro v1.18.0 (2026-11-16) | diamond-types v1.0.0 (2022-08-25) | y-octo v0.3.0 | yrs v0.28.2 (2026-11-19) |
+| Tasks | automerge v0.12.0 (2026-09-16) | loro v1.18.0 (2026-11-16) | diamond-types v1.0.0 (2022-08-25) | y-octo v0.4.0 | yrs v0.28.2 (2026-11-19) |
 | :---- | :---- | :---- | :---- | :---- | :---- |
-| automerge - apply | 2136.55 ± 8.88 ms | 49.37 ± 0.43 ms | 9.57 ± 0.07 ms | 173.53 ± 0.19 ms | 2358.02 ± 20.35 ms |
-| automerge - decode time | 210.56 ± 2.51 ms | 106.23 ± 0.21 us | 1.46 ± 0.01 ms | 4.15 ± 0.01 ms | 2.45 ± 0.02 ms |
-| automerge - encode time | 155.90 ± 1.51 us | 174.01 ± 1.31 us | 717.02 ± 3.28 us | 565.71 ± 1.83 us | 426.80 ± 6.78 us |
-| concurrent list inserts | 77.62 ± 0.36 ms | 102.69 ± 1.65 ms | 35.17 ± 0.25 ms | 7.70 ± 0.02 ms | 7.76 ± 0.07 ms |
-| list_random_insert_1k | 337.38 ± 4.14 ms | 8.20 ± 0.12 ms | 2.56 ± 0.00 ms | 1.75 ± 0.00 ms | 3.19 ± 0.02 ms |
-| parallel applying automerge edits | 8351.01 ± 15.00 ms | 182.84 ± 1.47 ms | 91.69 ± 0.79 ms | 366.23 ± 4.90 ms | 6264.56 ± 126.42 ms |
+| automerge - apply | 2136.55 ± 8.88 ms | 49.37 ± 0.43 ms | 9.57 ± 0.07 ms | 165.96 ± 0.38 ms | 2358.02 ± 20.35 ms |
+| automerge - decode time | 210.56 ± 2.51 ms | 106.23 ± 0.21 us | 1.46 ± 0.01 ms | 3.79 ± 0.01 ms | 2.45 ± 0.02 ms |
+| automerge - encode time | 155.90 ± 1.51 us | 174.01 ± 1.31 us | 717.02 ± 3.28 us | 568.37 ± 3.92 us | 426.80 ± 6.78 us |
+| concurrent list inserts | 77.62 ± 0.36 ms | 102.69 ± 1.65 ms | 35.17 ± 0.25 ms | 7.37 ± 0.03 ms | 7.76 ± 0.07 ms |
+| list_random_insert_1k | 337.38 ± 4.14 ms | 8.20 ± 0.12 ms | 2.56 ± 0.00 ms | 1.81 ± 0.00 ms | 3.19 ± 0.02 ms |
+| parallel applying automerge edits | 8351.01 ± 15.00 ms | 182.84 ± 1.47 ms | 91.69 ± 0.79 ms | 405.87 ± 1.47 ms | 6264.56 ± 126.42 ms |
 
 Measured on Apple M5 Max with rustc 1.96.0 and crdt-bench-native revision `0452093`. Each value is the Criterion mean ± standard error across 10 samples. The y-octo adapter uses Update V1 with `large_refs`; the Yrs adapter uses Update V2.
 
@@ -86,6 +86,8 @@ Ref: https://github.com/darkskygit/crdt-bench-native
   - ➕ Compute a V1 delta back to an ancestor snapshot with `revert_update_v1`
 - **WebAssembly**
   - ➕ Use `DocSession` from JavaScript through a Wasm module with no host imports
+- **Code quality**
+  - ➕ A completely unsafe-free, thread-safe implementation of Yjs
 
 ## Testing & Linting
 

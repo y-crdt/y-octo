@@ -74,6 +74,39 @@ impl RedoMap {
         ranges.insert(start, range);
     }
 
+    pub(super) fn is_empty(&self) -> bool {
+        self.clients.is_empty()
+    }
+
+    /// Upper bound on distinct cuts made by cleaning old redo targets.
+    pub(super) fn target_split_bound(&self, store: &DocStore) -> usize {
+        let mut total = 0usize;
+        for mapping in self.clients.values().flat_map(|ranges| ranges.values()) {
+            let start = mapping.target;
+            let end = start.clock + mapping.len;
+            let Some(blocks) = store.items.get(&start.client) else {
+                continue;
+            };
+            let Some(first) = blocks.find(start.clock) else {
+                continue;
+            };
+            for i in first..blocks.len() {
+                let node = blocks.node(start.client, i).expect("block index");
+                if node.clock() >= end {
+                    break;
+                }
+                if node.is_item() {
+                    let lo = (node.clock() + 1).max(start.clock);
+                    let hi = (node.clock() + node.len() - 1).min(end);
+                    if lo <= hi {
+                        total = total.saturating_add(usize::try_from(hi - lo + 1).unwrap_or(usize::MAX));
+                    }
+                }
+            }
+        }
+        total
+    }
+
     /// The id `id` was recreated as by one redo, if any.
     pub fn get(&self, id: Id) -> Option<Id> {
         let (start, range) = self.clients.get(&id.client)?.range(..=id.clock).next_back()?;
@@ -155,13 +188,8 @@ impl DocStore {
     /// The item holding `id` and the offset of `id` inside it. `None` when
     /// `id` is not in the store or has been garbage collected.
     pub(crate) fn item_with_offset(&self, id: Id) -> Option<(ItemRef, u64)> {
-        match self.get_node(id)? {
-            Node::Item(item) => {
-                let offset = id.clock - item.get()?.id.clock;
-                Some((item, offset))
-            }
-            Node::GC(_) | Node::Skip(_) => None,
-        }
+        let node = self.get_node(id)?;
+        Some((Some(node.as_item()?), id.clock - node.clock()))
     }
 
     /// Registers that a redo recreated `old..old+len` as `new..new+len`.

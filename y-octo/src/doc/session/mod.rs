@@ -23,14 +23,13 @@ use std::sync::{
 use history::SessionHistoryHub;
 use ops::{
     InsertSlot, check_array_read_kind, check_map_read_kind, check_text_read_kind, check_xml_element_kind,
-    check_xml_name_kind, check_xml_string_kind, compute_type_path, insert_session_value, is_type_alive,
+    check_xml_name_kind, check_xml_string_kind, compute_type_path, insert_session_value, is_type_alive, new_type_count,
     parse_json_content_elem, read_value_from_content, resolve_identity_raw, resolve_path_in_store, resolve_target,
     solidify_array_kind, solidify_map_kind, solidify_text_kind, solidify_xml_element_kind, validate_session_value,
 };
 use smol_str::SmolStr;
 
 use super::{
-    store::StoreRef,
     transaction::commit_store,
     types::{
         ListIterator, YTypeBuilder, item_at, list_insert, list_remove, map, text,
@@ -484,12 +483,11 @@ impl<M: Clone + Send + Sync + 'static> DocSession<M> {
     /// any segment does not exist or is not a collaborative type.
     pub fn resolve_path(&self, path: &TypePath) -> Option<TypeIdentity> {
         let store = read_store(&self.doc_ref().store).ok()?;
-        let ty_ref = resolve_path_in_store(&store, path).ok()?;
-        let ty = ty_ref.ty()?;
-        if !is_type_alive(&store, &ty_ref) {
+        let ty = resolve_path_in_store(&store, path).ok()?;
+        if !is_type_alive(&store, ty) {
             return None;
         }
-        ty.identity().ok()
+        store.type_arena.get(ty)?.identity(&store.type_arena.items).ok()
     }
 
     /// Queries whether `id` is currently alive (not deleted or collected), its
@@ -502,21 +500,21 @@ impl<M: Clone + Send + Sync + 'static> DocSession<M> {
                 path: None,
             };
         };
-        let Ok(ty_ref) = resolve_identity_raw(&store, id) else {
+        let Ok(ty_id) = resolve_identity_raw(&store, id) else {
             return TypeStatus {
                 alive: false,
                 kind: None,
                 path: None,
             };
         };
-        let Some(ty) = ty_ref.ty() else {
+        let Some(ty) = store.type_arena.get(ty_id) else {
             return TypeStatus {
                 alive: false,
                 kind: None,
                 path: None,
             };
         };
-        let path = compute_type_path(&ty_ref);
+        let path = compute_type_path(&store.type_arena, ty_id);
         let alive = path.is_some();
         TypeStatus {
             alive,
@@ -530,19 +528,20 @@ impl<M: Clone + Send + Sync + 'static> DocSession<M> {
 
     pub fn get_map_value(&self, target: &TypeTarget, key: &str) -> JwstCodecResult<Option<SessionReadValue>> {
         let store = read_store(&self.doc_ref().store)?;
-        let ty_ref = resolve_target(&store, target)?;
-        let ty = ty_ref.ty().ok_or(JwstCodecError::DocReleased)?;
+        let ty = resolve_target(&store, target)?;
+        let ty = store.type_arena.get(ty).ok_or(JwstCodecError::DocReleased)?;
         check_map_read_kind(ty)?;
-        Ok(map::map_value(ty, key).map(|item| read_value_from_content(&item.content)))
+        Ok(map::map_value(&store.type_arena.items, ty, key)
+            .map(|item| read_value_from_content(&store.type_arena, &item.content)))
     }
 
     pub fn read_map(&self, target: &TypeTarget) -> JwstCodecResult<Vec<(String, SessionReadValue)>> {
         let store = read_store(&self.doc_ref().store)?;
-        let ty_ref = resolve_target(&store, target)?;
-        let ty = ty_ref.ty().ok_or(JwstCodecError::DocReleased)?;
+        let ty = resolve_target(&store, target)?;
+        let ty = store.type_arena.get(ty).ok_or(JwstCodecError::DocReleased)?;
         check_map_read_kind(ty)?;
-        let mut entries: Vec<_> = map::map_entries(ty)
-            .map(|(k, item)| (k.to_string(), read_value_from_content(&item.content)))
+        let mut entries: Vec<_> = map::map_entries(&store.type_arena.items, ty)
+            .map(|(k, item)| (k.to_string(), read_value_from_content(&store.type_arena, &item.content)))
             .collect();
         entries.sort_by(|(a, _), (b, _)| a.cmp(b));
         Ok(entries)
@@ -550,11 +549,11 @@ impl<M: Clone + Send + Sync + 'static> DocSession<M> {
 
     pub fn read_array(&self, target: &TypeTarget) -> JwstCodecResult<Vec<SessionReadValue>> {
         let store = read_store(&self.doc_ref().store)?;
-        let ty_ref = resolve_target(&store, target)?;
-        let ty = ty_ref.ty().ok_or(JwstCodecError::DocReleased)?;
+        let ty = resolve_target(&store, target)?;
+        let ty = store.type_arena.get(ty).ok_or(JwstCodecError::DocReleased)?;
         check_array_read_kind(ty)?;
         let mut out = Vec::new();
-        for item in ListIterator::new(ty).filter(|item| item.countable()) {
+        for item in ListIterator::new(&store.type_arena.items, ty).filter(|item| item.countable()) {
             match &item.content {
                 Content::Any(any) if !any.is_empty() => {
                     for elem in any {
@@ -566,7 +565,7 @@ impl<M: Clone + Send + Sync + 'static> DocSession<M> {
                         out.push(SessionReadValue::Any(parse_json_content_elem(elem)));
                     }
                 }
-                content => out.push(read_value_from_content(content)),
+                content => out.push(read_value_from_content(&store.type_arena, content)),
             }
         }
         Ok(out)
@@ -574,51 +573,53 @@ impl<M: Clone + Send + Sync + 'static> DocSession<M> {
 
     pub fn read_array_at(&self, target: &TypeTarget, index: u64) -> JwstCodecResult<Option<SessionReadValue>> {
         let store = read_store(&self.doc_ref().store)?;
-        let ty_ref = resolve_target(&store, target)?;
-        let ty = ty_ref.ty().ok_or(JwstCodecError::DocReleased)?;
+        let ty = resolve_target(&store, target)?;
+        let ty = store.type_arena.get(ty).ok_or(JwstCodecError::DocReleased)?;
         check_array_read_kind(ty)?;
-        let Some((item_ref, offset)) = item_at(&ty_ref, ty, index) else {
+        let Some((item_ref, offset)) = item_at(&store.type_arena.items, ty, index) else {
             return Ok(None);
         };
-        Ok(item_ref.get().and_then(|item| match &item.content {
-            Content::Any(any) => any.get(offset as usize).cloned().map(SessionReadValue::Any),
-            Content::Json(items) => items
-                .get(offset as usize)
-                .map(|elem| SessionReadValue::Any(parse_json_content_elem(elem))),
-            content => Some(read_value_from_content(content)),
-        }))
+        Ok(item_ref
+            .and_then(|i| store.type_arena.items.get(i))
+            .and_then(|item| match &item.content {
+                Content::Any(any) => any.get(offset as usize).cloned().map(SessionReadValue::Any),
+                Content::Json(items) => items
+                    .get(offset as usize)
+                    .map(|elem| SessionReadValue::Any(parse_json_content_elem(elem))),
+                content => Some(read_value_from_content(&store.type_arena, content)),
+            }))
     }
 
     pub fn read_text_len(&self, target: &TypeTarget) -> JwstCodecResult<u64> {
         let store = read_store(&self.doc_ref().store)?;
-        let ty_ref = resolve_target(&store, target)?;
-        let ty = ty_ref.ty().ok_or(JwstCodecError::DocReleased)?;
+        let ty = resolve_target(&store, target)?;
+        let ty = store.type_arena.get(ty).ok_or(JwstCodecError::DocReleased)?;
         check_text_read_kind(ty)?;
         Ok(ty.len)
     }
 
     pub fn read_text_string(&self, target: &TypeTarget) -> JwstCodecResult<String> {
         let store = read_store(&self.doc_ref().store)?;
-        let ty_ref = resolve_target(&store, target)?;
-        let ty = ty_ref.ty().ok_or(JwstCodecError::DocReleased)?;
+        let ty = resolve_target(&store, target)?;
+        let ty = store.type_arena.get(ty).ok_or(JwstCodecError::DocReleased)?;
         check_text_read_kind(ty)?;
-        Ok(text::text_string(ty))
+        Ok(text::text_string(&store.type_arena.items, ty))
     }
 
     pub fn read_text_delta(&self, target: &TypeTarget) -> JwstCodecResult<TextDelta> {
         let store = read_store(&self.doc_ref().store)?;
-        let ty_ref = resolve_target(&store, target)?;
-        let ty = ty_ref.ty().ok_or(JwstCodecError::DocReleased)?;
+        let ty = resolve_target(&store, target)?;
+        let ty = store.type_arena.get(ty).ok_or(JwstCodecError::DocReleased)?;
         check_text_read_kind(ty)?;
-        Ok(text::text_delta(ty))
+        Ok(text::text_delta(&store.type_arena.items, ty))
     }
 
     /// Returns the tag name of an `XMLElement` or the hook name of an
     /// `XMLHook`.
     pub fn xml_name(&self, target: &TypeTarget) -> JwstCodecResult<String> {
         let store = read_store(&self.doc_ref().store)?;
-        let ty_ref = resolve_target(&store, target)?;
-        let ty = ty_ref.ty().ok_or(JwstCodecError::DocReleased)?;
+        let ty = resolve_target(&store, target)?;
+        let ty = store.type_arena.get(ty).ok_or(JwstCodecError::DocReleased)?;
         check_xml_name_kind(ty)?;
         Ok(match ty.kind() {
             YTypeKind::XMLElement => xml_tag_name(ty).to_string(),
@@ -629,27 +630,19 @@ impl<M: Clone + Send + Sync + 'static> DocSession<M> {
 
     pub fn xml_get_attr(&self, target: &TypeTarget, key: &str) -> JwstCodecResult<Option<Any>> {
         let store = read_store(&self.doc_ref().store)?;
-        let ty_ref = resolve_target(&store, target)?;
-        let ty = ty_ref.ty().ok_or(JwstCodecError::DocReleased)?;
+        let ty = resolve_target(&store, target)?;
+        let ty = store.type_arena.get(ty).ok_or(JwstCodecError::DocReleased)?;
         check_xml_element_kind(ty)?;
-        Ok(
-            map::map_value(ty, key).and_then(|item| match Value::from(&item.content) {
-                Value::Any(any) => Some(any),
-                _ => None,
-            }),
-        )
+        Ok(map::map_value(&store.type_arena.items, ty, key).and_then(|item| content_any(&item.content)))
     }
 
     pub fn xml_attrs(&self, target: &TypeTarget) -> JwstCodecResult<Vec<(String, Any)>> {
         let store = read_store(&self.doc_ref().store)?;
-        let ty_ref = resolve_target(&store, target)?;
-        let ty = ty_ref.ty().ok_or(JwstCodecError::DocReleased)?;
+        let ty = resolve_target(&store, target)?;
+        let ty = store.type_arena.get(ty).ok_or(JwstCodecError::DocReleased)?;
         check_xml_element_kind(ty)?;
-        let mut attrs: Vec<(String, Any)> = map::map_entries(ty)
-            .filter_map(|(k, item)| match Value::from(&item.content) {
-                Value::Any(any) => Some((k.to_string(), any)),
-                _ => None,
-            })
+        let mut attrs: Vec<(String, Any)> = map::map_entries(&store.type_arena.items, ty)
+            .filter_map(|(k, item)| content_any(&item.content).map(|any| (k.to_string(), any)))
             .collect();
         attrs.sort_by(|(a, _), (b, _)| a.cmp(b));
         Ok(attrs)
@@ -657,12 +650,12 @@ impl<M: Clone + Send + Sync + 'static> DocSession<M> {
 
     pub fn xml_to_string(&self, target: &TypeTarget) -> JwstCodecResult<String> {
         let store = read_store(&self.doc_ref().store)?;
-        let ty_ref = resolve_target(&store, target)?;
-        let ty = ty_ref.ty().ok_or(JwstCodecError::DocReleased)?;
+        let ty = resolve_target(&store, target)?;
+        let ty = store.type_arena.get(ty).ok_or(JwstCodecError::DocReleased)?;
         check_xml_string_kind(ty)?;
         Ok(match ty.kind() {
-            YTypeKind::XMLFragment | YTypeKind::XMLElement | YTypeKind::Unknown => xml_to_string(ty),
-            YTypeKind::XMLText => xml_text_to_string(ty),
+            YTypeKind::XMLFragment | YTypeKind::XMLElement | YTypeKind::Unknown => xml_to_string(&store.type_arena, ty),
+            YTypeKind::XMLText => xml_text_to_string(&store.type_arena.items, ty),
             _ => unreachable!("checked above"),
         })
     }
@@ -677,17 +670,17 @@ impl<M: Clone + Send + Sync + 'static> DocSession<M> {
         value: SessionValue,
     ) -> JwstCodecResult<Option<SessionCommit<M>>> {
         validate_session_value(&value, 0)?;
-        self.mutate_in_tx(|store, store_ref| {
+        self.mutate_in_tx(|store| {
             let parent = resolve_target(store, target)?;
-            insert_session_value(store, store_ref, &parent, InsertSlot::MapKey(key), value)
+            insert_session_value(store, parent, InsertSlot::MapKey(key), value)
         })
     }
 
     pub fn map_remove(&mut self, target: &TypeTarget, key: &str) -> JwstCodecResult<Option<SessionCommit<M>>> {
-        self.mutate_in_tx(|store, _| {
+        self.mutate_in_tx(|store| {
             let parent = resolve_target(store, target)?;
-            parent.write_locked(store, |store, ty| {
-                solidify_map_kind(ty)?;
+            store.edit_type(parent, |store, ty| {
+                solidify_map_kind(&mut store.type_arena[ty])?;
                 map::map_remove(store, ty, key);
                 Ok(())
             })
@@ -695,10 +688,10 @@ impl<M: Clone + Send + Sync + 'static> DocSession<M> {
     }
 
     pub fn map_clear(&mut self, target: &TypeTarget) -> JwstCodecResult<Option<SessionCommit<M>>> {
-        self.mutate_in_tx(|store, _| {
+        self.mutate_in_tx(|store| {
             let parent = resolve_target(store, target)?;
-            parent.write_locked(store, |store, ty| {
-                solidify_map_kind(ty)?;
+            store.edit_type(parent, |store, ty| {
+                solidify_map_kind(&mut store.type_arena[ty])?;
                 map::map_clear(store, ty);
                 Ok(())
             })
@@ -714,17 +707,21 @@ impl<M: Clone + Send + Sync + 'static> DocSession<M> {
         for v in &values {
             validate_session_value(v, 0)?;
         }
-        self.mutate_in_tx(|store, store_ref| {
+        self.mutate_in_tx(|store| {
             let parent = resolve_target(store, target)?;
             {
-                let ty = parent.ty().ok_or(JwstCodecError::DocReleased)?;
+                let ty = store.type_arena.get(parent).ok_or(JwstCodecError::DocReleased)?;
                 check_array_read_kind(ty)?;
                 if index > ty.len {
                     return Err(JwstCodecError::IndexOutOfBound(index));
                 }
             }
+            // all of the batch or none of it
+            store
+                .type_arena
+                .check_capacity(values.iter().map(new_type_count).sum())?;
             for (cursor, value) in (index..).zip(values) {
-                insert_session_value(store, store_ref, &parent, InsertSlot::ListIndex(cursor), value)?;
+                insert_session_value(store, parent, InsertSlot::ListIndex(cursor), value)?;
             }
             Ok(())
         })
@@ -738,15 +735,19 @@ impl<M: Clone + Send + Sync + 'static> DocSession<M> {
         for v in &values {
             validate_session_value(v, 0)?;
         }
-        self.mutate_in_tx(|store, store_ref| {
+        self.mutate_in_tx(|store| {
             let parent = resolve_target(store, target)?;
             let start = {
-                let ty = parent.ty().ok_or(JwstCodecError::DocReleased)?;
+                let ty = store.type_arena.get(parent).ok_or(JwstCodecError::DocReleased)?;
                 check_array_read_kind(ty)?;
                 ty.len
             };
+            // all of the batch or none of it
+            store
+                .type_arena
+                .check_capacity(values.iter().map(new_type_count).sum())?;
             for (cursor, value) in (start..).zip(values) {
-                insert_session_value(store, store_ref, &parent, InsertSlot::ListIndex(cursor), value)?;
+                insert_session_value(store, parent, InsertSlot::ListIndex(cursor), value)?;
             }
             Ok(())
         })
@@ -758,15 +759,15 @@ impl<M: Clone + Send + Sync + 'static> DocSession<M> {
         index: u64,
         len: u64,
     ) -> JwstCodecResult<Option<SessionCommit<M>>> {
-        self.mutate_in_tx(|store, _| {
+        self.mutate_in_tx(|store| {
             let parent = resolve_target(store, target)?;
-            parent.write_locked(store, |store, ty| {
-                check_array_read_kind(ty)?;
-                if len > 0 && ty.len > 0 && index >= ty.len {
+            store.edit_type(parent, |store, ty| {
+                check_array_read_kind(&store.type_arena[ty])?;
+                if len > 0 && store.type_arena[ty].len > 0 && index >= store.type_arena[ty].len {
                     return Err(JwstCodecError::IndexOutOfBound(index));
                 }
-                solidify_array_kind(ty)?;
-                list_remove(&parent, store, ty, index, len)
+                solidify_array_kind(&mut store.type_arena[ty])?;
+                list_remove(store, ty, index, len)
             })
         })
     }
@@ -777,15 +778,15 @@ impl<M: Clone + Send + Sync + 'static> DocSession<M> {
         index: u64,
         text_str: &str,
     ) -> JwstCodecResult<Option<SessionCommit<M>>> {
-        self.mutate_in_tx(|store, _| {
+        self.mutate_in_tx(|store| {
             let parent = resolve_target(store, target)?;
-            parent.write_locked(store, |store, ty| {
-                check_text_read_kind(ty)?;
-                if index > ty.len {
+            store.edit_type(parent, |store, ty| {
+                check_text_read_kind(&store.type_arena[ty])?;
+                if index > store.type_arena[ty].len {
                     return Err(JwstCodecError::IndexOutOfBound(index));
                 }
-                solidify_text_kind(ty)?;
-                list_insert(&parent, store, ty, index, Content::String(text_str.to_string()))
+                solidify_text_kind(&mut store.type_arena[ty])?;
+                list_insert(store, ty, index, Content::String(text_str.to_string()))
             })
         })
     }
@@ -796,15 +797,15 @@ impl<M: Clone + Send + Sync + 'static> DocSession<M> {
         index: u64,
         len: u64,
     ) -> JwstCodecResult<Option<SessionCommit<M>>> {
-        self.mutate_in_tx(|store, _| {
+        self.mutate_in_tx(|store| {
             let parent = resolve_target(store, target)?;
-            parent.write_locked(store, |store, ty| {
-                check_text_read_kind(ty)?;
-                if len > 0 && ty.len > 0 && index >= ty.len {
+            store.edit_type(parent, |store, ty| {
+                check_text_read_kind(&store.type_arena[ty])?;
+                if len > 0 && store.type_arena[ty].len > 0 && index >= store.type_arena[ty].len {
                     return Err(JwstCodecError::IndexOutOfBound(index));
                 }
-                solidify_text_kind(ty)?;
-                text::text_remove(&parent, store, ty, index, len)
+                solidify_text_kind(&mut store.type_arena[ty])?;
+                text::text_remove(store, ty, index, len)
             })
         })
     }
@@ -814,13 +815,13 @@ impl<M: Clone + Send + Sync + 'static> DocSession<M> {
         target: &TypeTarget,
         delta: &[TextDeltaOp],
     ) -> JwstCodecResult<Option<SessionCommit<M>>> {
-        self.mutate_in_tx(|store, _| {
+        self.mutate_in_tx(|store| {
             let parent = resolve_target(store, target)?;
-            parent.write_locked(store, |store, ty| {
-                check_text_read_kind(ty)?;
-                text::validate_delta_against_len(ty.len, delta)?;
-                solidify_text_kind(ty)?;
-                text::apply_text_delta(&parent, store, ty, delta)
+            store.edit_type(parent, |store, ty| {
+                check_text_read_kind(&store.type_arena[ty])?;
+                text::validate_delta_against_len(store.type_arena[ty].len, delta)?;
+                solidify_text_kind(&mut store.type_arena[ty])?;
+                text::apply_text_delta(store, ty, delta)
             })
         })
     }
@@ -832,18 +833,21 @@ impl<M: Clone + Send + Sync + 'static> DocSession<M> {
         len: u64,
         attrs: TextAttributes,
     ) -> JwstCodecResult<Option<SessionCommit<M>>> {
-        self.mutate_in_tx(|store, _| {
+        self.mutate_in_tx(|store| {
             let parent = resolve_target(store, target)?;
-            parent.write_locked(store, |store, ty| {
-                check_text_read_kind(ty)?;
-                if index > ty.len {
+            store.edit_type(parent, |store, ty| {
+                check_text_read_kind(&store.type_arena[ty])?;
+                if index > store.type_arena[ty].len {
                     return Err(JwstCodecError::IndexOutOfBound(index));
                 }
-                if len > 0 && !attrs.is_empty() && index.checked_add(len).is_none_or(|end| end > ty.len) {
+                if len > 0
+                    && !attrs.is_empty()
+                    && index.checked_add(len).is_none_or(|end| end > store.type_arena[ty].len)
+                {
                     return Err(JwstCodecError::IndexOutOfBound(len));
                 }
-                solidify_text_kind(ty)?;
-                text::text_format(&parent, store, ty, index, len, attrs)
+                solidify_text_kind(&mut store.type_arena[ty])?;
+                text::text_format(store, ty, index, len, attrs)
             })
         })
     }
@@ -854,15 +858,15 @@ impl<M: Clone + Send + Sync + 'static> DocSession<M> {
         index: u64,
         embed: Any,
     ) -> JwstCodecResult<Option<SessionCommit<M>>> {
-        self.mutate_in_tx(|store, _| {
+        self.mutate_in_tx(|store| {
             let parent = resolve_target(store, target)?;
-            parent.write_locked(store, |store, ty| {
-                check_text_read_kind(ty)?;
-                if index > ty.len {
+            store.edit_type(parent, |store, ty| {
+                check_text_read_kind(&store.type_arena[ty])?;
+                if index > store.type_arena[ty].len {
                     return Err(JwstCodecError::IndexOutOfBound(index));
                 }
-                solidify_text_kind(ty)?;
-                text::text_insert_embed(&parent, store, ty, index, embed)
+                solidify_text_kind(&mut store.type_arena[ty])?;
+                text::text_insert_embed(store, ty, index, embed)
             })
         })
     }
@@ -873,20 +877,20 @@ impl<M: Clone + Send + Sync + 'static> DocSession<M> {
         key: String,
         value: Any,
     ) -> JwstCodecResult<Option<SessionCommit<M>>> {
-        self.mutate_in_tx(|store, _| {
+        self.mutate_in_tx(|store| {
             let parent = resolve_target(store, target)?;
-            parent.write_locked(store, |store, ty| {
-                solidify_xml_element_kind(ty)?;
-                map::map_insert(&parent, store, ty, key, Content::from(value))
+            store.edit_type(parent, |store, ty| {
+                solidify_xml_element_kind(&mut store.type_arena[ty])?;
+                map::map_insert(store, ty, key, Content::from(value))
             })
         })
     }
 
     pub fn xml_remove_attr(&mut self, target: &TypeTarget, key: &str) -> JwstCodecResult<Option<SessionCommit<M>>> {
-        self.mutate_in_tx(|store, _| {
+        self.mutate_in_tx(|store| {
             let parent = resolve_target(store, target)?;
-            parent.write_locked(store, |store, ty| {
-                solidify_xml_element_kind(ty)?;
+            store.edit_type(parent, |store, ty| {
+                solidify_xml_element_kind(&mut store.type_arena[ty])?;
                 map::map_remove(store, ty, key);
                 Ok(())
             })
@@ -912,7 +916,7 @@ impl<M: Clone + Send + Sync + 'static> DocSession<M> {
         let store_ref = &self.doc_ref().store;
         let (_, primary, cleanup) = transaction::transact_mut_with_events(store_ref, None, false, |tx| {
             tx.incoming = Some(IncomingUpdate::of(&update));
-            Doc::integrate_update(tx.store_mut(), store_ref, update)
+            Doc::integrate_update(tx.store_mut(), update)
         })?;
         let mut commits = Vec::with_capacity(usize::from(primary.is_some()) + usize::from(cleanup.is_some()));
         if let Some(ev) = primary.as_ref() {
@@ -944,9 +948,9 @@ impl<M: Clone + Send + Sync + 'static> DocSession<M> {
         assoc: i64,
     ) -> JwstCodecResult<RelativePosition> {
         let store = read_store(&self.doc_ref().store)?;
-        let ty_ref = resolve_target(&store, target)?;
-        let ty = ty_ref.ty().ok_or(JwstCodecError::DocReleased)?;
-        RelativePosition::from_type_index(ty, index, assoc)
+        let ty = resolve_target(&store, target)?;
+        let ty = store.type_arena.get(ty).ok_or(JwstCodecError::DocReleased)?;
+        RelativePosition::from_type_index(&store.type_arena.items, ty, index, assoc)
     }
 
     pub fn resolve_relative_position(
@@ -989,9 +993,13 @@ impl<M: Clone + Send + Sync + 'static> DocSession<M> {
         let now = self.now.clone();
         let (stack_id, manager_id) = {
             let mut store = write_store(&store_ref)?;
+            let store = &mut *store;
             let mut resolved_scopes = Vec::with_capacity(scopes.len());
             for target in scopes {
-                resolved_scopes.push(resolve_target(&store, target)?);
+                resolved_scopes.push(YTypeRef {
+                    store: StdArc::downgrade(&store_ref),
+                    id: Some(resolve_target(store, target)?),
+                });
             }
             if store.history_hook.is_none() {
                 store.history_hook = Some(Box::new(SessionHistoryHub::new(now)));
@@ -1001,7 +1009,7 @@ impl<M: Clone + Send + Sync + 'static> DocSession<M> {
                 .as_deref_mut()
                 .and_then(|hook| hook.as_any_mut().downcast_mut::<SessionHistoryHub>())
                 .ok_or(JwstCodecError::UndoManagerExists)?;
-            hub.create_stack(resolved_scopes, resolved_origins, capture_timeout_ms)?
+            hub.create_stack(&store.type_arena, resolved_scopes, resolved_origins, capture_timeout_ms)?
         };
         self.has_history_hub = true;
         self.manager_to_stack.insert(manager_id, stack_id.0);
@@ -1058,14 +1066,13 @@ impl<M: Clone + Send + Sync + 'static> DocSession<M> {
         };
         let origin = Origin::new(UndoOrigin::new_for_session(manager, which));
         let (performed, primary, _) = transaction::transact_mut_with_events(&store_ref, Some(origin), true, |tx| {
-            let sref = tx.store_ref();
             let store = tx.store_mut();
             let mut hook = store.history_hook.take();
             let result = match hook
                 .as_deref_mut()
                 .and_then(|h| h.as_any_mut().downcast_mut::<SessionHistoryHub>())
             {
-                Some(hub) => hub.pop_stack(id, store, sref, which),
+                Some(hub) => hub.pop_stack(id, store, which),
                 None => Ok(None),
             };
             store.history_hook = hook;
@@ -1211,12 +1218,12 @@ impl<M: Clone + Send + Sync + 'static> DocSession<M> {
 
     fn mutate_in_tx(
         &mut self,
-        f: impl FnOnce(&mut DocStore, &StoreRef) -> JwstCodecResult,
+        f: impl FnOnce(&mut DocStore) -> JwstCodecResult,
     ) -> JwstCodecResult<Option<SessionCommit<M>>> {
         let store_ref = self.doc_ref().store.clone();
         let mut store = write_store(&store_ref)?;
         if self.active_tx.is_some() {
-            f(&mut store, &store_ref)?;
+            f(&mut store)?;
             return Ok(None);
         }
         if store.client_required {
@@ -1229,7 +1236,7 @@ impl<M: Clone + Send + Sync + 'static> DocSession<M> {
         let origin = Some(self.tracked_origin.clone());
         let mut incoming = None;
 
-        let res = f(&mut store, &store_ref);
+        let res = f(&mut store);
         if let Err(err) = res {
             debug_assert!(
                 store.collector.is_empty(),
@@ -1298,7 +1305,7 @@ impl<M: Clone + Send + Sync + 'static> DocSession<M> {
                 keys.dedup();
                 let path = resolve_identity_raw(store, &c.identity)
                     .ok()
-                    .and_then(|ty_ref| compute_type_path(&ty_ref));
+                    .and_then(|ty| compute_type_path(&store.type_arena, ty));
                 SessionChangedType {
                     identity: c.identity.clone(),
                     path,

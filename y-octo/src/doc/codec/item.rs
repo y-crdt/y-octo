@@ -1,13 +1,16 @@
 use super::*;
 
-#[derive(Debug, Clone)]
-#[cfg_attr(test, derive(proptest_derive::Arbitrary))]
-pub(crate) enum Parent {
-    #[cfg_attr(test, proptest(skip))]
-    Type(YTypeRef),
-    #[cfg_attr(test, proptest(value = "Parent::String(SmolStr::default())"))]
-    String(SmolStr),
-    Id(Id),
+impl TypeIdx {
+    pub fn wire_parent(self, types: &TypeArena) -> JwstCodecResult<ParentInfo<'_>> {
+        let ty = types.get(self).ok_or(JwstCodecError::InvalidParent)?;
+        if let Carrier::Live(carrier) = ty.carrier(&types.items) {
+            Ok(ParentInfo::Item(carrier.id))
+        } else {
+            ty.root_name()
+                .map(ParentInfo::Root)
+                .ok_or(JwstCodecError::InvalidParent)
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -16,13 +19,14 @@ pub(crate) struct Item {
     pub id: Id,
     #[cfg_attr(all(test, not(loom)), proptest(value = "0"))]
     pub(crate) len: u64,
-    pub origin_left_id: Option<Id>,
-    pub origin_right_id: Option<Id>,
-    #[cfg_attr(all(test, not(loom)), proptest(value = "Somr::none()"))]
+    pub(in crate::doc) origin_left: Id,
+    pub(in crate::doc) origin_right: Id,
+    #[cfg_attr(all(test, not(loom)), proptest(value = "None"))]
     pub left: ItemRef,
-    #[cfg_attr(all(test, not(loom)), proptest(value = "Somr::none()"))]
+    #[cfg_attr(all(test, not(loom)), proptest(value = "None"))]
     pub right: ItemRef,
-    pub parent: Option<Parent>,
+    #[cfg_attr(all(test, not(loom)), proptest(value = "None"))]
+    pub parent: Option<TypeIdx>,
     #[cfg_attr(all(test, not(loom)), proptest(value = "Option::<SmolStr>::None"))]
     pub parent_sub: Option<SmolStr>,
     pub content: Content,
@@ -31,7 +35,7 @@ pub(crate) struct Item {
 }
 
 // make all Item readonly
-pub(crate) type ItemRef = Somr<Item>;
+pub(crate) type ItemRef = Option<ItemIdx>;
 
 impl PartialEq for Item {
     fn eq(&self, other: &Self) -> bool {
@@ -45,29 +49,16 @@ impl std::fmt::Debug for Item {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut dbg = f.debug_struct("Item");
         dbg.field("id", &self.id)
-            .field("origin_left_id", &self.origin_left_id)
-            .field("origin_right_id", &self.origin_right_id);
+            .field("origin_left_id", &self.origin_left_id())
+            .field("origin_right_id", &self.origin_right_id());
 
-        if let Some(left) = self.left.get() {
-            dbg.field("left", &left.id);
-        }
+        dbg.field("left", &self.left).field("right", &self.right);
 
-        if let Some(right) = self.right.get() {
-            dbg.field("right", &right.id);
-        }
-
-        dbg.field(
-            "parent",
-            &self.parent.as_ref().map(|p| match p {
-                Parent::Type(_) => "[Type]".to_string(),
-                Parent::String(name) => format!("Parent({name})"),
-                Parent::Id(id) => format!("({}, {})", id.client, id.clock),
-            }),
-        )
-        .field("parent_sub", &self.parent_sub)
-        .field("content", &self.content)
-        .field("flags", &self.flags)
-        .finish()
+        dbg.field("parent", &self.parent)
+            .field("parent_sub", &self.parent_sub)
+            .field("content", &self.content)
+            .field("flags", &self.flags)
+            .finish()
     }
 }
 
@@ -82,10 +73,10 @@ impl Default for Item {
         Self {
             id: Id::default(),
             len: 0,
-            origin_left_id: None,
-            origin_right_id: None,
-            left: Somr::none(),
-            right: Somr::none(),
+            origin_left: Id::default(),
+            origin_right: Id::default(),
+            left: None,
+            right: None,
             parent: None,
             parent_sub: None,
             content: Content::Deleted(0),
@@ -95,12 +86,43 @@ impl Default for Item {
 }
 
 impl Item {
+    pub fn origin_left_id(&self) -> Option<Id> {
+        self.flags
+            .check(item_flags::ITEM_HAS_LEFT_ID)
+            .then_some(self.origin_left)
+    }
+
+    pub fn set_origin_left_id(&mut self, origin: Option<Id>) {
+        if let Some(id) = origin {
+            self.origin_left = id;
+            self.flags.set(item_flags::ITEM_HAS_LEFT_ID);
+        } else {
+            self.flags.clear(item_flags::ITEM_HAS_LEFT_ID);
+        }
+    }
+
+    pub fn origin_right_id(&self) -> Option<Id> {
+        self.flags
+            .check(item_flags::ITEM_HAS_RIGHT_ID)
+            .then_some(self.origin_right)
+    }
+
+    pub fn set_origin_right_id(&mut self, origin: Option<Id>) {
+        if let Some(id) = origin {
+            self.origin_right = id;
+            self.flags.set(item_flags::ITEM_HAS_RIGHT_ID);
+        } else {
+            self.flags.clear(item_flags::ITEM_HAS_RIGHT_ID);
+        }
+    }
+
     pub fn new(
+        items: &ItemSpace,
         id: Id,
         content: Content,
-        left: Somr<Item>,
-        right: Somr<Item>,
-        parent: Option<Parent>,
+        left: ItemRef,
+        right: ItemRef,
+        parent: Option<TypeIdx>,
         parent_sub: Option<SmolStr>,
     ) -> Self {
         let len = content.clock_len();
@@ -110,38 +132,38 @@ impl Item {
             0
         });
 
-        Self {
+        let mut item = Self {
             id,
             len,
-            origin_left_id: left.get().map(|left| left.last_id()),
+            origin_left: Id::default(),
             left,
-            origin_right_id: right.get().map(|right| right.id),
+            origin_right: Id::default(),
             right,
             parent,
             parent_sub,
             content,
             flags,
-        }
+        };
+        item.set_origin_left_id(left.and_then(|i| items.get(i)).map(Item::last_id));
+        item.set_origin_right_id(right.and_then(|i| items.get(i)).map(|item| item.id));
+        item
     }
 
     // find a note that has parent info
     // in crdt tree, not all node has parent info
     // so we need to check left and right node if they have parent info
-    pub fn find_node_with_parent_info(&self) -> Option<Item> {
+    pub fn find_node_with_parent_info<'a>(&'a self, items: &'a ItemSpace) -> Option<&'a Item> {
         if self.parent.is_some() {
-            return Some(self.clone());
-        } else if let Some(item) = self.left.get() {
-            if item.parent.is_none() {
-                if let Some(item) = item.right.get() {
-                    return Some(item.clone());
-                }
+            Some(self)
+        } else if let Some(left) = self.left.and_then(|i| items.get(i)) {
+            if left.parent.is_some() {
+                Some(left)
             } else {
-                return Some(item.clone());
+                left.right.and_then(|i| items.get(i))
             }
-        } else if let Some(item) = self.right.get() {
-            return Some(item.clone());
+        } else {
+            self.right.and_then(|i| items.get(i))
         }
-        None
     }
 
     pub fn len(&self) -> u64 {
@@ -163,7 +185,7 @@ impl Item {
         self.flags.deleted()
     }
 
-    pub fn delete(&self) -> bool {
+    pub fn delete(&mut self) -> bool {
         if self.deleted() {
             return false;
         }
@@ -193,6 +215,7 @@ impl Item {
         Id::new(client, clock + self.len().saturating_sub(1))
     }
 
+    #[cfg(test)]
     pub fn split_at(&self, offset: u64) -> JwstCodecResult<(Self, Self)> {
         debug_assert!(offset > 0 && offset < self.len());
         let (left_content, right_content) = self.content.split(offset)?;
@@ -201,132 +224,54 @@ impl Item {
         // mutating shared inputs.
         let mut left = self.clone();
         let mut right = self.clone();
-        left.left = Somr::none();
-        left.right = Somr::none();
+        left.left = None;
+        left.right = None;
         left.replace_content_with_len(left_content, offset);
         right.id.clock += offset;
-        right.origin_left_id = Some(Id::new(self.id.client, right.id.clock - 1));
-        right.left = Somr::none();
-        right.right = Somr::none();
+        right.set_origin_left_id(Some(Id::new(self.id.client, right.id.clock - 1)));
+        right.left = None;
+        right.right = None;
         right.replace_content_with_len(right_content, self.len() - offset);
         Ok((left, right))
     }
 
-    fn get_info(&self) -> u8 {
-        let mut info = self.content.get_info();
-
-        if self.origin_left_id.is_some() {
-            info |= item_flags::ITEM_HAS_LEFT_ID;
-        }
-        if self.origin_right_id.is_some() {
-            info |= item_flags::ITEM_HAS_RIGHT_ID;
-        }
-        if self.parent_sub.is_some() {
-            info |= item_flags::ITEM_HAS_PARENT_SUB;
-        }
-
-        info
-    }
-
-    #[cfg(test)]
+    #[cfg(all(test, not(loom)))]
     pub fn is_valid(&self) -> bool {
-        let has_id = self.origin_left_id.is_some() || self.origin_right_id.is_some();
+        let has_id = self.origin_left_id().is_some() || self.origin_right_id().is_some();
         !has_id && self.parent.is_some() || has_id && self.parent.is_none() && self.parent_sub.is_none()
     }
 
-    pub fn write<W: CrdtWriter>(&self, encoder: &mut W) -> JwstCodecResult {
-        let info = self.get_info();
-        let has_not_sibling = info & item_flags::ITEM_HAS_SIBLING == 0;
-
-        encoder.write_info(info)?;
-
-        if let Some(left_id) = self.origin_left_id {
-            encoder.write_item_id(&left_id)?;
-        }
-        if let Some(right_id) = self.origin_right_id {
-            encoder.write_item_id(&right_id)?;
-        }
-
-        if has_not_sibling {
-            if let Some(parent) = &self.parent {
-                match parent {
-                    Parent::String(s) => {
-                        encoder.write_var_u64(1)?;
-                        encoder.write_var_string(s)?;
-                    }
-                    Parent::Id(id) => {
-                        encoder.write_var_u64(0)?;
-                        encoder.write_item_id(id)?;
-                    }
-                    Parent::Type(ty) => {
-                        let ty = ty.ty().ok_or(JwstCodecError::InvalidParent)?;
-                        if let Some(item) = ty.item.get() {
-                            encoder.write_var_u64(0)?;
-                            encoder.write_item_id(&item.id)?;
-                        } else if let Some(name) = &ty.root_name {
-                            encoder.write_var_u64(1)?;
-                            encoder.write_var_string(name)?;
-                        } else {
-                            return Err(JwstCodecError::InvalidParent);
-                        }
-                    }
-                }
-            } else {
-                // if item delete, it must not exists in crdt state tree
-                debug_assert!(!self.deleted());
-                return Err(JwstCodecError::ParentNotFound);
-            }
-
-            if let Some(parent_sub) = &self.parent_sub {
-                encoder.write_var_string(parent_sub)?;
-            }
-        }
-
-        self.content.write(encoder)?;
-
-        Ok(())
+    /// Writes the item as a struct of the store whose type arena is `types`.
+    pub fn write<W: CrdtWriter>(&self, types: &TypeArena, encoder: &mut W) -> JwstCodecResult {
+        self.content.view(types)?.write_item(
+            encoder,
+            self.origin_left_id(),
+            self.origin_right_id(),
+            self.parent_sub.as_ref(),
+            || {
+                self.parent
+                    .as_ref()
+                    .ok_or(JwstCodecError::ParentNotFound)?
+                    .wire_parent(types)
+            },
+        )
     }
 
-    pub fn deep_compare(&self, other: &Self) -> bool {
+    pub fn deep_compare(&self, items: &ItemSpace, other: &Self, other_items: &ItemSpace) -> bool {
         self.id == other.id
             && self.deleted() == other.deleted()
             && self.len() == other.len()
-            && self.left.get().map(|l| l.last_id()) == other.left.get().map(|l| l.last_id())
-            && self.right.get().map(|r| r.id) == other.right.get().map(|r| r.id)
-            && self.origin_left_id == other.origin_left_id
-            && self.origin_right_id == other.origin_right_id
+            && self.left.and_then(|i| items.get(i)).map(Item::last_id)
+                == other.left.and_then(|i| other_items.get(i)).map(Item::last_id)
+            && self.right.and_then(|i| items.get(i)).map(|i| i.id)
+                == other.right.and_then(|i| other_items.get(i)).map(|i| i.id)
+            && self.origin_left_id() == other.origin_left_id()
+            && self.origin_right_id() == other.origin_right_id()
             && self.parent_sub == other.parent_sub
     }
 }
 
-#[allow(dead_code)]
-#[cfg(any(debug, test))]
-impl Item {
-    pub fn print_left(&self) {
-        let mut ret = vec![format!("Self{}: [{:?}]", self.id, self.content)];
-        let mut left: Somr<Item> = self.left.clone();
-
-        while let Some(item) = left.get() {
-            ret.push(format!("{item}"));
-            left = item.left.clone();
-        }
-        ret.reverse();
-
-        println!("{}", ret.join(" <- "));
-    }
-
-    pub fn print_right(&self) {
-        let mut ret = vec![format!("Self{}: [{:?}]", self.id, self.content)];
-        let mut right = self.right.clone();
-
-        while let Some(item) = right.get() {
-            ret.push(format!("{item}"));
-            right = item.right.clone();
-        }
-
-        println!("{}", ret.join(" -> "));
-    }
-}
+const _: () = assert!(size_of::<Option<Item>>() == size_of::<Item>());
 
 #[cfg(test)]
 mod tests {
@@ -339,6 +284,10 @@ mod tests {
     #[cfg(not(loom))]
     fn item_round_trip(item: &mut Item) -> JwstCodecResult {
         item.len = item.content.clock_len();
+        let mut types = TypeArena::default();
+        if item.origin_left_id().is_none() && item.origin_right_id().is_none() {
+            item.parent = Some(types.alloc(YType::new_root(YTypeKind::Map, None, "parent".into()))?);
+        }
         if !item.is_valid() {
             return Ok(());
         }
@@ -351,14 +300,19 @@ mod tests {
         }
 
         let mut update = Update::default();
-        update.structs.insert(item.id.client, [Node::from(item.clone())].into());
+        update.structs.insert(
+            item.id.client,
+            [WireStruct::Item(Box::new(WireItem::from_item(&types, item)?))].into(),
+        );
         let decoded = Update::decode_v1(update.encode_v1()?)?;
         let decoded_item = match decoded.structs.get(&item.id.client).unwrap().front().unwrap() {
-            Node::Item(item) => item.get().unwrap(),
+            WireStruct::Item(item) => item,
             _ => unreachable!(),
         };
 
-        assert_eq!(item, decoded_item);
+        assert_eq!(item.id, decoded_item.id);
+        assert_eq!(item.origin_left_id(), decoded_item.origin_left_id);
+        assert_eq!(item.origin_right_id(), decoded_item.origin_right_id);
 
         Ok(())
     }
@@ -367,8 +321,10 @@ mod tests {
     proptest! {
         #[test]
         #[cfg_attr(miri, ignore)]
-        fn test_random_content(mut items in vec(any::<Item>(), 0..10)) {
-            for item in &mut items {
+        fn test_random_content(mut items in vec((any::<Item>(), any::<Option<Id>>(), any::<Option<Id>>()), 0..10)) {
+            for (item, left, right) in &mut items {
+                item.set_origin_left_id(*left);
+                item.set_origin_right_id(*right);
                 item_round_trip(item).unwrap();
             }
         }

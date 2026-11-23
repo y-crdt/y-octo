@@ -10,16 +10,16 @@ const MAX_SEARCH_MARKER: usize = 80;
 
 #[derive(Clone, Debug)]
 pub(crate) struct SearchMarker {
-    pub ptr: Somr<Item>,
+    pub ptr: ItemRef,
     pub index: u64,
 }
 
 impl SearchMarker {
-    fn new(ptr: Somr<Item>, index: u64) -> Self {
+    fn new(ptr: ItemRef, index: u64) -> Self {
         SearchMarker { ptr, index }
     }
 
-    fn overwrite_marker(&mut self, ptr: Somr<Item>, index: u64) {
+    fn overwrite_marker(&mut self, ptr: ItemRef, index: u64) {
         self.ptr = ptr;
         self.index = index;
     }
@@ -52,12 +52,8 @@ impl DerefMut for MarkerList {
 }
 
 impl MarkerList {
-    pub fn new() -> Self {
-        MarkerList(VecDeque::new())
-    }
-
     // mark pos and push to the end of the linked list
-    fn mark_position(list: &mut VecDeque<SearchMarker>, ptr: Somr<Item>, index: u64) -> Option<SearchMarker> {
+    fn mark_position(list: &mut VecDeque<SearchMarker>, ptr: ItemRef, index: u64) -> Option<SearchMarker> {
         if list.len() >= MAX_SEARCH_MARKER {
             let mut oldest_marker = list.pop_front().unwrap();
             oldest_marker.overwrite_marker(ptr, index);
@@ -70,21 +66,29 @@ impl MarkerList {
     }
 
     // update mark position if the index is within the range of the marker
-    pub fn update_marker_changes(&mut self, index: u64, len: i64) {
+    pub fn update_marker_changes(&mut self, items: &ItemSpace, index: u64, len: i64, inserted: ItemRef) {
         let list = &mut self.0;
 
         for marker in list.iter_mut() {
             if len > 0 {
-                while let Some(ptr) = marker.ptr.get() {
+                while let Some(ptr) = marker.ptr.and_then(|i| items.get(i)) {
                     if !ptr.indexable() {
-                        let left_ref = ptr.left.clone();
-                        if let Some(left) = left_ref.get() {
+                        // Marker indices still describe the list before this
+                        // insertion. Walk the old predecessor edge when a
+                        // format or tombstone now has the new item immediately
+                        // to its left.
+                        let left_ref = if ptr.left == inserted {
+                            inserted.and_then(|id| items.get(id)).and_then(|item| item.left)
+                        } else {
+                            ptr.left
+                        };
+                        if let Some(left) = left_ref.and_then(|i| items.get(i)) {
                             if left.indexable() {
                                 marker.index -= left.len();
                             }
                             marker.ptr = left_ref;
                         } else {
-                            // remove marker
+                            marker.ptr = None;
                             marker.index = 0;
                             break;
                         }
@@ -104,17 +108,17 @@ impl MarkerList {
 
     /// Walks from the closest marker (or `start`) to an item boundary at or
     /// before `index` that cannot be merged with its left neighbor.
-    fn walk(marker: Option<&SearchMarker>, start: &ItemRef, index: u64) -> (ItemRef, u64) {
+    fn walk(items: &ItemSpace, marker: Option<&SearchMarker>, start: &ItemRef, index: u64) -> (ItemRef, u64) {
         let mut marker_index = marker.map(|m| m.index).unwrap_or(0);
-        let mut item_ptr = marker.map(|m| m.ptr.clone()).unwrap_or_else(|| start.clone());
+        let mut item_ptr = marker.map(|m| m.ptr).unwrap_or_else(|| *start);
 
         // iterate to the right if possible
-        while let Some(item) = item_ptr.clone().get() {
+        while let Some(item) = item_ptr.and_then(|i| items.get(i)) {
             if marker_index >= index {
                 break;
             }
 
-            let right_ref: ItemRef = item.right.clone();
+            let right_ref: ItemRef = item.right;
             if right_ref.is_some() {
                 if item.indexable() {
                     if index < marker_index + item.len() {
@@ -131,13 +135,13 @@ impl MarkerList {
 
         // iterate to the left if necessary (might be that marker_index >
         // index)
-        while let Some(item) = item_ptr.clone().get() {
+        while let Some(item) = item_ptr.and_then(|i| items.get(i)) {
             if marker_index <= index {
                 break;
             }
 
-            let left_ref: ItemRef = item.left.clone();
-            if let Some(left) = left_ref.get() {
+            let left_ref: ItemRef = item.left;
+            if let Some(left) = left_ref.and_then(|i| items.get(i)) {
                 if left.indexable() {
                     marker_index -= left.len();
                 }
@@ -152,9 +156,9 @@ impl MarkerList {
         // just return what we have (it is most likely the best
         // marker anyway) iterate to left until item_ptr can't
         // be merged with left
-        while let Some(item) = item_ptr.clone().get() {
-            let left_ref: ItemRef = item.left.clone();
-            if let Some(left) = left_ref.get() {
+        while let Some(item) = item_ptr.and_then(|i| items.get(i)) {
+            let left_ref: ItemRef = item.left;
+            if let Some(left) = left_ref.and_then(|i| items.get(i)) {
                 if left.id.client == item.id.client && left.id.clock + left.len() == item.id.clock {
                     if left.indexable() {
                         marker_index -= left.len();
@@ -180,14 +184,20 @@ impl MarkerList {
 
     /// Finds the marker closest to `index` and moves or adds a marker there.
     /// Only called under the store write lock.
-    pub fn find_marker(&mut self, start: &ItemRef, parent_len: u64, index: u64) -> Option<SearchMarker> {
+    pub fn find_marker(
+        &mut self,
+        items: &ItemSpace,
+        start: &ItemRef,
+        parent_len: u64,
+        index: u64,
+    ) -> Option<SearchMarker> {
         if start.is_none() || index == 0 {
             return None;
         }
 
         let list = &mut self.0;
         let closest = Self::closest(list, index);
-        let (item_ptr, marker_index) = Self::walk(closest.map(|i| &list[i]), start, index);
+        let (item_ptr, marker_index) = Self::walk(items, closest.map(|i| &list[i]), start, index);
 
         match closest {
             Some(i)
@@ -208,13 +218,13 @@ impl MarkerList {
 
     /// Same search as [MarkerList::find_marker] without touching the list,
     /// for readers that only hold the store read lock.
-    pub fn find_readonly(&self, start: &ItemRef, index: u64) -> Option<SearchMarker> {
+    pub fn find_readonly(&self, items: &ItemSpace, start: &ItemRef, index: u64) -> Option<SearchMarker> {
         if start.is_none() || index == 0 {
             return None;
         }
 
         let closest = Self::closest(&self.0, index);
-        let (ptr, index) = Self::walk(closest.map(|i| &self.0[i]), start, index);
+        let (ptr, index) = Self::walk(items, closest.map(|i| &self.0[i]), start, index);
         Some(SearchMarker { ptr, index })
     }
 
@@ -223,10 +233,10 @@ impl MarkerList {
         self.0.back().cloned()
     }
 
-    pub fn replace_marker(&mut self, raw: Somr<Item>, new: Somr<Item>, len_shift: i64) {
+    pub fn replace_marker(&mut self, raw: ItemRef, new: ItemRef, len_shift: i64) {
         for marker in self.0.iter_mut() {
-            if marker.ptr.ptr_eq(&raw) {
-                marker.ptr = new.clone();
+            if marker.ptr == raw {
+                marker.ptr = new;
                 marker.index = ((marker.index as i64) + len_shift) as u64;
             }
         }
@@ -257,11 +267,11 @@ mod tests {
             doc.apply_update(update).unwrap();
             let array = doc.get_or_create_array("abc").unwrap();
 
-            let mut marker_list = MarkerList::new();
+            let mut marker_list = MarkerList::default();
 
             let marker = array
                 .0
-                .read(|_, ty| marker_list.find_marker(&ty.start, ty.len, 8))
+                .read(|store, ty| marker_list.find_marker(&store.type_arena.items, &ty.start, ty.len, 8))
                 .unwrap()
                 .unwrap();
 

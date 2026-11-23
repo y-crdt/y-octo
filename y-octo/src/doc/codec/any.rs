@@ -827,7 +827,7 @@ mod tests {
             let update = Update::decode_v1(bytes).unwrap();
             let update = Update::decode_v1(Update::merge([update]).encode_v1().unwrap()).unwrap();
             let item = update.structs[&1][0].as_item();
-            let Content::Any(values) = &item.get().unwrap().content else {
+            let WireContent::Any(values) = &item.unwrap().content else {
                 panic!("expected ContentAny");
             };
             assert!(matches!(&values[0], Any::Float32(value) if value.0 == 0.0 && value.0.is_sign_negative()));

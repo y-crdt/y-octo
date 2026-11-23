@@ -49,14 +49,14 @@ pub fn memory_layout() -> DocMemoryLayout {
     DocMemoryLayout {
         id: size_of::<Id>(),
         option_id: size_of::<Option<Id>>(),
-        parent: size_of::<Parent>(),
+        parent: size_of::<Option<TypeIdx>>(),
         content: size_of::<Content>(),
         any: size_of::<Any>(),
         item: size_of::<Item>(),
         item_ref: size_of::<ItemRef>(),
-        item_allocation: size_of::<SomrInner<Item>>(),
-        node: size_of::<Node>(),
-        node_len: size_of::<NodeLen>(),
+        item_allocation: size_of::<Option<Item>>(),
+        node: size_of::<BlockRef>(),
+        node_len: 0,
         y_type: size_of::<YType>(),
         y_type_ref: size_of::<YTypeRef>(),
     }
@@ -355,13 +355,13 @@ impl Doc {
             changed_keys: store.collector.changed.values().map(Vec::len).sum(),
         };
 
-        for node in store.items.values().flatten() {
-            match node {
-                Node::GC(_) => status.gc_nodes += 1,
-                Node::Skip(_) => status.skip_nodes += 1,
-                Node::Item(item) => {
+        for node in store.items.iter().flat_map(|(&client, blocks)| blocks.nodes(client)) {
+            match node.kind {
+                BlockKind::Gc => status.gc_nodes += 1,
+                BlockKind::Skip => status.skip_nodes += 1,
+                BlockKind::Item(idx) | BlockKind::DeletedItem(idx) => {
                     status.items += 1;
-                    let item = unsafe { item.get_unchecked() };
+                    let item = store.type_arena.items.get(idx).expect("stored item");
                     status.deleted_items += usize::from(item.deleted());
                     match &item.content {
                         Content::Type(_) => status.type_contents += 1,
@@ -412,7 +412,7 @@ impl Doc {
             store
                 .types
                 .get(name)
-                .is_some_and(|root| root.ty().is_some_and(|ty| ty.len > 0))
+                .is_some_and(|root| store.type_arena.get(*root).is_some_and(|ty| ty.len > 0))
         }))
     }
 
@@ -452,7 +452,7 @@ impl Doc {
         transact_mut_with(store_ref, origin.into(), false, |tx| {
             // what the update itself declares, before pending structs join it
             tx.incoming = Some(IncomingUpdate::of(&update));
-            Self::integrate_update(tx.store_mut(), store_ref, update)
+            Self::integrate_update(tx.store_mut(), update)
         })
     }
 
@@ -554,7 +554,7 @@ impl Doc {
             let store = tx.store_mut();
             // the remote updates waiting in the store stay out of this commit
             let pending = store.pending.take();
-            let result = Self::integrate_update(store, store_ref, update);
+            let result = Self::integrate_update(store, update);
             debug_assert!(store.pending.is_none(), "checked for missing dependencies");
             store.pending = pending;
             result.map(|()| LocalUpdate::Applied)
@@ -577,7 +577,7 @@ impl Doc {
         };
         if unblocked {
             transact_mut_with(store_ref, None, false, |tx| {
-                Self::integrate_update(tx.store_mut(), store_ref, Update::default())
+                Self::integrate_update(tx.store_mut(), Update::default())
             })?;
         }
         Ok(applied)
@@ -683,21 +683,12 @@ impl Doc {
         })
     }
 
-    pub(in crate::doc) fn integrate_update(
-        store: &mut DocStore,
-        store_ref: &StoreRef,
-        mut update: Update,
-    ) -> JwstCodecResult {
+    pub(in crate::doc) fn integrate_update(store: &mut DocStore, mut update: Update) -> JwstCodecResult {
         let mut retry = false;
 
         loop {
-            for (mut s, offset) in update.iter(store.get_state_vector()) {
-                if let Node::Item(item) = &mut s {
-                    debug_assert!(item.is_owned());
-                    let mut item = unsafe { item.get_mut_unchecked() };
-                    store.repair(&mut item, store_ref)?;
-                }
-                store.integrate(s, offset, None)?;
+            for (wire, offset) in update.iter(store.get_state_vector()) {
+                store.integrate_wire(wire, offset)?;
             }
 
             for (client, range) in update.delete_set_iter(store.get_state_vector()) {
@@ -1376,15 +1367,15 @@ mod tests {
             assert_eq!(text.len(), 12);
             let store = doc.store.read().unwrap();
             for name in ["typed_text", "typed_xml_text"] {
-                let root = store.types[name].ty().unwrap();
+                let root = &store.type_arena[store.types[name]];
                 assert_eq!(root.len, 12);
                 let mut children = Vec::new();
-                let mut item = root.start.clone();
-                while let Some(node) = item.get() {
+                let mut item = root.start;
+                while let Some(node) = item.and_then(|i| store.type_arena.items.get(i)) {
                     if let Content::Type(child) = &node.content {
-                        children.push(child.ty().unwrap().kind());
+                        children.push(store.type_arena[*child].kind());
                     }
-                    item = node.right.clone();
+                    item = node.right;
                 }
                 assert_eq!(children, vec![YTypeKind::Map, YTypeKind::Array, YTypeKind::Text]);
             }
@@ -1431,10 +1422,9 @@ mod tests {
                         let node = &diff.structs[&1][0];
                         assert_eq!(node.clock(), clock);
                         assert_eq!(node.len(), 4 - clock);
-                        let item = node.as_item();
-                        let item = item.get().unwrap();
+                        let item = node.as_item().unwrap();
                         assert_eq!(item.origin_left_id, clock.checked_sub(1).map(|clock| Id::new(1, clock)));
-                        assert_eq!(item.content, Content::String(tails[clock as usize].into()));
+                        assert_eq!(item.content, WireContent::String(tails[clock as usize].into()));
                     } else {
                         assert!(diff.structs.is_empty());
                     }

@@ -66,7 +66,12 @@ impl RelativePosition {
     }
 
     /// Yjs `createRelativePositionFromTypeIndex` on the type data `ty`.
-    pub(in crate::doc) fn from_type_index(ty: &YType, index: u64, assoc: i64) -> JwstCodecResult<Self> {
+    pub(in crate::doc) fn from_type_index(
+        items: &ItemSpace,
+        ty: &YType,
+        index: u64,
+        assoc: i64,
+    ) -> JwstCodecResult<Self> {
         check_assoc(assoc)?;
         if ty.is_preliminary() {
             return Err(JwstCodecError::InvalidParent);
@@ -74,10 +79,10 @@ impl RelativePosition {
         if index > ty.len {
             return Err(JwstCodecError::IndexOutOfBound(index));
         }
-        let (r#type, tname) = if let Some(item) = ty.item.get() {
+        let (r#type, tname) = if let Some(item) = ty.live_carrier(items) {
             (Some(item.id), None)
-        } else if let Some(name) = &ty.root_name {
-            (None, Some(name.clone()))
+        } else if let Some(name) = ty.root_name() {
+            (None, Some(name.to_owned()))
         } else {
             // a type that is not in the document yet has no identity
             return Err(JwstCodecError::InvalidParent);
@@ -98,15 +103,15 @@ impl RelativePosition {
             index -= 1;
         }
 
-        let mut cur = ty.start.clone();
-        while let Some(item) = cur.get() {
+        let mut cur = ty.start;
+        while let Some(item) = cur.and_then(|i| items.get(i)) {
             if item.indexable() {
                 if item.len() > index {
                     return Ok(position(Some(Id::new(item.id.client, item.id.clock + index))));
                 }
                 index -= item.len();
             }
-            cur = item.right.clone();
+            cur = item.right;
         }
 
         // `index == len` and `assoc >= 0`: the end of the type
@@ -129,24 +134,24 @@ impl RelativePosition {
 
         if let Some(id) = self.item {
             let (item_ref, offset) = lookup(id)?;
-            let item = item_ref.get()?;
-            let Some(Parent::Type(parent)) = &item.parent else {
+            let item = store.type_arena.items.get(item_ref?)?;
+            let Some(parent) = &item.parent else {
                 unreachable!("items in the store have a type parent");
             };
-            let parent = parent.ty()?;
-            let identity = live_identity(parent)?;
+            let parent = store.type_arena.get(*parent)?;
+            let identity = live_identity(&store.type_arena.items, parent)?;
 
             let mut index = if item.indexable() {
                 offset + if self.assoc >= 0 { 0 } else { 1 }
             } else {
                 0
             };
-            let mut cur = item.left.clone();
-            while let Some(left) = cur.get() {
+            let mut cur = item.left;
+            while let Some(left) = cur.and_then(|i| store.type_arena.items.get(i)) {
                 if left.indexable() {
                     index += left.len();
                 }
-                cur = left.left.clone();
+                cur = left.left;
             }
 
             Some(AbsolutePosition {
@@ -156,17 +161,17 @@ impl RelativePosition {
             })
         } else {
             let ty = if let Some(name) = &self.tname {
-                store.types.get(name)?.clone()
+                *store.types.get(name)?
             } else {
                 let (item_ref, _) = lookup(self.r#type?)?;
-                match &item_ref.get()?.content {
-                    Content::Type(ty) => ty.clone(),
+                match &store.type_arena.items.get(item_ref?)?.content {
+                    Content::Type(ty) => *ty,
                     // the type item has been garbage collected
                     _ => return None,
                 }
             };
-            let ty = ty.ty()?;
-            let identity = live_identity(ty)?;
+            let ty = store.type_arena.get(ty)?;
+            let identity = live_identity(&store.type_arena.items, ty)?;
 
             Some(AbsolutePosition {
                 r#type: identity,
@@ -180,11 +185,11 @@ impl RelativePosition {
 /// The identity of a type that is still part of the document: `None` when its
 /// item has been deleted (Yjs would still resolve into it) or when it has no
 /// identity at all.
-fn live_identity(ty: &YType) -> Option<TypeIdentity> {
-    if let Some(item) = ty.item.get() {
+fn live_identity(items: &ItemSpace, ty: &YType) -> Option<TypeIdentity> {
+    if let Some(item) = ty.live_carrier(items) {
         (!item.deleted()).then_some(TypeIdentity::Item(item.id))
     } else {
-        ty.root_name.clone().map(TypeIdentity::Root)
+        ty.root_name().map(|name| TypeIdentity::Root(name.to_owned()))
     }
 }
 
@@ -304,7 +309,7 @@ macro_rules! impl_relative_position {
                 "the type is not part of the document yet."
             )]
             pub fn relative_position(&self, index: u64, assoc: i64) -> JwstCodecResult<RelativePosition> {
-                self.0.read(|_, ty| RelativePosition::from_type_index(ty, index, assoc))?
+                self.0.read(|store, ty| RelativePosition::from_type_index(&store.type_arena.items,ty, index, assoc))?
             }
         }
     };

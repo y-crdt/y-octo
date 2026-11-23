@@ -17,16 +17,16 @@ impl DocStore {
     /// Adds `item` and every type item above it to `retained`, like Yjs
     /// `keepItem`: collecting a type item collects all of its children, so a
     /// retained item is only safe while its ancestors are retained too.
-    pub(crate) fn retain_with_ancestors(retained: &mut DeleteSet, item: &Item) {
+    pub(crate) fn retain_with_ancestors(types: &TypeArena, retained: &mut DeleteSet, item: &Item) {
         retained.add(item.id.client, item.id.clock, item.len());
 
-        let mut parent = item.parent.clone();
-        while let Some(Parent::Type(ty)) = parent {
-            let Some(carrier) = ty.ty().and_then(|ty| ty.item.get()) else {
+        let mut parent = item.parent.as_ref();
+        while let Some(ty) = parent {
+            let Some(carrier) = types.get(*ty).and_then(|ty| ty.live_carrier(&types.items)) else {
                 break;
             };
             retained.add(carrier.id.client, carrier.id.clock, carrier.len());
-            parent = carrier.parent.clone();
+            parent = carrier.parent.as_ref();
         }
     }
 
@@ -87,10 +87,7 @@ mod tests {
 
     fn content(doc: &Doc, id: (Client, Clock)) -> Content {
         let store = doc.store.read().unwrap();
-        match store.get_node(id).unwrap() {
-            Node::Item(item) => item.get().unwrap().content.clone(),
-            node => panic!("{id:?} is {node:?}"),
-        }
+        store.get_node(id).unwrap().item(&store.type_arena).content.clone()
     }
 
     fn range(client: Client, start: Clock, end: Clock) -> DeleteSet {
@@ -114,7 +111,11 @@ mod tests {
             let store = doc.store.read().unwrap();
             for id in ids {
                 let item = store.get_node(*id).unwrap().as_item();
-                DocStore::retain_with_ancestors(&mut retained, item.get().unwrap());
+                DocStore::retain_with_ancestors(
+                    &store.type_arena,
+                    &mut retained,
+                    store.type_arena.items.get(item.unwrap()).unwrap(),
+                );
             }
         }
         set_retained(doc, retained);
@@ -217,7 +218,11 @@ mod tests {
         {
             let store = doc.store.read().unwrap();
             let item = store.get_node((4, 1)).unwrap().as_item();
-            DocStore::retain_with_ancestors(&mut retained, item.get().unwrap());
+            DocStore::retain_with_ancestors(
+                &store.type_arena,
+                &mut retained,
+                store.type_arena.items.get(item.unwrap()).unwrap(),
+            );
         }
         for client in 1..=4 {
             assert!(retained.get(&client).unwrap().contains(0));
@@ -335,7 +340,7 @@ mod tests {
             let store = doc.store.read().unwrap();
             for clock in released {
                 assert!(matches!(
-                    store.get_node((1, clock)).unwrap().as_item().get().unwrap().content,
+                    store.get_node((1, clock)).unwrap().item(&store.type_arena).content,
                     Content::Deleted(1)
                 ));
             }
@@ -426,7 +431,7 @@ mod tests {
         let store = doc.store.read().unwrap();
         let node = store.get_node((1, 1)).unwrap();
         assert_eq!((node.id(), node.len()), (Id::new(1, 1), 4));
-        assert_eq!(&node.as_item().get().unwrap().content, &Content::Deleted(4));
+        assert_eq!(&node.item(&store.type_arena).content, &Content::Deleted(4));
     }
 
     #[test]
@@ -454,7 +459,7 @@ mod tests {
         let store = doc.store.read().unwrap();
         let node = store.get_node((1, 1)).unwrap();
         assert_eq!((node.id(), node.len()), (Id::new(1, 1), 3));
-        assert_eq!(&node.as_item().get().unwrap().content, &Content::Deleted(3));
+        assert_eq!(&node.item(&store.type_arena).content, &Content::Deleted(3));
     }
 
     #[test]
