@@ -35,6 +35,8 @@ fn reordered_nested_update_can_be_saved_before_its_parent() {
         .unwrap();
     assert!(restored.has_pending_updates());
     restored.apply_update_from_binary_v1(parent_update).unwrap();
+    assert!(!restored.has_pending_updates());
+    assert_eq!(restored.get_state_vector(), source.get_state_vector());
     restored.apply_update_from_binary_v1(child_update).unwrap();
     assert!(!restored.has_pending_updates());
     assert_eq!(restored.get_state_vector(), source.get_state_vector());
@@ -113,20 +115,22 @@ fn partial_remote_apply_preserves_changes_and_invalidates_only_touched_markers()
         .unwrap();
     let mut update = peer.encode_state_as_update(&state).unwrap();
 
-    // The two valid items integrate before repair rejects this unowned type.
-    let invalid = Item::new(
-        Id::new(2, peer.get_state_vector().get(&2)),
-        Content::Type(YTypeRef::default()),
-        Somr::none(),
-        Somr::none(),
-        Some(Parent::String("map".into())),
-        None,
-    );
+    // The two valid items integrate before repair rejects a forward origin.
+    let id = Id::new(2, peer.get_state_vector().get(&2));
     update
         .structs
         .get_mut(&2)
         .unwrap()
-        .push_back(Node::Item(Somr::new(invalid)));
+        .push_back(WireStruct::Item(Box::new(WireItem {
+            id,
+            len: 1,
+            origin_left_id: Some(id),
+            origin_right_id: None,
+            parent: None,
+            parent_sub: None,
+            content: WireContent::String("x".into()),
+            flags: item_flags::ITEM_COUNTABLE,
+        })));
 
     assert_eq!(doc.apply_update(update), Err(JwstCodecError::InvalidParent));
     assert_eq!(text.to_string(), "rabxc");
@@ -353,10 +357,10 @@ fn layout(doc: &Doc) -> Vec<String> {
     clients.sort();
     let mut out = Vec::new();
     for client in clients {
-        for node in &store.items[&client] {
-            let desc = match node {
-                Node::Item(item) => {
-                    let item = item.get().unwrap();
+        for node in store.items[&client].nodes(client) {
+            let desc = match node.as_item() {
+                Some(idx) => {
+                    let item = store.type_arena.items.get(idx).unwrap();
                     format!(
                         "{} {}+{} item del={} keep={} {:?} left={:?} right={:?} ol={:?} or={:?}",
                         client,
@@ -368,14 +372,14 @@ fn layout(doc: &Doc) -> Vec<String> {
                             Content::Type(_) => "Type".to_string(),
                             c => format!("{c:?}"),
                         },
-                        item.left.get().map(|l| l.id),
-                        item.right.get().map(|r| r.id),
-                        item.origin_left_id,
-                        item.origin_right_id,
+                        item.left.and_then(|i| store.type_arena.items.get(i)).map(|l| l.id),
+                        item.right.and_then(|i| store.type_arena.items.get(i)).map(|r| r.id),
+                        item.origin_left_id(),
+                        item.origin_right_id(),
                     )
                 }
-                Node::GC(_) => format!("{} {}+{} GC", client, node.clock(), node.len()),
-                Node::Skip(_) => format!("{} {}+{} Skip", client, node.clock(), node.len()),
+                None if node.is_gc() => format!("{} {}+{} GC", client, node.clock(), node.len()),
+                None => format!("{} {}+{} Skip", client, node.clock(), node.len()),
             };
             out.push(desc);
         }

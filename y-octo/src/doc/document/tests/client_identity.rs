@@ -163,10 +163,7 @@ fn only_identities_the_host_did_not_assign_wait() {
 
 fn content(doc: &Doc, id: (Client, Clock)) -> Content {
     let store = doc.store.read().unwrap();
-    match store.get_node(id).unwrap() {
-        Node::Item(item) => item.get().unwrap().content.clone(),
-        node => panic!("{id:?} is {node:?}"),
-    }
+    store.get_node(id).unwrap().item(&store.type_arena).content.clone()
 }
 
 /// While the host has to assign a client ID, undo and redo (they create

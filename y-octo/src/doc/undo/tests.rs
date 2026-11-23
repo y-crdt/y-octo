@@ -21,10 +21,14 @@ fn manager(doc: &Doc, scope: impl Into<UndoScope>) -> UndoManager {
 
 fn content(doc: &Doc, id: (Client, Clock)) -> Option<Content> {
     let store = doc.store.read().unwrap();
-    match store.get_node(id)? {
-        Node::Item(item) => Some(item.get().unwrap().content.clone()),
-        _ => None,
-    }
+    Some(
+        store
+            .type_arena
+            .items
+            .get(store.get_node(id)?.as_item()?)?
+            .content
+            .clone(),
+    )
 }
 
 fn format(attrs: &[(&str, Any)]) -> Option<TextAttributes> {
@@ -1059,4 +1063,40 @@ fn tracked_formatting_cleanup_preserves_the_capture_window() {
     assert_eq!(text.to_string(), "abx");
     undo.undo().unwrap().unwrap();
     assert_eq!(text.to_string(), "ab");
+}
+
+#[test]
+fn a_pop_that_does_not_fit_the_type_arena_keeps_its_stack_item() {
+    let doc = doc(1);
+    let mut root = doc.get_or_create_array("root").unwrap();
+    let mut nested = doc.create_map().unwrap();
+    nested.insert("text".into(), doc.create_text().unwrap()).unwrap();
+    root.push(nested).unwrap();
+    let undo = manager(&doc, &root);
+    root.remove(0, 1).unwrap();
+    assert_eq!(root.len(), 0);
+
+    // recreating the map and its text takes two types: leave room for one
+    let types = {
+        let mut store = doc.store.write().unwrap();
+        let types = store.type_arena.len();
+        store.type_arena.set_limit(Some(types + 1));
+        types
+    };
+    let before = doc.encode_update_v1().unwrap();
+    assert!(matches!(undo.undo(), Err(JwstCodecError::IncompleteDocument(_))));
+    assert!(undo.can_undo() && !undo.can_redo());
+    assert_eq!(doc.encode_update_v1().unwrap(), before);
+    assert_eq!(doc.store.read().unwrap().type_arena.len(), types);
+
+    // with room the same item is undone
+    doc.store.write().unwrap().type_arena.set_limit(None);
+    assert!(undo.undo().unwrap().is_some());
+    assert_eq!(root.len(), 1);
+    let Some(Value::Map(restored)) = root.get(0) else {
+        panic!("expected the map back");
+    };
+    assert!(matches!(restored.get("text"), Some(Value::Text(_))));
+    assert_eq!(doc.store.read().unwrap().type_arena.len(), types + 2);
+    assert!(!undo.can_undo() && undo.can_redo());
 }

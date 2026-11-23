@@ -12,7 +12,7 @@ use super::{
 };
 use crate::{
     Any, Content, JwstCodecError, JwstCodecResult,
-    doc::{DocStore, ItemRef, Node, Parent, Somr, YType, YTypeRef},
+    doc::{DocStore, ItemRef, ItemSpace, TypeIdx, YType},
     impl_type,
 };
 
@@ -65,44 +65,47 @@ impl Text {
     }
 
     pub fn insert_embed<V: Into<Any>>(&mut self, char_index: u64, embed: V) -> JwstCodecResult {
-        let parent = self.as_inner();
         let embed = embed.into();
-        parent.write(|store, ty| text_insert_embed(parent, store, ty, char_index, embed))
+        self.as_inner()
+            .write(|store, ty| text_insert_embed(store, ty, char_index, embed))
     }
 
     pub fn format(&mut self, char_index: u64, len: u64, attrs: TextAttributes) -> JwstCodecResult {
-        let parent = self.as_inner();
-        parent.write(|store, ty| text_format(parent, store, ty, char_index, len, attrs))
+        self.as_inner()
+            .write(|store, ty| text_format(store, ty, char_index, len, attrs))
     }
 
     #[inline]
     pub fn remove(&mut self, char_index: u64, len: u64) -> JwstCodecResult {
-        let parent = self.as_inner();
-        parent.write(|store, ty| text_remove(parent, store, ty, char_index, len))
+        self.as_inner()
+            .write(|store, ty| text_remove(store, ty, char_index, len))
     }
 
     pub fn to_delta(&self) -> TextDelta {
-        crate::doc::or_released(self.as_inner().read(|_, ty| text_delta(ty)))
+        crate::doc::or_released(
+            self.as_inner()
+                .read(|store, ty| text_delta(&store.type_arena.items, ty)),
+        )
     }
 
     pub fn apply_delta(&mut self, delta: &[TextDeltaOp]) -> JwstCodecResult {
-        let parent = self.as_inner();
-        parent.write(|store, ty| apply_text_delta(parent, store, ty, delta))
+        self.as_inner().write(|store, ty| apply_text_delta(store, ty, delta))
     }
 }
 
 /// The caller holds the store lock.
-pub(crate) fn text_delta(ty: &YType) -> TextDelta {
+pub(crate) fn text_delta(items: &ItemSpace, ty: &YType) -> TextDelta {
     let mut ops = Vec::new();
     let mut attrs = TextAttributes::new();
 
-    for item in ListIterator::new(ty) {
+    for item in ListIterator::new(items, ty) {
         match &item.content {
-            Content::Format { key, value } => {
+            Content::Format(format) => {
+                let (key, value) = (&format.key, &format.value);
                 if is_nullish(value) {
                     attrs.remove(key.as_str());
                 } else {
-                    attrs.insert(key.to_string(), value.as_ref().clone());
+                    attrs.insert(key.to_string(), value.clone());
                 }
             }
             Content::String(text) => {
@@ -155,19 +158,17 @@ pub(crate) fn validate_delta_against_len(len: u64, delta: &[TextDeltaOp]) -> Jws
     Ok(())
 }
 
-pub(crate) fn apply_text_delta(
-    parent: &YTypeRef,
-    store: &mut DocStore,
-    ty: &mut YType,
-    delta: &[TextDeltaOp],
-) -> JwstCodecResult {
-    validate_delta_against_len(ty.len, delta)?;
+pub(crate) fn apply_text_delta(store: &mut DocStore, ty: TypeIdx, delta: &[TextDeltaOp]) -> JwstCodecResult {
+    validate_delta_against_len(store.type_arena[ty].len, delta)?;
     {
-        let mut pos = TextPosition::new(parent.clone(), ty.start.clone());
+        let mut pos = TextPosition::new(store.type_arena[ty].start);
 
         for op in delta {
             match op {
                 TextDeltaOp::Insert { insert, format } => {
+                    if matches!(insert, TextInsert::Text(text) if text.is_empty()) {
+                        continue;
+                    }
                     let attrs = format.clone().unwrap_or_default();
                     match insert {
                         TextInsert::Text(text) => {
@@ -206,14 +207,17 @@ pub(crate) fn apply_text_delta(
 
 impl Display for Text {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&crate::doc::or_released(self.as_inner().read(|_, ty| text_string(ty))))
+        f.write_str(&crate::doc::or_released(
+            self.as_inner()
+                .read(|store, ty| text_string(&store.type_arena.items, ty)),
+        ))
     }
 }
 
 /// The plain string of a text type. The caller holds the store lock.
-pub(crate) fn text_string(ty: &YType) -> String {
+pub(crate) fn text_string(items: &ItemSpace, ty: &YType) -> String {
     let mut out = String::new();
-    for item in ListIterator::new(ty) {
+    for item in ListIterator::new(items, ty) {
         if let Content::String(str) = &item.content {
             out.push_str(str);
         }
@@ -230,41 +234,59 @@ impl serde::Serialize for Text {
     }
 }
 
+#[derive(Clone)]
 struct TextPosition {
-    parent: YTypeRef,
     left: ItemRef,
     right: ItemRef,
     index: u64,
     attrs: FormatAttributes,
+    // UTF-16 units retained inside right, until an edit needs a boundary.
+    offset: u64,
 }
 
 impl TextPosition {
-    fn new(parent: YTypeRef, right: ItemRef) -> Self {
+    fn new(right: ItemRef) -> Self {
         Self {
-            parent,
-            left: Somr::none(),
+            left: None,
             right,
             index: 0,
             attrs: FormatAttributes::default(),
+            offset: 0,
         }
     }
 
-    fn forward(&mut self) {
-        if let Some(right) = self.right.get() {
+    fn normalize(&mut self, store: &mut DocStore) -> JwstCodecResult {
+        if self.offset > 0 {
+            let id = store
+                .type_arena
+                .items
+                .get(self.right.expect("interior cursor"))
+                .expect("live item")
+                .id;
+            let (left, right) = store.split_node(id, self.offset)?;
+            self.left = left.as_item();
+            self.right = right.as_item();
+            self.index += std::mem::take(&mut self.offset);
+        }
+        Ok(())
+    }
+
+    fn forward(&mut self, items: &ItemSpace) {
+        if let Some(right) = self.right.and_then(|i| items.get(i)) {
             if !right.deleted() {
-                if let Content::Format { key, value } = &right.content {
+                if let Some((key, value)) = right.content.as_format() {
                     if is_nullish(value) {
                         self.attrs.remove(key.as_str());
                     } else {
-                        self.attrs.insert(key.to_string(), value.as_ref().clone(), right.id);
+                        self.attrs.insert(key.to_string(), value.clone(), right.id);
                     }
                 } else if right.countable() {
                     self.index += right.len();
                 }
             }
 
-            self.left = self.right.clone();
-            self.right = right.right.clone();
+            self.left = self.right;
+            self.right = right.right;
         }
     }
 }
@@ -296,49 +318,47 @@ fn push_insert(ops: &mut Vec<TextDeltaOp>, insert: TextInsert, attrs: &TextAttri
     ops.push(TextDeltaOp::Insert { insert, format });
 }
 
-fn advance_text_position(store: &mut DocStore, pos: &mut TextPosition, mut remaining: u64) -> JwstCodecResult {
+fn advance_text_position(store: &DocStore, pos: &mut TextPosition, mut remaining: u64) -> JwstCodecResult {
+    remaining += std::mem::take(&mut pos.offset);
     while remaining > 0 {
-        let Some(item) = pos.right.get() else {
+        let Some(item) = pos.right.and_then(|i| store.type_arena.items.get(i)) else {
             return Err(JwstCodecError::IndexOutOfBound(pos.index + remaining));
         };
 
         if item.deleted() {
-            pos.forward();
+            pos.forward(&store.type_arena.items);
             continue;
         }
 
-        if matches!(item.content, Content::Format { .. }) {
-            pos.forward();
+        if matches!(item.content, Content::Format(_)) {
+            pos.forward(&store.type_arena.items);
             continue;
         }
 
         let item_len = item.len();
         if remaining < item_len {
-            let (left, right) = store.split_node(item.id, remaining)?;
-            pos.left = left.as_item();
-            pos.right = right.as_item();
-            pos.index += remaining;
+            pos.offset = remaining;
             break;
         }
 
         remaining -= item_len;
-        pos.forward();
+        pos.forward(&store.type_arena.items);
     }
 
     Ok(())
 }
 
-fn minimize_attribute_changes(pos: &mut TextPosition, attrs: &TextAttributes) {
-    while let Some(item) = pos.right.get() {
+fn minimize_attribute_changes(store: &DocStore, pos: &mut TextPosition, attrs: &TextAttributes) {
+    while let Some(item) = pos.right.and_then(|i| store.type_arena.items.get(i)) {
         if item.deleted() {
-            pos.forward();
+            pos.forward(&store.type_arena.items);
             continue;
         }
 
-        if let Content::Format { key, value } = &item.content {
+        if let Some((key, value)) = item.content.as_format() {
             let attr = attrs.get(key.as_str()).unwrap_or(&Any::Null);
             if equal_attrs(attr, value) {
-                pos.forward();
+                pos.forward(&store.type_arena.items);
                 continue;
             }
         }
@@ -347,31 +367,25 @@ fn minimize_attribute_changes(pos: &mut TextPosition, attrs: &TextAttributes) {
     }
 }
 
-fn insert_item(store: &mut DocStore, ty: &mut YType, pos: &mut TextPosition, content: Content) -> JwstCodecResult {
-    if let Some(markers) = &mut ty.markers
-        && content.countable()
+fn insert_item(store: &mut DocStore, ty: TypeIdx, pos: &mut TextPosition, content: Content) -> JwstCodecResult {
+    let item = store.create_item(content, pos.left, pos.right, Some(ty), None);
+    let countable = item.countable();
+    let clock_len = item.len();
+    pos.right = store.integrate_item(item, 0, Some(ty))?;
+    let (parent, items) = store.type_arena.type_and_items(ty);
+    if let Some(markers) = &mut parent.markers
+        && countable
     {
-        markers.update_marker_changes(pos.index, content.clock_len() as i64);
+        markers.update_marker_changes(items, pos.index, clock_len as i64, pos.right);
     }
-
-    let item = store.create_item(
-        content,
-        pos.left.clone(),
-        pos.right.clone(),
-        Some(Parent::Type(pos.parent.clone())),
-        None,
-    );
-    let item_ref = item.clone();
-    store.integrate(Node::Item(item), 0, Some(ty))?;
-    pos.right = item_ref;
-    pos.forward();
+    pos.forward(&store.type_arena.items);
 
     Ok(())
 }
 
 fn insert_attributes(
     store: &mut DocStore,
-    ty: &mut YType,
+    ty: TypeIdx,
     pos: &mut TextPosition,
     attrs: &TextAttributes,
 ) -> JwstCodecResult<TextAttributes> {
@@ -384,54 +398,41 @@ fn insert_attributes(
         }
 
         negated.insert(key.to_string(), current);
-        insert_item(
-            store,
-            ty,
-            pos,
-            Content::Format {
-                key: key.to_string(),
-                value: Box::new(value.clone()),
-            },
-        )?;
+        insert_item(store, ty, pos, Content::format(key.to_string(), value.clone()))?;
     }
 
     Ok(negated)
 }
 
-fn insert_negated_attributes(
-    store: &mut DocStore,
-    ty: &mut YType,
-    pos: &mut TextPosition,
-    mut negated: TextAttributes,
-) -> JwstCodecResult {
-    while let Some(item) = pos.right.get() {
+fn skip_negated_attributes(items: &ItemSpace, pos: &mut TextPosition, negated: &mut TextAttributes) {
+    while let Some(item) = pos.right.and_then(|i| items.get(i)) {
         if item.deleted() {
-            pos.forward();
+            pos.forward(items);
             continue;
         }
 
-        if let Content::Format { key, value } = &item.content
+        if let Some((key, value)) = item.content.as_format()
             && let Some(negated_value) = negated.get(key.as_str())
             && equal_attrs(negated_value, value)
         {
             negated.remove(key.as_str());
-            pos.forward();
+            pos.forward(items);
             continue;
         }
 
         break;
     }
+}
 
+fn insert_negated_attributes(
+    store: &mut DocStore,
+    ty: TypeIdx,
+    pos: &mut TextPosition,
+    mut negated: TextAttributes,
+) -> JwstCodecResult {
+    skip_negated_attributes(&store.type_arena.items, pos, &mut negated);
     for (key, value) in negated {
-        insert_item(
-            store,
-            ty,
-            pos,
-            Content::Format {
-                key: key.to_string(),
-                value: Box::new(value),
-            },
-        )?;
+        insert_item(store, ty, pos, Content::format(key.to_string(), value))?;
     }
 
     Ok(())
@@ -439,7 +440,7 @@ fn insert_negated_attributes(
 
 fn insert_text_content(
     store: &mut DocStore,
-    ty: &mut YType,
+    ty: TypeIdx,
     pos: &mut TextPosition,
     content: Content,
     mut attrs: TextAttributes,
@@ -450,7 +451,25 @@ fn insert_text_content(
         }
     }
 
-    minimize_attribute_changes(pos, &attrs);
+    minimize_attribute_changes(store, pos, &attrs);
+    let items = &store.type_arena.items;
+    let slots = 1 + usize::from(pos.offset > 0);
+    // With room for all opening and closing markers no further scan is needed.
+    if items.check_capacity(slots + 2 * attrs.len()).is_err() {
+        let mut closing: TextAttributes = attrs
+            .iter()
+            .filter_map(|(key, value)| {
+                let prev = pos.attrs.get(key).unwrap_or(&Any::Null);
+                (!equal_attrs(prev, value)).then(|| (key.clone(), prev.clone()))
+            })
+            .collect();
+        let opening = closing.len();
+        if pos.offset == 0 {
+            skip_negated_attributes(items, &mut pos.clone(), &mut closing);
+        }
+        items.check_capacity(slots + opening + closing.len())?;
+    }
+    pos.normalize(store)?;
     let negated = insert_attributes(store, ty, pos, &attrs)?;
     insert_item(store, ty, pos, content)?;
     insert_negated_attributes(store, ty, pos, negated)?;
@@ -460,7 +479,7 @@ fn insert_text_content(
 
 fn format_text(
     store: &mut DocStore,
-    ty: &mut YType,
+    ty: TypeIdx,
     pos: &mut TextPosition,
     mut remaining: u64,
     attrs: TextAttributes,
@@ -469,23 +488,24 @@ fn format_text(
         return Ok(());
     }
 
-    minimize_attribute_changes(pos, &attrs);
+    pos.normalize(store)?;
+    minimize_attribute_changes(store, pos, &attrs);
     let mut negated = insert_attributes(store, ty, pos, &attrs)?;
 
-    while let Some(item) = pos.right.get() {
+    while let Some(item) = pos.right.and_then(|i| store.type_arena.items.get(i)) {
         // Yjs also scans trailing formats/tombstones while attributes still
         // need negating, but never crosses the next live content item.
-        if remaining == 0 && (negated.is_empty() || !item.deleted() && !matches!(item.content, Content::Format { .. }))
-        {
+        if remaining == 0 && (negated.is_empty() || !item.deleted() && !matches!(item.content, Content::Format(_))) {
             break;
         }
         if item.deleted() {
-            pos.forward();
+            pos.forward(&store.type_arena.items);
             continue;
         }
 
         match &item.content {
-            Content::Format { key, value } => {
+            Content::Format(format) => {
+                let (key, value) = (&format.key, &format.value);
                 if let Some(attr) = attrs.get(key.as_str()) {
                     if equal_attrs(attr, value) {
                         negated.remove(key.as_str());
@@ -493,12 +513,12 @@ fn format_text(
                         if remaining == 0 {
                             break;
                         }
-                        negated.insert(key.to_string(), value.as_ref().clone());
+                        negated.insert(key.to_string(), value.clone());
                     }
-                    store.delete_item(item, Some(ty));
-                    pos.forward();
+                    store.delete_item(pos.right.expect("current format"), Some(ty));
+                    pos.forward(&store.type_arena.items);
                 } else {
-                    pos.forward();
+                    pos.forward(&store.type_arena.items);
                 }
             }
             _ => {
@@ -509,7 +529,7 @@ fn format_text(
                 } else {
                     remaining -= item_len;
                 }
-                pos.forward();
+                pos.forward(&store.type_arena.items);
             }
         }
     }
@@ -519,18 +539,21 @@ fn format_text(
     Ok(())
 }
 
-fn delete_text(store: &mut DocStore, ty: &mut YType, pos: &mut TextPosition, mut remaining: u64) -> JwstCodecResult {
+fn delete_text(store: &mut DocStore, ty: TypeIdx, pos: &mut TextPosition, mut remaining: u64) -> JwstCodecResult {
     if remaining == 0 {
         return Ok(());
     }
 
+    pos.normalize(store)?;
     let start = remaining;
-    let gap_start = pos.right.clone();
+    let gap_start = pos.right;
     let start_attrs = pos.attrs.clone();
 
     while remaining > 0 {
-        let item_ref = pos.right.clone();
-        let Some((indexable, item_len, item_id)) = item_ref.get().map(|item| (item.indexable(), item.len(), item.id))
+        let item_ref = pos.right;
+        let Some((indexable, item_len, item_id)) = item_ref
+            .and_then(|i| store.type_arena.items.get(i))
+            .map(|item| (item.indexable(), item.len(), item.id))
         else {
             break;
         };
@@ -543,56 +566,51 @@ fn delete_text(store: &mut DocStore, ty: &mut YType, pos: &mut TextPosition, mut
                 remaining -= item_len;
             }
 
-            if let Some(item) = item_ref.get() {
+            if let Some(item) = item_ref {
                 store.delete_item(item, Some(ty));
             }
         }
 
-        pos.forward();
+        pos.forward(&store.type_arena.items);
     }
 
     if gap_start.is_some() {
         cleanup_formatting_gap(store, ty, gap_start, &pos.right, &start_attrs, &mut pos.attrs);
     }
-    if let Some(markers) = &mut ty.markers {
-        markers.update_marker_changes(pos.index, -((start - remaining) as i64));
+    let (parent, items) = store.type_arena.type_and_items(ty);
+    if let Some(markers) = &mut parent.markers {
+        markers.update_marker_changes(items, pos.index, -((start - remaining) as i64), None);
     }
 
     Ok(())
 }
 
 /// The public text deletion path, shared by implicit and explicit transactions.
-pub(crate) fn text_remove(
-    parent: &YTypeRef,
-    store: &mut DocStore,
-    ty: &mut YType,
-    index: u64,
-    len: u64,
-) -> JwstCodecResult {
-    if !ty.has_formatting {
-        return list_remove(parent, store, ty, index, len);
+pub(crate) fn text_remove(store: &mut DocStore, ty: TypeIdx, index: u64, len: u64) -> JwstCodecResult {
+    let text = &store.type_arena[ty];
+    if !text.has_formatting {
+        return list_remove(store, ty, index, len);
     }
-    if len == 0 || ty.len == 0 {
+    if len == 0 || text.len == 0 {
         return Ok(());
     }
-    if index >= ty.len {
+    if index >= text.len {
         return Err(JwstCodecError::IndexOutOfBound(index));
     }
-    let mut pos = TextPosition::new(parent.clone(), ty.start.clone());
+    let mut pos = TextPosition::new(text.start);
     advance_text_position(store, &mut pos, index)?;
     delete_text(store, ty, &mut pos, len)
 }
 
 /// Applies formatting attributes over `char_index..char_index + len`.
 pub(crate) fn text_format(
-    parent: &YTypeRef,
     store: &mut DocStore,
-    ty: &mut YType,
+    ty: TypeIdx,
     char_index: u64,
     len: u64,
     attrs: TextAttributes,
 ) -> JwstCodecResult {
-    if char_index > ty.len {
+    if char_index > store.type_arena[ty].len {
         return Err(JwstCodecError::IndexOutOfBound(char_index));
     }
     if len == 0 || attrs.is_empty() {
@@ -609,18 +627,12 @@ pub(crate) fn text_format(
         retain: len,
         format: Some(attrs),
     });
-    apply_text_delta(parent, store, ty, &ops)
+    apply_text_delta(store, ty, &ops)
 }
 
 /// Inserts an embed value at `char_index`.
-pub(crate) fn text_insert_embed(
-    parent: &YTypeRef,
-    store: &mut DocStore,
-    ty: &mut YType,
-    char_index: u64,
-    embed: Any,
-) -> JwstCodecResult {
-    super::list::list_insert(parent, store, ty, char_index, Content::Embed(Box::new(embed)))
+pub(crate) fn text_insert_embed(store: &mut DocStore, ty: TypeIdx, char_index: u64, embed: Any) -> JwstCodecResult {
+    super::list::list_insert(store, ty, char_index, Content::Embed(Box::new(embed)))
 }
 
 #[cfg(test)]

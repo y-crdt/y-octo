@@ -15,33 +15,17 @@ impl ItemBuilder {
         self
     }
 
-    pub fn left(mut self, left: Somr<Item>) -> ItemBuilder {
-        if let Some(l) = left.get() {
-            self.item.origin_left_id = Some(l.last_id());
-            self.item.left = left;
-        }
-        self
-    }
-
-    pub fn right(mut self, right: Somr<Item>) -> ItemBuilder {
-        if let Some(r) = right.get() {
-            self.item.origin_right_id = Some(r.id);
-            self.item.right = right;
-        }
-        self
-    }
-
     pub fn left_id(mut self, left_id: Option<Id>) -> ItemBuilder {
-        self.item.origin_left_id = left_id;
+        self.item.set_origin_left_id(left_id);
         self
     }
 
     pub fn right_id(mut self, right_id: Option<Id>) -> ItemBuilder {
-        self.item.origin_right_id = right_id;
+        self.item.set_origin_right_id(right_id);
         self
     }
 
-    pub fn parent(mut self, parent: Option<Parent>) -> ItemBuilder {
+    pub fn parent(mut self, parent: Option<TypeIdx>) -> ItemBuilder {
         self.item.parent = parent;
         self
     }
@@ -62,7 +46,7 @@ impl ItemBuilder {
         self
     }
 
-    pub fn build(self) -> Item {
+    pub fn build(mut self) -> Item {
         if self.item.content.countable() {
             self.item.flags.set(item_flags::ITEM_COUNTABLE);
         }
@@ -78,18 +62,21 @@ mod tests {
     #[test]
     fn test_item_builder() {
         loom_model!({
+            let root = TypeArena::default()
+                .alloc(YType::new_root(YTypeKind::Map, None, "test".into()))
+                .unwrap();
             let item = ItemBuilder::new()
                 .id(Id::new(0, 1))
                 .left_id(Some(Id::new(2, 3)))
                 .right_id(Some(Id::new(4, 5)))
-                .parent(Some(Parent::String("test".into())))
+                .parent(Some(root))
                 .content(Content::Any(vec![Any::String("Hello".into())]))
                 .build();
 
             assert_eq!(item.id, Id::new(0, 1));
-            assert_eq!(item.origin_left_id, Some(Id::new(2, 3)));
-            assert_eq!(item.origin_right_id, Some(Id::new(4, 5)));
-            assert!(matches!(item.parent, Some(Parent::String(text)) if text == "test"));
+            assert_eq!(item.origin_left_id(), Some(Id::new(2, 3)));
+            assert_eq!(item.origin_right_id(), Some(Id::new(4, 5)));
+            assert_eq!(item.parent, Some(root));
             assert_eq!(item.parent_sub, None);
             assert_eq!(item.content, Content::Any(vec![Any::String("Hello".into())]));
         });

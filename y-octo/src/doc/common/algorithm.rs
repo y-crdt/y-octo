@@ -34,6 +34,27 @@ pub(crate) fn utf16_slice(value: &str, offset: u64, len: u64) -> Cow<'_, str> {
     Utf16Slices::new(value).slice(offset, len)
 }
 
+/// Split `value` in place at UTF-16 code-unit `offset`, returning the right
+/// half. Matches [`utf16_slice`] on surrogate-pair boundaries by replacing each
+/// retained half with `U+FFFD`.
+pub(crate) fn utf16_split_in_place(value: &mut String, offset: u64) -> String {
+    let mut slices = Utf16Slices::new(value);
+    let (byte, after_byte, split_surrogate) = slices.boundary(offset);
+    let right = if split_surrogate {
+        let tail = &value[after_byte..];
+        let mut right = String::with_capacity('\u{FFFD}'.len_utf8() + tail.len());
+        right.push('\u{FFFD}');
+        right.push_str(tail);
+        value.truncate(byte);
+        value.push('\u{FFFD}');
+        right
+    } else {
+        value.split_off(byte)
+    };
+    value.shrink_to_fit();
+    right
+}
+
 pub(crate) struct Utf16Slices<'a> {
     value: &'a str,
     chars: std::iter::Peekable<std::str::CharIndices<'a>>,
@@ -220,6 +241,36 @@ mod tests {
         for (offset, len, expected) in [(0, 2, "中\u{FFFD}"), (2, 3, "\u{FFFD}文\u{FFFD}"), (5, 2, "\u{FFFD}尾")] {
             assert_eq!(slices.slice(offset, len), expected);
         }
+        for (value, offset, expected_left, expected_right) in [
+            ("abc", 0, "", "abc"),
+            ("abc", 1, "a", "bc"),
+            ("abc", 3, "abc", ""),
+            ("a😀b", 1, "a", "😀b"),
+            ("a😀b", 2, "a\u{FFFD}", "\u{FFFD}b"),
+            ("a😀b", 3, "a😀", "b"),
+            ("中文", 1, "中", "文"),
+        ] {
+            let mut left = value.to_string();
+            let right = utf16_split_in_place(&mut left, offset);
+            assert_eq!((left.as_str(), right.as_str()), (expected_left, expected_right));
+        }
+
+        // Splitting a large string at a small offset shrinks the left buffer to
+        // avoid O(K * N) memory amplification (both normal and surrogate-pair
+        // branches).
+        let mut big_ascii = "a".repeat(1 << 20);
+        let orig_cap = big_ascii.capacity();
+        let right = utf16_split_in_place(&mut big_ascii, 1);
+        assert_eq!(big_ascii, "a");
+        assert_eq!(right.len(), (1 << 20) - 1);
+        assert!(big_ascii.capacity() < orig_cap / 2);
+
+        let mut big_surrogate = format!("a😀{}", "b".repeat(1 << 20));
+        let orig_surrogate_cap = big_surrogate.capacity();
+        let right = utf16_split_in_place(&mut big_surrogate, 2);
+        assert_eq!(big_surrogate, "a\u{FFFD}");
+        assert!(right.starts_with("\u{FFFD}b"));
+        assert!(big_surrogate.capacity() < orig_surrogate_cap / 2);
     }
 
     #[test]

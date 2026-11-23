@@ -2,7 +2,7 @@ use std::fmt::{self, Display, Write as _};
 
 use super::{
     array::{array_get, array_values},
-    list::{ListIterator, ListType, list_insert},
+    list::{ListIterator, ListType},
     map::{MapType, map_entries, map_remove},
     text::{TextAttributes, TextDelta, TextDeltaOp, TextIdentityRun, TextInsert, apply_text_delta, text_delta},
     *,
@@ -24,77 +24,59 @@ impl MapType for XMLHook {}
 
 pub(crate) const DEFAULT_XML_ELEMENT_TAG: &str = "UNDEFINED";
 
-fn type_ref_to_value(ty_ref: &YTypeRef, kind: YTypeKind) -> Option<Value> {
-    match kind {
-        YTypeKind::Array => Some(Value::Array(Array::from_unchecked(ty_ref.clone()))),
-        YTypeKind::Map => Some(Value::Map(Map::from_unchecked(ty_ref.clone()))),
-        YTypeKind::Text => Some(Value::Text(Text::from_unchecked(ty_ref.clone()))),
-        YTypeKind::XMLElement => Some(Value::XMLElement(XMLElement::from_unchecked(ty_ref.clone()))),
-        YTypeKind::XMLFragment => Some(Value::XMLFragment(XMLFragment::from_unchecked(ty_ref.clone()))),
-        YTypeKind::XMLHook => Some(Value::XMLHook(XMLHook::from_unchecked(ty_ref.clone()))),
-        YTypeKind::XMLText => Some(Value::XMLText(XMLText::from_unchecked(ty_ref.clone()))),
-        YTypeKind::Unknown => None,
-    }
-}
-
 /// The tag name of an XML element (`"UNDEFINED"` when unset, matching Yjs).
 pub(crate) fn xml_tag_name(ty: &YType) -> &str {
-    ty.name.as_deref().unwrap_or(DEFAULT_XML_ELEMENT_TAG)
+    ty.name().unwrap_or(DEFAULT_XML_ELEMENT_TAG)
 }
 
 /// The hook name of an XML hook (`""` when unset).
 pub(crate) fn xml_hook_name(ty: &YType) -> &str {
-    ty.name.as_deref().unwrap_or("")
+    ty.name().unwrap_or("")
 }
 
 /// First visible child of an XML fragment or element. Caller holds the store
 /// lock.
-pub(crate) fn xml_first_child(ty: &YType) -> Option<Value> {
-    ListIterator::new(ty)
+pub(crate) fn xml_first_child(cx: TypeCx<'_>, ty: &YType) -> Option<Value> {
+    ListIterator::new(&cx.types.items, ty)
         .find(|item| item.countable())
         .map(|item| match &item.content {
             Content::Any(any) if !any.is_empty() => Value::Any(any[0].clone()),
-            content => Value::from(content),
+            content => Value::from_content(cx, content),
         })
 }
 
 /// Parent container of this XML node, if mounted inside another type. Caller
 /// holds the store lock.
-pub(crate) fn xml_parent(ty: &YType) -> Option<Value> {
-    let item = ty.item.get()?;
-    match item.parent.as_ref()? {
-        Parent::Type(parent_ref) => {
-            let parent_ty = parent_ref.ty()?;
-            type_ref_to_value(parent_ref, parent_ty.kind())
-        }
-        _ => None,
-    }
+pub(crate) fn xml_parent(cx: TypeCx<'_>, ty: &YType) -> Option<Value> {
+    let item = ty.live_carrier(&cx.types.items)?;
+    let parent = item.parent?;
+    type_value(cx.handle(parent), cx.get(parent)?.kind())
 }
 
 /// Next visible countable sibling of this XML node. Caller holds the store
 /// lock.
-pub(crate) fn xml_next_sibling(ty: &YType) -> Option<Value> {
-    let item = ty.item.get()?;
-    let mut cur = item.right.get();
+pub(crate) fn xml_next_sibling(cx: TypeCx<'_>, ty: &YType) -> Option<Value> {
+    let item = ty.live_carrier(&cx.types.items)?;
+    let mut cur = item.right.and_then(|i| cx.types.items.get(i));
     while let Some(next) = cur {
         if next.indexable() {
-            return Some(Value::from(&next.content));
+            return Some(Value::from_content(cx, &next.content));
         }
-        cur = next.right.get();
+        cur = next.right.and_then(|i| cx.types.items.get(i));
     }
     None
 }
 
 /// Previous visible countable sibling of this XML node. Caller holds the store
 /// lock.
-pub(crate) fn xml_prev_sibling(ty: &YType) -> Option<Value> {
-    let item = ty.item.get()?;
-    let mut cur = item.left.get();
+pub(crate) fn xml_prev_sibling(cx: TypeCx<'_>, ty: &YType) -> Option<Value> {
+    let item = ty.live_carrier(&cx.types.items)?;
+    let mut cur = item.left.and_then(|i| cx.types.items.get(i));
     while let Some(prev) = cur {
         if prev.indexable() {
-            return Some(Value::from(&prev.content));
+            return Some(Value::from_content(cx, &prev.content));
         }
-        cur = prev.left.get();
+        cur = prev.left.and_then(|i| cx.types.items.get(i));
     }
     None
 }
@@ -106,9 +88,9 @@ fn cmp_utf16(a: &str, b: &str) -> std::cmp::Ordering {
 
 /// Sorted snapshot of visible attributes of an XML element. Caller holds the
 /// store lock.
-pub(crate) fn xml_attributes(ty: &YType) -> Vec<(String, Value)> {
-    let mut attrs: Vec<(String, Value)> = map_entries(ty)
-        .map(|(k, item)| (k.to_string(), Value::from(&item.content)))
+pub(crate) fn xml_attributes(cx: TypeCx<'_>, ty: &YType) -> Vec<(String, Value)> {
+    let mut attrs: Vec<(String, Value)> = map_entries(&cx.types.items, ty)
+        .map(|(k, item)| (k.to_string(), Value::from_content(cx, &item.content)))
         .collect();
     attrs.sort_by(|a, b| cmp_utf16(&a.0, &b.0));
     attrs
@@ -117,23 +99,27 @@ pub(crate) fn xml_attributes(ty: &YType) -> Vec<(String, Value)> {
 /// Depth-first pre-order traversal of all active descendant XML nodes, matching
 /// Yjs `YXmlTreeWalker`. Uses an explicit stack to avoid stack overflow on deep
 /// trees. Caller holds the store lock.
-pub(crate) fn xml_tree_walker(ty: &YType) -> Vec<Value> {
+pub(crate) fn xml_tree_walker(cx: TypeCx<'_>, ty: &YType) -> Vec<Value> {
     let mut out = Vec::new();
     let mut stack: Vec<&Item> = Vec::new();
-    let mut direct: Vec<&Item> = ListIterator::new(ty).filter(|item| item.countable()).collect();
+    let mut direct: Vec<&Item> = ListIterator::new(&cx.types.items, ty)
+        .filter(|item| item.countable())
+        .collect();
     while let Some(item) = direct.pop() {
         stack.push(item);
     }
     while let Some(item) = stack.pop() {
-        if let Content::Type(child_ref) = &item.content
-            && let Some(child_ty) = child_ref.ty()
+        if let Content::Type(child) = &item.content
+            && let Some(child_ty) = cx.get(*child)
         {
             let kind = child_ty.kind();
-            if let Some(val) = type_ref_to_value(child_ref, kind) {
+            if let Some(val) = type_value(cx.handle(*child), kind) {
                 out.push(val);
             }
             if matches!(kind, YTypeKind::XMLElement | YTypeKind::XMLFragment) {
-                let mut grandchildren: Vec<&Item> = ListIterator::new(child_ty).filter(|c| c.countable()).collect();
+                let mut grandchildren: Vec<&Item> = ListIterator::new(&cx.types.items, child_ty)
+                    .filter(|c| c.countable())
+                    .collect();
                 while let Some(gc) = grandchildren.pop() {
                     stack.push(gc);
                 }
@@ -194,7 +180,7 @@ fn format_js_float(out: &mut String, v: f64) {
 
 /// Formats a map-attribute item's content (matching Yjs `typeMapGet`, which
 /// reads the last element of an item's content array).
-fn format_xml_attr_content(out: &mut String, content: &Content) {
+fn format_xml_attr_content(out: &mut String, types: &TypeArena, content: &Content) {
     match content {
         Content::Any(any) => {
             if let Some(last) = any.last() {
@@ -213,13 +199,13 @@ fn format_xml_attr_content(out: &mut String, content: &Content) {
                 out.push_str("undefined");
             }
         }
-        other => format_xml_list_content(out, other),
+        other => format_xml_list_content(out, types, other),
     }
 }
 
 /// Formats a child-list item's content (matching Yjs `typeListForEach`, which
 /// visits every element of multi-element `ContentAny` / `ContentJson` items).
-fn format_xml_list_content(out: &mut String, content: &Content) {
+fn format_xml_list_content(out: &mut String, types: &TypeArena, content: &Content) {
     match content {
         Content::Any(items) => {
             for item in items {
@@ -244,13 +230,13 @@ fn format_xml_list_content(out: &mut String, content: &Content) {
                 }
             }
         }
-        Content::Type(ty_ref) => {
-            if let Some(ty) = ty_ref.ty() {
-                format_xml_type(out, ty);
+        Content::Type(ty) => {
+            if let Some(ty) = types.get(*ty) {
+                format_xml_type(out, types, ty);
             }
         }
-        Content::Doc { .. } => out.push_str("[object Object]"),
-        Content::Format { .. } | Content::Deleted(_) => out.push_str("undefined"),
+        Content::Doc(_) => out.push_str("[object Object]"),
+        Content::Format(_) | Content::Deleted(_) => out.push_str("undefined"),
     }
 }
 
@@ -260,11 +246,11 @@ enum XmlFrame<'a> {
     Close(String),
 }
 
-fn push_xml_children<'a>(stack: &mut Vec<XmlFrame<'a>>, ty: &'a YType) {
-    let mut children: Vec<&Item> = ListIterator::new(ty).filter(|i| i.countable()).collect();
+fn push_xml_children<'a>(stack: &mut Vec<XmlFrame<'a>>, types: &'a TypeArena, ty: &'a YType) {
+    let mut children: Vec<&Item> = ListIterator::new(&types.items, ty).filter(|i| i.countable()).collect();
     while let Some(child) = children.pop() {
-        if let Content::Type(child_ref) = &child.content
-            && let Some(child_ty) = child_ref.ty()
+        if let Content::Type(child_ty) = &child.content
+            && let Some(child_ty) = types.get(*child_ty)
         {
             stack.push(XmlFrame::Type(child_ty));
         } else {
@@ -276,7 +262,7 @@ fn push_xml_children<'a>(stack: &mut Vec<XmlFrame<'a>>, ty: &'a YType) {
 /// Serializes an XML type (or fragment/element/text) to its Yjs-compatible XML
 /// string using an explicit stack to prevent stack overflow on deep trees.
 /// Caller holds the store lock.
-fn format_xml_type(out: &mut String, root: &YType) {
+fn format_xml_type(out: &mut String, types: &TypeArena, root: &YType) {
     let mut stack = vec![XmlFrame::Type(root)];
     while let Some(frame) = stack.pop() {
         match frame {
@@ -286,34 +272,34 @@ fn format_xml_type(out: &mut String, root: &YType) {
                 out.push('>');
             }
             XmlFrame::Content(content) => {
-                format_xml_list_content(out, content);
+                format_xml_list_content(out, types, content);
             }
             XmlFrame::Type(ty) => match ty.kind() {
                 YTypeKind::XMLElement => {
                     let node_name = xml_tag_name(ty).to_lowercase();
                     out.push('<');
                     out.push_str(&node_name);
-                    let mut attrs: Vec<(&str, &Item)> = map_entries(ty).collect();
+                    let mut attrs: Vec<(&str, &Item)> = map_entries(&types.items, ty).collect();
                     attrs.sort_unstable_by(|a, b| cmp_utf16(a.0, b.0));
                     for (key, item) in attrs {
                         out.push(' ');
                         out.push_str(key);
                         out.push_str("=\"");
-                        format_xml_attr_content(out, &item.content);
+                        format_xml_attr_content(out, types, &item.content);
                         out.push('"');
                     }
                     out.push('>');
                     stack.push(XmlFrame::Close(node_name));
-                    push_xml_children(&mut stack, ty);
+                    push_xml_children(&mut stack, types, ty);
                 }
                 YTypeKind::XMLFragment | YTypeKind::Unknown => {
-                    push_xml_children(&mut stack, ty);
+                    push_xml_children(&mut stack, types, ty);
                 }
                 YTypeKind::XMLText => {
-                    format_xml_text(out, ty);
+                    format_xml_text(out, &types.items, ty);
                 }
                 YTypeKind::Text => {
-                    out.push_str(&text::text_string(ty));
+                    out.push_str(&text::text_string(&types.items, ty));
                 }
                 YTypeKind::XMLHook | YTypeKind::Map | YTypeKind::Array => {
                     // Matches Yjs: YXmlHook/YMap/YArray inherit
@@ -327,22 +313,22 @@ fn format_xml_type(out: &mut String, root: &YType) {
 
 /// Serializes an `XMLFragment` or `XMLElement` to string, matching Yjs
 /// `toString()`.
-pub(crate) fn xml_to_string(ty: &YType) -> String {
+pub(crate) fn xml_to_string(types: &TypeArena, ty: &YType) -> String {
     let mut out = String::new();
-    format_xml_type(&mut out, ty);
+    format_xml_type(&mut out, types, ty);
     out
 }
 
 /// Serializes an `XMLText` to string, matching Yjs
 /// `YXmlText.prototype.toString()`.
-pub(crate) fn xml_text_to_string(ty: &YType) -> String {
+pub(crate) fn xml_text_to_string(items: &ItemSpace, ty: &YType) -> String {
     let mut out = String::new();
-    format_xml_text(&mut out, ty);
+    format_xml_text(&mut out, items, ty);
     out
 }
 
-fn format_xml_text(out: &mut String, ty: &YType) {
-    let delta = text_delta(ty);
+fn format_xml_text(out: &mut String, items: &ItemSpace, ty: &YType) {
+    let delta = text_delta(items, ty);
     for op in delta {
         let TextDeltaOp::Insert { insert, format } = op else {
             continue;
@@ -456,21 +442,15 @@ impl XMLFragment {
     }
 
     pub fn get(&self, index: u64) -> Option<Value> {
-        let parent = self.as_inner();
-        or_released(parent.read(|_, ty| array_get(parent, ty, index)))
+        or_released(self.as_inner().read_cx(|cx, ty| array_get(cx, ty, index)))
     }
 
     pub fn insert<V: Into<Value>>(&mut self, idx: u64, val: V) -> JwstCodecResult {
-        self.insert_at(idx, val.into().into())
+        self.insert_value_at(idx, val.into())
     }
 
     pub fn push<V: Into<Value>>(&mut self, val: V) -> JwstCodecResult {
-        let parent = self.as_inner();
-        let content: Content = val.into().into();
-        parent.write(|store, ty| {
-            let len = ty.len;
-            list_insert(parent, store, ty, len, content)
-        })
+        self.push_value(val.into())
     }
 
     pub fn remove(&mut self, idx: u64, len: u64) -> JwstCodecResult {
@@ -479,26 +459,30 @@ impl XMLFragment {
 
     /// A snapshot of the visible children, taken under one store read lock.
     pub fn iter(&self) -> std::vec::IntoIter<Value> {
-        or_released(self.as_inner().read(|_, ty| array_values(ty).collect::<Vec<_>>())).into_iter()
+        or_released(
+            self.as_inner()
+                .read_cx(|cx, ty| array_values(cx, ty).collect::<Vec<_>>()),
+        )
+        .into_iter()
     }
 
     pub fn first_child(&self) -> Option<Value> {
-        or_released(self.as_inner().read(|_, ty| xml_first_child(ty)))
+        or_released(self.as_inner().read_cx(xml_first_child))
     }
 
     pub fn parent(&self) -> Option<Value> {
-        or_released(self.as_inner().read(|_, ty| xml_parent(ty)))
+        or_released(self.as_inner().read_cx(xml_parent))
     }
 
     /// Depth-first pre-order snapshot of all active XML descendant nodes.
     pub fn tree_walker(&self) -> std::vec::IntoIter<Value> {
-        or_released(self.as_inner().read(|_, ty| xml_tree_walker(ty))).into_iter()
+        or_released(self.as_inner().read_cx(xml_tree_walker)).into_iter()
     }
 
     /// Serializes all children to an XML string matching Yjs
     /// `YXmlFragment.prototype.toString()`.
     pub fn to_xml_string(&self) -> String {
-        or_released(self.as_inner().read(|_, ty| xml_to_string(ty)))
+        or_released(self.as_inner().read(|store, ty| xml_to_string(&store.type_arena, ty)))
     }
 }
 
@@ -540,21 +524,15 @@ impl XMLElement {
     }
 
     pub fn get(&self, index: u64) -> Option<Value> {
-        let parent = self.as_inner();
-        or_released(parent.read(|_, ty| array_get(parent, ty, index)))
+        or_released(self.as_inner().read_cx(|cx, ty| array_get(cx, ty, index)))
     }
 
     pub fn insert<V: Into<Value>>(&mut self, idx: u64, val: V) -> JwstCodecResult {
-        self.insert_at(idx, val.into().into())
+        self.insert_value_at(idx, val.into())
     }
 
     pub fn push<V: Into<Value>>(&mut self, val: V) -> JwstCodecResult {
-        let parent = self.as_inner();
-        let content: Content = val.into().into();
-        parent.write(|store, ty| {
-            let len = ty.len;
-            list_insert(parent, store, ty, len, content)
-        })
+        self.push_value(val.into())
     }
 
     pub fn remove(&mut self, idx: u64, len: u64) -> JwstCodecResult {
@@ -563,28 +541,32 @@ impl XMLElement {
 
     /// A snapshot of the visible children, taken under one store read lock.
     pub fn iter(&self) -> std::vec::IntoIter<Value> {
-        or_released(self.as_inner().read(|_, ty| array_values(ty).collect::<Vec<_>>())).into_iter()
+        or_released(
+            self.as_inner()
+                .read_cx(|cx, ty| array_values(cx, ty).collect::<Vec<_>>()),
+        )
+        .into_iter()
     }
 
     pub fn first_child(&self) -> Option<Value> {
-        or_released(self.as_inner().read(|_, ty| xml_first_child(ty)))
+        or_released(self.as_inner().read_cx(xml_first_child))
     }
 
     pub fn parent(&self) -> Option<Value> {
-        or_released(self.as_inner().read(|_, ty| xml_parent(ty)))
+        or_released(self.as_inner().read_cx(xml_parent))
     }
 
     pub fn next_sibling(&self) -> Option<Value> {
-        or_released(self.as_inner().read(|_, ty| xml_next_sibling(ty)))
+        or_released(self.as_inner().read_cx(xml_next_sibling))
     }
 
     pub fn prev_sibling(&self) -> Option<Value> {
-        or_released(self.as_inner().read(|_, ty| xml_prev_sibling(ty)))
+        or_released(self.as_inner().read_cx(xml_prev_sibling))
     }
 
     /// Depth-first pre-order snapshot of all active XML descendant nodes.
     pub fn tree_walker(&self) -> std::vec::IntoIter<Value> {
-        or_released(self.as_inner().read(|_, ty| xml_tree_walker(ty))).into_iter()
+        or_released(self.as_inner().read_cx(xml_tree_walker)).into_iter()
     }
 
     pub fn set_attribute<K: Into<String>, V: Into<Value>>(&mut self, name: K, value: V) -> JwstCodecResult {
@@ -608,13 +590,13 @@ impl XMLElement {
 
     /// Snapshot of visible attributes sorted by attribute name.
     pub fn attributes(&self) -> Vec<(String, Value)> {
-        or_released(self.as_inner().read(|_, ty| xml_attributes(ty)))
+        or_released(self.as_inner().read_cx(xml_attributes))
     }
 
     /// Serializes this element, its sorted attributes and children to an XML
     /// string matching Yjs `YXmlElement.prototype.toString()`.
     pub fn to_xml_string(&self) -> String {
-        or_released(self.as_inner().read(|_, ty| xml_to_string(ty)))
+        or_released(self.as_inner().read(|store, ty| xml_to_string(&store.type_arena, ty)))
     }
 }
 
@@ -655,54 +637,59 @@ impl XMLText {
     }
 
     pub fn insert_embed<V: Into<Any>>(&mut self, char_index: u64, embed: V) -> JwstCodecResult {
-        let parent = self.as_inner();
         let embed = embed.into();
-        parent.write(|store, ty| text::text_insert_embed(parent, store, ty, char_index, embed))
+        self.as_inner()
+            .write(|store, ty| text::text_insert_embed(store, ty, char_index, embed))
     }
 
     pub fn format(&mut self, char_index: u64, len: u64, attrs: TextAttributes) -> JwstCodecResult {
-        let parent = self.as_inner();
-        parent.write(|store, ty| text::text_format(parent, store, ty, char_index, len, attrs))
+        self.as_inner()
+            .write(|store, ty| text::text_format(store, ty, char_index, len, attrs))
     }
 
     #[inline]
     pub fn remove(&mut self, char_index: u64, len: u64) -> JwstCodecResult {
-        let parent = self.as_inner();
-        parent.write(|store, ty| text::text_remove(parent, store, ty, char_index, len))
+        self.as_inner()
+            .write(|store, ty| text::text_remove(store, ty, char_index, len))
     }
 
     pub fn to_delta(&self) -> TextDelta {
-        or_released(self.as_inner().read(|_, ty| text_delta(ty)))
+        or_released(
+            self.as_inner()
+                .read(|store, ty| text_delta(&store.type_arena.items, ty)),
+        )
     }
 
     pub fn apply_delta(&mut self, delta: &[TextDeltaOp]) -> JwstCodecResult {
-        let parent = self.as_inner();
-        parent.write(|store, ty| apply_text_delta(parent, store, ty, delta))
+        self.as_inner().write(|store, ty| apply_text_delta(store, ty, delta))
     }
 
     pub fn identity_runs(&self) -> JwstCodecResult<Vec<TextIdentityRun>> {
-        self.as_inner().read(|_, ty| {
-            ty.identity()?;
-            text::identity_runs(ty)
+        self.as_inner().read(|store, ty| {
+            ty.identity(&store.type_arena.items)?;
+            text::identity_runs(&store.type_arena.items, ty)
         })?
     }
 
     pub fn parent(&self) -> Option<Value> {
-        or_released(self.as_inner().read(|_, ty| xml_parent(ty)))
+        or_released(self.as_inner().read_cx(xml_parent))
     }
 
     pub fn next_sibling(&self) -> Option<Value> {
-        or_released(self.as_inner().read(|_, ty| xml_next_sibling(ty)))
+        or_released(self.as_inner().read_cx(xml_next_sibling))
     }
 
     pub fn prev_sibling(&self) -> Option<Value> {
-        or_released(self.as_inner().read(|_, ty| xml_prev_sibling(ty)))
+        or_released(self.as_inner().read_cx(xml_prev_sibling))
     }
 
     /// Serializes this rich text with formatting tags matching Yjs
     /// `YXmlText.prototype.toString()`.
     pub fn to_xml_string(&self) -> String {
-        or_released(self.as_inner().read(|_, ty| xml_text_to_string(ty)))
+        or_released(
+            self.as_inner()
+                .read(|store, ty| xml_text_to_string(&store.type_arena.items, ty)),
+        )
     }
 }
 
@@ -789,15 +776,15 @@ impl XMLHook {
     }
 
     pub fn parent(&self) -> Option<Value> {
-        or_released(self.as_inner().read(|_, ty| xml_parent(ty)))
+        or_released(self.as_inner().read_cx(xml_parent))
     }
 
     pub fn next_sibling(&self) -> Option<Value> {
-        or_released(self.as_inner().read(|_, ty| xml_next_sibling(ty)))
+        or_released(self.as_inner().read_cx(xml_next_sibling))
     }
 
     pub fn prev_sibling(&self) -> Option<Value> {
-        or_released(self.as_inner().read(|_, ty| xml_prev_sibling(ty)))
+        or_released(self.as_inner().read_cx(xml_prev_sibling))
     }
 }
 
@@ -817,7 +804,9 @@ impl serde::Serialize for XMLHook {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Any, Doc, JwstCodecError, UndoManager, UndoOptions, loom_model};
+    use crate::{Any, Doc, JwstCodecError, loom_model};
+    #[cfg(not(loom))]
+    use crate::{UndoManager, UndoOptions};
 
     #[test]
     fn test_xml_element_attributes_and_children() {

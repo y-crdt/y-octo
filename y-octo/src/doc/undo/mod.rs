@@ -285,7 +285,7 @@ impl<M: Send + Sync + 'static> UndoManager<M> {
             return Err(JwstCodecError::UndoManagerExists);
         }
         for scope in scope {
-            if let Err(error) = state.add_to_scope(scope) {
+            if let Err(error) = state.add_to_scope(&store.type_arena, scope) {
                 drop(store);
                 release_later(state);
                 return Err(error);
@@ -382,7 +382,7 @@ impl<M: Send + Sync + 'static> UndoManager<M> {
     /// Extends the scope (Yjs `addToScope`).
     pub fn add_to_scope(&self, scope: UndoScope) -> JwstCodecResult {
         check_store(&scope.0, &self.store)?;
-        self.write_maintenance(|state, _| state.add_to_scope(scope))?
+        self.write_maintenance(|state, store| state.add_to_scope(&store.type_arena, scope))?
     }
 
     /// Captures commits with `origin` (or a clone of it).
@@ -432,16 +432,15 @@ impl<M: Send + Sync + 'static> UndoManager<M> {
         // the popped item's metadata is moved out under the lock, before the
         // commit event is delivered
         let (performed, event, _) = transact_mut_with_events(&self.store, Some(origin), true, |tx| {
-            let store_ref = tx.store_ref();
             let store = tx.store_mut();
             let mut hook = store.history_hook.take();
             let state = hook
                 .as_deref_mut()
                 .and_then(|hook| hook.as_any_mut().downcast_mut::<UndoState>())
                 .expect("the manager owns the history hook");
-            let result = state.pop(store, store_ref, stack);
+            let result = state.pop(store, stack);
             store.history_hook = hook;
-            Ok(result)
+            result
         })?;
         Ok(performed.map(|(id, meta)| {
             (
@@ -540,6 +539,7 @@ impl CommitHook for UndoState {
 impl UndoState {
     #[cfg(feature = "session")]
     pub(crate) fn new_for_session(
+        types: &TypeArena,
         manager: u64,
         scopes: Vec<YTypeRef>,
         tracked: Vec<Option<Origin>>,
@@ -565,7 +565,7 @@ impl UndoState {
             state.scope.push(Scope::Doc);
         } else {
             for ty in scopes {
-                state.add_to_scope(UndoScope(Scope::Type(ty)))?;
+                state.add_to_scope(types, UndoScope(Scope::Type(ty)))?;
             }
         }
         Ok(state)
@@ -622,7 +622,7 @@ impl UndoState {
             .and_then(|origin| origin.downcast_ref::<UndoOrigin>())
             .filter(|origin| origin.manager == self.manager)
             .map(|origin| origin.stack);
-        if !self.scope_changed(summary) || popped.is_none() && !self.tracks(summary) {
+        if !self.scope_changed(&store.type_arena, summary) || popped.is_none() && !self.tracks(summary) {
             return (false, DeleteSet::default());
         }
 
@@ -639,9 +639,9 @@ impl UndoState {
         }
 
         let mut retained = DeleteSet::default();
-        for_each_item(store, &summary.deleted, |item| {
-            if self.in_scope(item) {
-                DocStore::retain_with_ancestors(&mut retained, item);
+        for_each_item(store, &summary.deleted, |item, _| {
+            if self.in_scope(&store.type_arena, item) {
+                DocStore::retain_with_ancestors(&store.type_arena, &mut retained, item);
             }
         });
 
@@ -709,10 +709,11 @@ impl UndoState {
         release_meta(items.into_iter().filter_map(|item| item.meta).collect());
     }
 
-    fn add_to_scope(&mut self, scope: UndoScope) -> JwstCodecResult {
+    /// `types` is the arena of the manager's document.
+    fn add_to_scope(&mut self, types: &TypeArena, scope: UndoScope) -> JwstCodecResult {
         if let Scope::Type(ty) = &scope.0 {
             // a scope is a mounted type: commits report changes by identity
-            if ty.ty().is_none_or(|ty| ty.is_preliminary()) {
+            if ty.id.and_then(|id| types.get(id)).is_none_or(|ty| ty.is_preliminary()) {
                 return Err(JwstCodecError::InvalidParent);
             }
         }
@@ -724,12 +725,13 @@ impl UndoState {
 
     /// Whether the commit changed something in the scope (Yjs:
     /// `changedParentTypes` has a scope type).
-    fn scope_changed(&self, summary: &CommitSummary) -> bool {
+    fn scope_changed(&self, types: &TypeArena, summary: &CommitSummary) -> bool {
         self.scope.iter().any(|scope| match scope {
             Scope::Doc => true,
             Scope::Type(ty) => ty
-                .ty()
-                .and_then(|ty| ty.identity().ok())
+                .id
+                .and_then(|id| types.get(id))
+                .and_then(|ty| ty.identity(&types.items).ok())
                 .is_some_and(|identity| summary.touches_subtree(&identity)),
         })
     }
@@ -745,10 +747,10 @@ impl UndoState {
     }
 
     /// Yjs `isParentOf` for any scope type, or a document scope.
-    fn in_scope(&self, item: &Item) -> bool {
+    fn in_scope(&self, types: &TypeArena, item: &Item) -> bool {
         self.scope.iter().any(|scope| match scope {
             Scope::Doc => true,
-            Scope::Type(ty) => is_parent_of(ty, item),
+            Scope::Type(ty) => ty.id.is_some_and(|ty| is_parent_of(types, ty, item)),
         })
     }
 
@@ -760,9 +762,11 @@ impl UndoState {
 
     /// Yjs `popStackItem`, in the transaction of an undo or redo.
     /// Returns the id and metadata of the item that changed the document.
-    fn pop(&mut self, store: &mut DocStore, store_ref: &StoreRef, stack: UndoStack) -> Option<(u64, Option<Meta>)> {
-        let performed = self.pop_with_extra_stacks(store, store_ref, stack, &[]);
-        self.release(store);
+    fn pop(&mut self, store: &mut DocStore, stack: UndoStack) -> JwstCodecResult<Option<(u64, Option<Meta>)>> {
+        let performed = self.pop_with_extra_stacks(store, stack, &[]);
+        if performed.is_ok() {
+            self.release(store);
+        }
         performed
     }
 
@@ -772,12 +776,31 @@ impl UndoState {
     pub(crate) fn pop_with_extra_stacks(
         &mut self,
         store: &mut DocStore,
-        store_ref: &StoreRef,
         stack: UndoStack,
         other_stacks: &[&[StackItem]],
-    ) -> Option<(u64, Option<Meta>)> {
+    ) -> JwstCodecResult<Option<(u64, Option<Meta>)>> {
         let mut performed = None;
+        let mut skipped = Vec::new();
         while performed.is_none() {
+            // Recreating a deleted type item takes a new type. Ask for all of
+            // them before the item leaves its stack and the document changes:
+            // a full arena fails the pop with both as they were.
+            let Some(next) = (match stack {
+                UndoStack::Undo => self.undo.last(),
+                UndoStack::Redo => self.redo.last(),
+            }) else {
+                break;
+            };
+            let insertions = insertion_targets(store, &next.insertions);
+            if let Err(err) = check_pop_capacity(store, next, &insertions) {
+                let history = match stack {
+                    UndoStack::Undo => &mut self.undo,
+                    UndoStack::Redo => &mut self.redo,
+                };
+                history.extend(skipped.into_iter().rev());
+                return Err(err);
+            }
+
             let popped = match stack {
                 UndoStack::Undo => self.undo.pop(),
                 UndoStack::Redo => self.redo.pop(),
@@ -786,99 +809,87 @@ impl UndoState {
                 break;
             };
 
-            let mut to_delete = Vec::new();
-            // Follow what a redo recreated, also from structs collected since:
-            // the redo map outlives them (and a collected struct may cover
-            // more than this item inserted).
-            let mut clients = item.insertions.keys().copied().collect::<Vec<_>>();
-            clients.sort_unstable();
-            for client in clients {
-                let state = store.get_state(client);
-                for range in item.insertions[&client].canonical_ranges() {
-                    let mut clock = range.start;
-                    let end = range.end.min(state);
-                    while clock < end {
-                        let id = Id::new(client, clock);
-                        let mut targets = Vec::new();
-                        let len = match store.redone.range_at(id) {
-                            Ok(len) => {
-                                let len = len.min(end - clock);
-                                for (redone, len) in store.redone.follow_range(id, len) {
-                                    targets.extend(clean_items(store, redone, len));
-                                }
-                                len
-                            }
-                            Err(gap) => {
-                                let len = gap.min(end - clock);
-                                targets.extend(clean_items(store, id, len));
-                                len
-                            }
-                        };
-                        clock += len;
-                        for target in targets {
-                            if target.get().is_some_and(|item| !item.deleted() && self.in_scope(item)) {
-                                to_delete.push(target);
-                            }
+            let apply = || -> JwstCodecResult<bool> {
+                let mut to_delete = Vec::new();
+                for (id, len) in insertions {
+                    for target in clean_items(store, id, len)? {
+                        if store
+                            .type_arena
+                            .items
+                            .get(target)
+                            .is_some_and(|item| !item.deleted() && self.in_scope(&store.type_arena, item))
+                        {
+                            to_delete.push(target);
                         }
                     }
                 }
-            }
 
-            let mut to_redo = Vec::new();
-            let mut redo_ids = HashSet::new();
-            for node in clean_structs(store, &item.deletions) {
-                let Node::Item(item_ref) = node else {
-                    continue;
-                };
-                let struct_item = item_ref.get().expect("live structs");
-                // never recreate what the same capture window inserted
-                if self.in_scope(struct_item) && !contains(&item.insertions, struct_item.id) {
-                    redo_ids.insert(struct_item.id);
-                    to_redo.push(item_ref);
+                let mut to_redo = Vec::new();
+                let mut redo_ids = HashSet::new();
+                for node in clean_structs(store, &item.deletions)? {
+                    let Some(idx) = node.as_item() else {
+                        continue;
+                    };
+                    let struct_item = store.type_arena.items.get(idx).expect("live structs");
+                    // never recreate what the same capture window inserted
+                    if self.in_scope(&store.type_arena, struct_item) && !contains(&item.insertions, struct_item.id) {
+                        redo_ids.insert(struct_item.id);
+                        to_redo.push(idx);
+                    }
                 }
-            }
 
-            let mut all_stacks: Vec<&[StackItem]> = Vec::with_capacity(2 + other_stacks.len());
-            all_stacks.push(self.undo.as_slice());
-            all_stacks.push(self.redo.as_slice());
-            all_stacks.extend_from_slice(other_stacks);
+                let mut all_stacks: Vec<&[StackItem]> = Vec::with_capacity(2 + other_stacks.len());
+                all_stacks.push(self.undo.as_slice());
+                all_stacks.push(self.redo.as_slice());
+                all_stacks.extend_from_slice(other_stacks);
 
-            let mut changed = false;
-            let ctx = RedoContext {
-                store_ref,
-                redo_ids: &redo_ids,
-                insertions: &item.insertions,
-                stacks: &all_stacks,
-            };
-            for item_ref in &to_redo {
-                changed |= redo_item(store, &ctx, item_ref).is_some();
-            }
-            // children before their parents
-            for item_ref in to_delete.iter().rev() {
-                if let Some(target) = item_ref.get() {
-                    store.delete_item(target, None);
+                let mut changed = false;
+                let ctx = RedoContext {
+                    redo_ids: &redo_ids,
+                    insertions: &item.insertions,
+                    stacks: &all_stacks,
+                };
+                for item_ref in &to_redo {
+                    changed |= redo_item(store, &ctx, *item_ref)?.is_some();
+                }
+                // children before their parents
+                for item_ref in to_delete.iter().rev() {
+                    store.delete_item(*item_ref, None);
                     changed = true;
                 }
-            }
+                Ok(changed)
+            };
+            let changed = match apply() {
+                Ok(changed) => changed,
+                Err(err) => {
+                    let history = match stack {
+                        UndoStack::Undo => &mut self.undo,
+                        UndoStack::Redo => &mut self.redo,
+                    };
+                    history.push(item);
+                    history.extend(skipped.into_iter().rev());
+                    return Err(err);
+                }
+            };
 
             if changed {
                 performed = Some((item.id, item.meta));
             } else {
-                release_meta(item.meta.into_iter().collect());
+                skipped.push(item);
             }
         }
 
         // Neither recreated items nor deletions moved the search markers.
         for ty in store.collector.changed.keys() {
-            // SAFETY: store write lock held, no type borrowed.
-            if let Some(mut ty) = unsafe { ty.ty_mut() }
+            if let Some(ty) = store.type_arena.get_mut(*ty)
                 && let Some(markers) = &mut ty.markers
             {
                 markers.clear();
             }
         }
 
-        performed
+        release_meta(skipped.into_iter().filter_map(|item| item.meta).collect());
+        Ok(performed)
     }
 }
 
@@ -905,21 +916,27 @@ fn contains(set: &DeleteSet, id: Id) -> bool {
 }
 
 /// The type item `item` belongs to, `None` below a root type.
-fn carrier_of(item: &Item) -> Option<Id> {
+fn carrier_of(types: &TypeArena, item: &Item) -> Option<Id> {
     match &item.parent {
-        Some(Parent::Type(ty)) => ty.ty().and_then(|ty| ty.item.get()).map(|carrier| carrier.id),
+        Some(ty) => types
+            .get(*ty)
+            .and_then(|ty| ty.live_carrier(&types.items))
+            .map(|carrier| carrier.id),
         _ => None,
     }
 }
 
 /// Yjs `isParentOf`: `item` is somewhere below `ty`.
-fn is_parent_of(ty: &YTypeRef, item: &Item) -> bool {
+fn is_parent_of(types: &TypeArena, ty: TypeIdx, item: &Item) -> bool {
     let mut parent = item.parent.as_ref();
-    while let Some(Parent::Type(current)) = parent {
-        if current == ty {
+    while let Some(current) = parent {
+        if *current == ty {
             return true;
         }
-        let Some(carrier) = current.ty().and_then(|current| current.item.get()) else {
+        let Some(carrier) = types
+            .get(*current)
+            .and_then(|current| current.live_carrier(&types.items))
+        else {
             return false;
         };
         parent = carrier.parent.as_ref();
@@ -928,7 +945,7 @@ fn is_parent_of(ty: &YTypeRef, item: &Item) -> bool {
 }
 
 /// Calls `f` on the items overlapping `set`, without splitting anything.
-fn for_each_item(store: &DocStore, set: &DeleteSet, mut f: impl FnMut(&Item)) {
+fn for_each_item(store: &DocStore, set: &DeleteSet, mut f: impl FnMut(&Item, u64)) {
     for (client, ranges) in set.iter() {
         let Some(nodes) = store.items.get(client) else {
             continue;
@@ -937,14 +954,15 @@ fn for_each_item(store: &DocStore, set: &DeleteSet, mut f: impl FnMut(&Item)) {
             let Some(mut idx) = DocStore::get_node_index(nodes, range.start) else {
                 continue;
             };
-            while let Some(node) = nodes.get(idx) {
+            while let Some(node) = nodes.node(*client, idx) {
                 if node.clock() >= range.end {
                     break;
                 }
-                if let Node::Item(item) = node
-                    && let Some(item) = item.get()
-                {
-                    f(item);
+                if let Some(item) = node.as_item().and_then(|i| store.type_arena.items.get(i)) {
+                    f(
+                        item,
+                        range.end.min(node.clock() + node.len()) - range.start.max(node.clock()),
+                    );
                 }
                 idx += 1;
             }
@@ -952,13 +970,91 @@ fn for_each_item(store: &DocStore, set: &DeleteSet, mut f: impl FnMut(&Item)) {
     }
 }
 
-/// Yjs `iterateDeletedStructs`: the structs of `set`, split at its range
-/// boundaries, clients in ascending order. Ranges past the end of a client's
-/// structs are skipped.
-fn clean_structs(store: &mut DocStore, set: &DeleteSet) -> Vec<Node> {
+/// Resolve insertion ranges before splitting. Even collected sources may have
+/// surviving targets, and different pieces can have different redo chains.
+fn insertion_targets(store: &DocStore, set: &DeleteSet) -> Vec<(Id, u64)> {
+    let mut clients: Vec<_> = set.keys().copied().collect();
+    clients.sort_unstable();
+    let mut targets = Vec::new();
+    for client in clients {
+        let state = store.get_state(client);
+        for range in set[&client].canonical_ranges() {
+            let end = state.min(range.end);
+            if range.start < end {
+                targets.extend(
+                    store
+                        .redone
+                        .follow_range(Id::new(client, range.start), end - range.start),
+                );
+            }
+        }
+    }
+    targets
+}
+
+fn check_pop_capacity(store: &DocStore, item: &StackItem, insertions: &[(Id, u64)]) -> JwstCodecResult {
+    let mut types = 0;
+    let mut copies = 0usize;
+    let mut next_clock = Some(store.get_state(store.client()));
+    for_each_item(store, &item.deletions, |item, len| {
+        next_clock = next_clock.and_then(|clock| clock.checked_add(len));
+        types += usize::from(matches!(item.content, Content::Type(_)));
+        copies += 1;
+    });
+    next_clock.ok_or_else(|| JwstCodecError::IncompleteDocument("struct clock overflow".into()))?;
+    store.type_arena.check_capacity(types)?;
+
+    // Count distinct interior cuts. An insertion boundary inside a deletion
+    // can leave another fragment to recreate as well as the original.
+    let mut cuts = HashSet::new();
+    let mut boundary = |id: Id| {
+        if store.get_node(id).is_some_and(|node| node.is_item() && node.id != id) {
+            cuts.insert(id);
+        }
+    };
+    for &(id, len) in insertions {
+        boundary(id);
+        boundary(id + len);
+    }
+    for (client, ranges) in item.deletions.iter() {
+        for range in ranges {
+            boundary(Id::new(*client, range.start));
+            boundary(Id::new(*client, range.end));
+        }
+    }
+    let extra_copies = cuts
+        .iter()
+        .filter(|id| {
+            contains(&item.deletions, **id)
+                && id.clock > 0
+                && contains(&item.deletions, Id::new(id.client, id.clock - 1))
+        })
+        .count();
+    let mut needed = copies.saturating_add(extra_copies).saturating_add(cuts.len());
+    if copies > 0 && !store.redone.is_empty() {
+        // Redo also cleans the neighbors and carriers reached through old
+        // mappings. Each cut of an old target may propagate into its new copy.
+        // Most documents have ample space even if every clock splits.
+        // Only inspect individual mappings near the item limit.
+        let clocks = store.items.values().fold(0usize, |sum, blocks| {
+            sum.saturating_add(usize::try_from(blocks.end_clock).unwrap_or(usize::MAX))
+        });
+        if store
+            .type_arena
+            .items
+            .check_capacity(needed.saturating_add(clocks.saturating_mul(2)))
+            .is_ok()
+        {
+            return Ok(());
+        }
+        needed = needed.saturating_add(store.redone.target_split_bound(store).saturating_mul(2));
+    }
+    store.type_arena.items.check_capacity(needed)
+}
+
+fn clean_structs(store: &mut DocStore, set: &DeleteSet) -> JwstCodecResult<Vec<Node>> {
     let mut clients = set.keys().copied().collect::<Vec<_>>();
     clients.sort_unstable();
-
     let mut structs = Vec::new();
     for client in clients {
         let state = store.get_state(client);
@@ -966,71 +1062,39 @@ fn clean_structs(store: &mut DocStore, set: &DeleteSet) -> Vec<Node> {
             if range.start >= state {
                 break;
             }
-            let end = range.end.min(state);
-            if store.split_at_and_get_right(Id::new(client, range.start)).is_err() {
-                continue;
-            }
-            if end < state {
-                let _ = store.split_at_and_get_right(Id::new(client, end));
-            }
-            let nodes = &store.items[&client];
-            let mut idx = DocStore::get_node_index(nodes, range.start).expect("split above");
-            while let Some(node) = nodes.get(idx) {
-                if node.clock() >= end {
-                    break;
-                }
-                structs.push(node.clone());
-                idx += 1;
-            }
+            structs.extend(clean_range(store, Id::new(client, range.start), range.end.min(state))?);
         }
     }
-    structs
+    Ok(structs)
 }
 
-/// Yjs `getItemCleanStart`: the item starting at `id`. `None` for a GC
-/// struct.
-fn clean_start(store: &mut DocStore, id: Id) -> Option<ItemRef> {
-    match store.split_at_and_get_right(id).ok()? {
-        Node::Item(item) => Some(item),
-        _ => None,
-    }
+fn clean_start(store: &mut DocStore, id: Id) -> JwstCodecResult<ItemRef> {
+    Ok(store.split_at_and_get_right(id)?.as_item())
 }
 
-/// Yjs `getItemCleanEnd`: the item ending at `id`. `None` for a GC struct.
-fn clean_end(store: &mut DocStore, id: Id) -> Option<ItemRef> {
-    match store.split_at_and_get_left(id).ok()? {
-        Node::Item(item) => Some(item),
-        _ => None,
-    }
+fn clean_end(store: &mut DocStore, id: Id) -> JwstCodecResult<ItemRef> {
+    Ok(store.split_at_and_get_left(id)?.as_item())
 }
 
-/// The items covering exactly `id..id+len`, split at both ends. Collected
-/// structs in the range are left out.
-fn clean_items(store: &mut DocStore, id: Id, len: u64) -> Vec<ItemRef> {
-    let end = id.clock + len;
-    if store.split_at_and_get_right(id).is_err() {
-        return Vec::new();
-    }
+fn clean_range(store: &mut DocStore, id: Id, end: u64) -> JwstCodecResult<impl Iterator<Item = Node> + '_> {
+    clean_start(store, id)?;
     if end < store.get_state(id.client) {
-        let _ = store.split_at_and_get_right(Id::new(id.client, end));
+        clean_start(store, Id::new(id.client, end))?;
     }
-    let nodes = &store.items[&id.client];
-    let mut idx = DocStore::get_node_index(nodes, id.clock).expect("split above");
-    let mut items = Vec::new();
-    while let Some(node) = nodes.get(idx) {
-        if node.clock() >= end {
-            break;
-        }
-        if let Node::Item(item) = node {
-            items.push(item.clone());
-        }
-        idx += 1;
-    }
-    items
+    let blocks = &store.items[&id.client];
+    let first = blocks.find(id.clock).expect("cleaned range");
+    Ok((first..blocks.len())
+        .map(move |i| blocks.node(id.client, i).expect("block index"))
+        .take_while(move |node| node.clock() < end))
+}
+
+fn clean_items(store: &mut DocStore, id: Id, len: u64) -> JwstCodecResult<Vec<ItemIdx>> {
+    Ok(clean_range(store, id, id.clock + len)?
+        .filter_map(|node| node.as_item())
+        .collect())
 }
 
 struct RedoContext<'a> {
-    store_ref: &'a StoreRef,
     /// The items this pop recreates.
     redo_ids: &'a HashSet<Id>,
     /// The insertions of the popped item, which this pop deletes.
@@ -1052,58 +1116,72 @@ impl RedoContext<'_> {
 /// `None` when it cannot be recreated: its parent type is deleted and not
 /// recreated with it, a remote change took its map key, or its content was
 /// already collected.
-fn redo_item(store: &mut DocStore, ctx: &RedoContext<'_>, item_ref: &ItemRef) -> Option<ItemRef> {
+fn redo_item(store: &mut DocStore, ctx: &RedoContext<'_>, idx: ItemIdx) -> JwstCodecResult<Option<ItemRef>> {
     let (id, len, item_parent, parent_sub, item_left, has_right) = {
-        let item = item_ref.get()?;
+        let item = store.type_arena.items.get(idx).expect("retained item");
         (
             item.id,
             item.len(),
-            item.parent.clone(),
+            item.parent,
             item.parent_sub.clone(),
-            item.left.clone(),
+            item.left,
             item.right.is_some(),
         )
     };
     if let Some(redone) = store.redone.get(id) {
-        return clean_start(store, redone);
+        return Ok(clean_start(store, redone)?.map(Some));
     }
     // Yjs relies on keep; a retention gap must not insert a hole as content
-    if matches!(item_ref.get()?.content, Content::Deleted(_)) {
-        return None;
+    if matches!(
+        store.type_arena.items.get(idx).expect("retained item").content,
+        Content::Deleted(_)
+    ) {
+        return Ok(None);
     }
-    let Some(Parent::Type(item_parent)) = item_parent else {
-        return None;
+    let Some(item_parent) = item_parent else {
+        return Ok(None);
     };
 
     // make sure the parent is recreated
-    let mut parent_item = item_parent.ty()?.item.clone();
-    if let Some((parent_id, parent_deleted)) = parent_item.get().map(|parent| (parent.id, parent.deleted()))
+    let mut parent_item = store.type_arena[item_parent].carrier_ref();
+    if let Some((parent_id, parent_deleted)) = parent_item
+        .and_then(|i| store.type_arena.items.get(i))
+        .map(|parent| (parent.id, parent.deleted()))
         && parent_deleted
     {
         // recreate the parent if this pop recreates it anyway
         if store.redone.get(parent_id).is_none()
-            && (!ctx.redo_ids.contains(&parent_id) || redo_item(store, ctx, &parent_item).is_none())
+            && (!ctx.redo_ids.contains(&parent_id)
+                || redo_item(store, ctx, parent_item.expect("deleted carrier"))?.is_none())
         {
-            return None;
+            return Ok(None);
         }
-        while let Some(redone) = parent_item.get().and_then(|parent| store.redone.get(parent.id)) {
-            parent_item = clean_start(store, redone)?;
+        while let Some(redone) = parent_item
+            .and_then(|i| store.type_arena.items.get(i))
+            .and_then(|parent| store.redone.get(parent.id))
+        {
+            let Some(carrier) = clean_start(store, redone)? else {
+                return Ok(None);
+            };
+            parent_item = Some(carrier);
         }
     }
-    let parent_item_id = parent_item.get().map(|parent| parent.id);
-    let parent_type = match parent_item.get() {
+    let parent_item_id = parent_item
+        .and_then(|i| store.type_arena.items.get(i))
+        .map(|parent| parent.id);
+    let parent_type = match parent_item.and_then(|i| store.type_arena.items.get(i)) {
         Some(parent) => match &parent.content {
-            Content::Type(ty) => ty.clone(),
-            _ => return None,
+            Content::Type(ty) => *ty,
+            _ => return Ok(None),
         },
         None => item_parent,
     };
 
     let (left, right) = if let Some(key) = &parent_sub {
-        (
-            recreated_map_left(store, ctx, item_ref, &parent_type, parent_item_id, key, has_right)?,
-            Somr::none(),
-        )
+        let Some(left) = recreated_map_left(store, ctx, idx, parent_type, parent_item_id, key, has_right)? else {
+            return Ok(None);
+        };
+        (left, None)
     } else {
         // a list item: insert at the old position, next to the neighbors (or
         // their recreations) in the recreated parent. A left neighbor is
@@ -1112,51 +1190,66 @@ fn redo_item(store: &mut DocStore, ctx: &RedoContext<'_>, item_ref: &ItemRef) ->
         // tells where it goes.
         let mut left = item_left;
         while left.is_some() {
-            let mut trace = left.clone();
-            while let Some((trace_id, trace_parent)) = trace.get().map(|trace| (trace.last_id(), carrier_of(trace)))
+            let mut trace = left;
+            while let Some((trace_id, trace_parent)) = trace
+                .and_then(|i| store.type_arena.items.get(i))
+                .map(|trace| (trace.last_id(), carrier_of(&store.type_arena, trace)))
                 && trace_parent != parent_item_id
             {
                 trace = match store.redone.get(trace_id) {
-                    Some(redone) => clean_end(store, redone).unwrap_or_default(),
-                    None => Somr::none(),
+                    Some(redone) => clean_end(store, redone)?,
+                    None => None,
                 };
             }
-            if trace.get().is_some_and(|trace| carrier_of(trace) == parent_item_id) {
+            if trace
+                .and_then(|i| store.type_arena.items.get(i))
+                .is_some_and(|trace| carrier_of(&store.type_arena, trace) == parent_item_id)
+            {
                 left = trace;
                 break;
             }
-            left = left.get().map(|left| left.left.clone()).unwrap_or_default();
+            left = left
+                .and_then(|i| store.type_arena.items.get(i))
+                .map(|left| left.left)
+                .unwrap_or_default();
         }
 
-        let mut right = item_ref.clone();
+        let mut right = Some(idx);
         while right.is_some() {
-            let mut trace = right.clone();
-            while let Some((trace_id, trace_parent)) = trace.get().map(|trace| (trace.id, carrier_of(trace)))
+            let mut trace = right;
+            while let Some((trace_id, trace_parent)) = trace
+                .and_then(|i| store.type_arena.items.get(i))
+                .map(|trace| (trace.id, carrier_of(&store.type_arena, trace)))
                 && trace_parent != parent_item_id
             {
                 trace = match store.redone.get(trace_id) {
-                    Some(redone) => clean_start(store, redone).unwrap_or_default(),
-                    None => Somr::none(),
+                    Some(redone) => clean_start(store, redone)?,
+                    None => None,
                 };
             }
-            if trace.get().is_some_and(|trace| carrier_of(trace) == parent_item_id) {
+            if trace
+                .and_then(|i| store.type_arena.items.get(i))
+                .is_some_and(|trace| carrier_of(&store.type_arena, trace) == parent_item_id)
+            {
                 right = trace;
                 break;
             }
-            right = right.get().map(|right| right.right.clone()).unwrap_or_default();
+            right = right
+                .and_then(|i| store.type_arena.items.get(i))
+                .map(|right| right.right)
+                .unwrap_or_default();
         }
         (left, right)
     };
 
-    let content = copy_content(store, ctx.store_ref, &item_ref.get()?.content);
+    let content = copy_content(store, idx)?;
     let new_id = Id::new(store.client(), store.get_state(store.client()));
-    let owned = store.create_item(content, left, right, Some(Parent::Type(parent_type)), parent_sub);
-    let redone = owned.clone();
+    let owned = store.create_item(content, left, right, Some(parent_type), parent_sub);
+    let Some(redone) = store.integrate_item(owned, 0, None)? else {
+        return Ok(None);
+    };
     store.register_redone(id, len, new_id);
-    store
-        .integrate(Node::Item(owned), 0, None)
-        .expect("a recreated item integrates locally");
-    Some(redone)
+    Ok(Some(Some(redone)))
 }
 
 /// The left neighbor of a recreated map value (`redoItem` for an item with
@@ -1165,64 +1258,76 @@ fn redo_item(store: &mut DocStore, ctx: &RedoContext<'_>, item_ref: &ItemRef) ->
 fn recreated_map_left(
     store: &mut DocStore,
     ctx: &RedoContext<'_>,
-    item_ref: &ItemRef,
-    parent_type: &YTypeRef,
+    idx: ItemIdx,
+    parent_type: TypeIdx,
     parent_item_id: Option<Id>,
     key: &SmolStr,
     has_right: bool,
-) -> Option<ItemRef> {
+) -> JwstCodecResult<Option<ItemRef>> {
     let mut left = if has_right {
         // Walk right while the newer values are being deleted by this pop
         // or by a stack: then this value replaces them.
-        let mut left = item_ref.clone();
-        while let Some(right_id) = left.get().and_then(|left| left.right.get()).map(|right| right.id)
+        let mut left = Some(idx);
+        while let Some(right_id) = left
+            .and_then(|i| store.type_arena.items.get(i))
+            .and_then(|left| left.right.and_then(|i| store.type_arena.items.get(i)))
+            .map(|right| right.id)
             && (store.redone.get(right_id).is_some()
                 || contains(ctx.insertions, right_id)
                 || ctx.deleted_by_stacks(right_id))
         {
-            left = left.get().map(|left| left.right.clone()).unwrap_or_default();
-            while let Some(redone) = left.get().and_then(|left| store.redone.get(left.id)) {
-                left = clean_start(store, redone)?;
+            left = left
+                .and_then(|i| store.type_arena.items.get(i))
+                .map(|left| left.right)
+                .unwrap_or_default();
+            while let Some(redone) = left
+                .and_then(|i| store.type_arena.items.get(i))
+                .and_then(|left| store.redone.get(left.id))
+            {
+                let Some(target) = clean_start(store, redone)? else {
+                    return Ok(None);
+                };
+                left = Some(target);
             }
         }
-        if left.get().is_some_and(|left| left.right.is_some()) {
+        if left
+            .and_then(|i| store.type_arena.items.get(i))
+            .is_some_and(|left| left.right.is_some())
+        {
             // a newer remote value: recreating this one would overwrite it
-            return None;
+            return Ok(None);
         }
         left
     } else {
-        parent_type.ty()?.map.get(key).cloned().unwrap_or_default()
+        store.type_arena[parent_type].map_get(key).cloned().unwrap_or_default()
     };
     // a left in another parent would mislead the origin on remote peers
     // (#757)
-    if left.get().is_some_and(|left| carrier_of(left) != parent_item_id) {
-        left = parent_type.ty()?.map.get(key).cloned().unwrap_or_default();
+    if left
+        .and_then(|i| store.type_arena.items.get(i))
+        .is_some_and(|left| carrier_of(&store.type_arena, left) != parent_item_id)
+    {
+        left = store.type_arena[parent_type].map_get(key).cloned().unwrap_or_default();
     }
-    Some(left)
+    Ok(Some(left))
 }
 
 /// Yjs `AbstractContent.copy`: a type is recreated as a new empty type of the
 /// same kind (its children are recreated into it); other content is copied.
-fn copy_content(store: &mut DocStore, store_ref: &StoreRef, content: &Content) -> Content {
-    match content {
+fn copy_content(store: &mut DocStore, idx: ItemIdx) -> JwstCodecResult<Content> {
+    Ok(match &store.type_arena.items.get(idx).expect("retained item").content {
         Content::Type(ty) => {
-            let ty = ty.ty().expect("the item holds its type");
+            let ty = &store.type_arena[*ty];
             let kind = ty.kind();
-            let mut copy = YType::new(kind, ty.name.clone());
+            let mut copy = YType::new(kind, ty.name().map(str::to_owned));
             if kind.uses_markers() {
-                copy.markers = Some(MarkerList::new());
+                copy.markers = Some(Box::default());
             }
-            let owner = YTypeRef {
-                store: Arc::downgrade(store_ref),
-                inner: Somr::new(copy),
-            };
-            let copy = owner.clone();
             // the store owns types created in it
-            store.dangling_types.insert(owner.inner.ptr().as_ptr() as usize, owner);
-            Content::Type(copy)
+            Content::Type(store.type_arena.alloc(copy)?)
         }
         content => content.clone(),
-    }
+    })
 }
 
 #[cfg(all(test, not(loom)))]

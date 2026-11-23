@@ -134,7 +134,7 @@ jobs:
     env:
       RUST_BACKTRACE: full
       CARGO_TERM_COLOR: always
-      MIRIFLAGS: -Zmiri-backtrace=full -Zmiri-tree-borrows
+      MIRIFLAGS: -Zmiri-backtrace=full
     steps:
       - uses: actions/checkout@v4
 

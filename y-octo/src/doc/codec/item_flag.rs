@@ -1,5 +1,3 @@
-use std::sync::atomic::{AtomicU8, Ordering};
-
 #[rustfmt::skip]
 #[allow(dead_code)]
 pub mod item_flags {
@@ -13,47 +11,35 @@ pub mod item_flags {
     pub const ITEM_HAS_SIBLING          : u8 = 0b1100_0000;
 }
 
-#[derive(Debug)]
-pub struct ItemFlag(pub(self) AtomicU8);
-
-impl Default for ItemFlag {
-    fn default() -> Self {
-        Self(AtomicU8::new(0))
-    }
-}
-
-impl Clone for ItemFlag {
-    fn clone(&self) -> Self {
-        Self(AtomicU8::new(self.0.load(Ordering::Acquire)))
-    }
-}
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct ItemFlag(u8);
 
 impl From<u8> for ItemFlag {
     fn from(flags: u8) -> Self {
-        Self(AtomicU8::new(flags))
+        Self(flags)
     }
 }
 
 #[allow(dead_code)]
 impl ItemFlag {
     #[inline(always)]
-    pub fn set(&self, flag: u8) {
-        self.0.fetch_or(flag, Ordering::SeqCst);
+    pub fn set(&mut self, flag: u8) {
+        self.0 |= flag;
     }
 
     #[inline(always)]
-    pub fn clear(&self, flag: u8) {
-        self.0.fetch_and(!flag, Ordering::SeqCst);
+    pub fn clear(&mut self, flag: u8) {
+        self.0 &= !flag;
     }
 
     #[inline(always)]
     pub fn check(&self, flag: u8) -> bool {
-        self.0.load(Ordering::Acquire) & flag == flag
+        self.0 & flag == flag
     }
 
     #[inline(always)]
     pub fn not(&self, flag: u8) -> bool {
-        self.0.load(Ordering::Acquire) & flag == 0
+        self.0 & flag == 0
     }
 
     #[inline(always)]
@@ -62,12 +48,12 @@ impl ItemFlag {
     }
 
     #[inline(always)]
-    pub fn set_keep(&self) {
+    pub fn set_keep(&mut self) {
         self.set(item_flags::ITEM_KEEP);
     }
 
     #[inline(always)]
-    pub fn clear_keep(&self) {
+    pub fn clear_keep(&mut self) {
         self.clear(item_flags::ITEM_KEEP);
     }
 
@@ -77,12 +63,12 @@ impl ItemFlag {
     }
 
     #[inline(always)]
-    pub fn set_countable(&self) {
+    pub fn set_countable(&mut self) {
         self.set(item_flags::ITEM_COUNTABLE);
     }
 
     #[inline(always)]
-    pub fn clear_countable(&self) {
+    pub fn clear_countable(&mut self) {
         self.clear(item_flags::ITEM_COUNTABLE);
     }
 
@@ -92,12 +78,12 @@ impl ItemFlag {
     }
 
     #[inline(always)]
-    pub fn set_deleted(&self) {
+    pub fn set_deleted(&mut self) {
         self.set(item_flags::ITEM_DELETED);
     }
 
     #[inline(always)]
-    pub fn clear_deleted(&self) {
+    pub fn clear_deleted(&mut self) {
         self.clear(item_flags::ITEM_DELETED);
     }
 }
@@ -109,46 +95,37 @@ mod tests {
     #[test]
     fn test_flag_set_and_clear() {
         {
-            let flag = super::ItemFlag::default();
+            let mut flag = ItemFlag::default();
             assert!(!flag.keep());
             flag.set_keep();
             assert!(flag.keep());
             flag.clear_keep();
             assert!(!flag.keep());
-            assert_eq!(
-                flag.0.load(Ordering::SeqCst),
-                ItemFlag::default().0.load(Ordering::SeqCst)
-            );
+            assert_eq!(flag.0, ItemFlag::default().0);
         }
 
         {
-            let flag = super::ItemFlag::default();
+            let mut flag = ItemFlag::default();
             assert!(!flag.countable());
             flag.set_countable();
             assert!(flag.countable());
             flag.clear_countable();
             assert!(!flag.countable());
-            assert_eq!(
-                flag.0.load(Ordering::SeqCst),
-                ItemFlag::default().0.load(Ordering::SeqCst)
-            );
+            assert_eq!(flag.0, ItemFlag::default().0);
         }
 
         {
-            let flag = super::ItemFlag::default();
+            let mut flag = ItemFlag::default();
             assert!(!flag.deleted());
             flag.set_deleted();
             assert!(flag.deleted());
             flag.clear_deleted();
             assert!(!flag.deleted());
-            assert_eq!(
-                flag.0.load(Ordering::SeqCst),
-                ItemFlag::default().0.load(Ordering::SeqCst)
-            );
+            assert_eq!(flag.0, ItemFlag::default().0);
         }
 
         {
-            let flag = super::ItemFlag::default();
+            let mut flag = ItemFlag::default();
             flag.set_keep();
             flag.set_countable();
             flag.set_deleted();
@@ -161,10 +138,7 @@ mod tests {
             assert!(!flag.keep());
             assert!(!flag.countable());
             assert!(!flag.deleted());
-            assert_eq!(
-                flag.0.load(Ordering::SeqCst),
-                ItemFlag::default().0.load(Ordering::SeqCst)
-            );
+            assert_eq!(flag.0, ItemFlag::default().0);
         }
     }
 }

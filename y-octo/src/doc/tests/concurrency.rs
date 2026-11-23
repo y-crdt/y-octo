@@ -1,6 +1,6 @@
 //! Readers and writers of one document on different threads. Under
 //! `--cfg loom` every access to item and type data is checked for being
-//! ordered by the store lock (see `Somr`), so a reader that walks items while
+//! ordered by the store lock, so a reader that walks items while
 //! a remote update splits, deletes, garbage-collects or merges them fails the
 //! model.
 
@@ -100,7 +100,7 @@ fn remote_apply_is_atomic_for_concurrent_readers() {
             let store = doc.store.read().unwrap();
             assert_eq!(store.items.get(&2).unwrap().len(), 2);
             assert!(matches!(
-                &store.get_node((1, 1)).unwrap().as_item().get().unwrap().content,
+                &store.get_node((1, 1)).unwrap().item(&store.type_arena).content,
                 Content::Deleted(1)
             ));
         }

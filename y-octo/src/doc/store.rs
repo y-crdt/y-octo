@@ -1,8 +1,10 @@
-use std::{
-    collections::{VecDeque, hash_map::Entry},
-    mem,
-    ops::Range,
-};
+mod client_blocks;
+
+mod item_space;
+use std::{collections::VecDeque, mem, ops::Range};
+
+pub(crate) use client_blocks::{BlockKind, BlockRef, ClientBlocks};
+pub(crate) use item_space::{ItemIdx, ItemSpace};
 
 use super::*;
 use crate::{
@@ -10,12 +12,7 @@ use crate::{
     sync::{Arc, RwLock, Weak},
 };
 
-#[cfg(not(loom))]
-pub type ChangedTypeRefs = HashMap<YTypeRef, Vec<SmolStr>>;
-// Type references hash by address. Keep insertion order under Loom so
-// iteration and refcount decrements replay in the same order every time.
-#[cfg(loom)]
-pub type ChangedTypeRefs = indexmap::IndexMap<YTypeRef, Vec<SmolStr>>;
+pub type ChangedTypeRefs = HashMap<TypeIdx, Vec<SmolStr>>;
 
 /// What one transaction changed, collected by the store's mutation paths.
 #[derive(Debug, Default)]
@@ -47,7 +44,7 @@ impl Collector {
 
 /// A type whose children [DocStore::delete_item_inner] is deleting.
 struct DeleteFrame {
-    ty: YTypeRef,
+    ty: TypeIdx,
     /// next list item to visit
     cursor: ItemRef,
     /// map values left to visit, once the list is done
@@ -55,8 +52,8 @@ struct DeleteFrame {
 }
 
 impl DeleteFrame {
-    fn new(ty: YTypeRef) -> Self {
-        let cursor = ty.ty().map(|ty| ty.start.clone()).unwrap_or_else(Somr::none);
+    fn new(types: &TypeArena, ty: TypeIdx) -> Self {
+        let cursor = types.get(ty).map(|ty| ty.start).unwrap_or_default();
         Self {
             ty,
             cursor,
@@ -68,17 +65,17 @@ impl DeleteFrame {
 #[derive(Default, Debug)]
 pub(crate) struct DocStore {
     client: Client,
-    pub items: ClientMap<VecDeque<Node>>,
+    pub items: ClientMap<ClientBlocks>,
     // Monotonic for integrated structs, including wire GC and ContentDeleted
     // that never pass through the ordinary delete collector.
     has_deleted_structs: bool,
 
     // following fields are only used in memory
-    pub types: HashMap<String, YTypeRef>,
-    // types created from this store but with no names,
-    // we store it here to keep the ownership inside store without being
-    // released.
-    pub dangling_types: HashMap<usize, YTypeRef>,
+    /// Every type of the document: named roots, nested types, and
+    /// preliminary types that are not inserted yet.
+    pub type_arena: TypeArena,
+    /// The named roots, by name.
+    pub types: HashMap<String, TypeIdx>,
     pub pending: Option<Update>,
     pub last_optimized_state: StateVector,
     // local redo mapping, old id range -> recreated id range
@@ -95,6 +92,9 @@ pub(crate) struct DocStore {
     /// from a document) or a remote update showed another replica using this
     /// one. See [Doc::client_required].
     pub client_required: bool,
+    /// This is the private editing store of a preliminary subtree, see
+    /// [DocStore::edit_type]: it never commits and holds no types of its own.
+    pub(crate) staging: bool,
     /// Sequence number of the last commit.
     pub commit_seq: u64,
     pub events: Arc<EventHub>,
@@ -115,6 +115,14 @@ impl DocStore {
     pub fn with_client(client: Client) -> Self {
         Self {
             client,
+            ..Default::default()
+        }
+    }
+
+    /// The private editing store of a preliminary subtree.
+    pub(crate) fn staging() -> Self {
+        Self {
+            staging: true,
             ..Default::default()
         }
     }
@@ -141,10 +149,7 @@ impl DocStore {
     pub fn total_delete_sets(&self) -> usize {
         Self::generate_delete_set(&self.items)
             .values()
-            .map(|v| match v {
-                OrderRange::Range(_) => 1,
-                OrderRange::Fragment(f) => f.len(),
-            })
+            .map(|v| v.ranges_len())
             .sum()
     }
 
@@ -153,9 +158,11 @@ impl DocStore {
         self.types.len()
     }
 
+    /// Types the store holds besides its named roots: nested, preliminary
+    /// and retired ones.
     #[cfg(feature = "debug")]
     pub fn total_dangling_types(&self) -> usize {
-        self.dangling_types.len()
+        self.type_arena.len().saturating_sub(self.types.len())
     }
 
     #[cfg(feature = "debug")]
@@ -164,16 +171,7 @@ impl DocStore {
     }
 
     pub fn get_state(&self, client: Client) -> Clock {
-        if let Some(structs) = self.items.get(&client) {
-            if let Some(last_struct) = structs.back() {
-                last_struct.clock() + last_struct.len()
-            } else {
-                warn!("client {client} has no struct info");
-                0
-            }
-        } else {
-            0
-        }
+        self.items.get(&client).map_or(0, |blocks| blocks.end_clock)
     }
 
     pub fn get_state_vector(&self) -> StateVector {
@@ -184,286 +182,261 @@ impl DocStore {
         Self::generate_delete_set(&self.items)
     }
 
-    fn items_as_state_vector(items: &ClientMap<VecDeque<Node>>) -> StateVector {
+    fn items_as_state_vector(items: &ClientMap<ClientBlocks>) -> StateVector {
         let mut state = StateVector::default();
-        for (client, structs) in items.iter() {
-            if let Some(last_struct) = structs.back() {
-                state.insert(*client, last_struct.clock() + last_struct.len());
-            } else {
-                warn!("client {client} has no struct info");
+        for (&client, blocks) in items {
+            if blocks.len() != 0 {
+                state.insert(client, blocks.end_clock);
             }
         }
         state
     }
 
-    pub fn add_node(&mut self, item: Node) -> JwstCodecResult {
-        let client_id = item.client();
-        let deleted = !self.has_deleted_structs && item.deleted();
-        match self.items.entry(client_id) {
-            Entry::Occupied(mut entry) => {
-                let structs = entry.get_mut();
-                if let Some(last_struct) = structs.back() {
-                    let expect = last_struct.clock() + last_struct.len();
-                    let actually = item.clock();
-                    if expect != actually {
-                        return Err(JwstCodecError::StructClockInvalid { expect, actually });
-                    }
-                } else {
-                    warn!("client {} has no struct info", client_id);
-                }
-                structs.push_back(item);
-            }
-            Entry::Vacant(entry) => {
-                entry.insert(VecDeque::from([item]));
-            }
+    pub fn add_node(&mut self, node: Node) -> JwstCodecResult {
+        if node.len() == 0 {
+            return Err(JwstCodecError::IncompleteDocument("zero-length struct".into()));
         }
-
-        self.has_deleted_structs |= deleted;
+        self.items.entry(node.client()).or_default().append(
+            BlockRef {
+                clock: node.clock(),
+                kind: node.kind,
+            },
+            node.len(),
+        )?;
+        self.has_deleted_structs |= node.deleted();
         Ok(())
     }
 
-    /// binary search struct info on a sorted array
-    pub fn get_node_index(items: &VecDeque<Node>, clock: Clock) -> Option<usize> {
-        find_clock_segment(items.len(), clock, |index| {
-            items.get(index).map(|node| (node.clock(), node.len()))
-        })
+    pub fn get_node_index(blocks: &ClientBlocks, clock: Clock) -> Option<usize> {
+        blocks.find(clock)
     }
 
     pub fn create_item(
         &self,
         content: Content,
-        left: Somr<Item>,
-        right: Somr<Item>,
-        parent: Option<Parent>,
+        left: ItemRef,
+        right: ItemRef,
+        parent: Option<TypeIdx>,
         parent_sub: Option<SmolStr>,
-    ) -> ItemRef {
-        let id = (self.client(), self.get_state(self.client())).into();
-        let item = Somr::new(Item::new(id, content, left, right, parent, parent_sub));
-
-        if let Content::Type(ty) = &item.get().unwrap().content
-            // SAFETY: callers hold the store write lock and only reference the
-            // parent type. Local insertion preflights this child; preliminary
-            // rebuilding uses a prepared acyclic tree. In both cases it is
-            // distinct from the parent and all its ancestors.
-            && let Some(mut ty) = unsafe { ty.ty_mut() }
-        {
-            ty.item = item.clone();
-        }
-
-        item
+    ) -> Item {
+        Item::new(
+            &self.type_arena.items,
+            Id::new(self.client(), self.get_state(self.client())),
+            content,
+            left,
+            right,
+            parent,
+            parent_sub,
+        )
     }
 
     pub fn get_node<I: Into<Id>>(&self, id: I) -> Option<Node> {
-        self.get_node_with_idx(id).map(|(item, _)| item)
+        self.get_node_with_idx(id).map(|(node, _)| node)
+    }
+
+    pub(crate) fn get_node_id(&self, id: Id) -> Option<Id> {
+        let blocks = self.items.get(&id.client)?;
+        Some(Id::new(id.client, blocks.blocks[blocks.find(id.clock)?].clock))
     }
 
     pub fn get_node_with_idx<I: Into<Id>>(&self, id: I) -> Option<(Node, usize)> {
         let id = id.into();
-        if let Some(items) = self.items.get(&id.client)
-            && let Some(index) = Self::get_node_index(items, id.clock)
-        {
-            return items.get(index).map(|item| (item.clone(), index));
-        }
-
-        None
+        let blocks = self.items.get(&id.client)?;
+        let pos = blocks.find(id.clock)?;
+        Some((blocks.node(id.client, pos)?, pos))
     }
 
     pub fn split_node<I: Into<Id>>(&mut self, id: I, diff: u64) -> JwstCodecResult<(Node, Node)> {
-        debug_assert!(diff > 0);
-
         let id = id.into();
-
-        if let Some(items) = self.items.get_mut(&id.client)
-            && let Some(idx) = Self::get_node_index(items, id.clock)
-        {
-            let (left, right) = Self::split_node_at(items, idx, diff)?;
-            self.collector.merges.push(right.id());
-            return Ok((left, right));
-        }
-
-        Err(JwstCodecError::StructSequenceNotExists(id.client))
-    }
-
-    pub fn split_node_at(items: &mut VecDeque<Node>, idx: usize, diff: u64) -> JwstCodecResult<(Node, Node)> {
-        debug_assert!(diff > 0);
-
-        let node = items.get(idx).unwrap().clone();
-        debug_assert!(node.is_item());
-        if let Node::Item(item_ref) = &node {
-            let item = item_ref.get().unwrap();
-
-            let (left, right) = item.split_at(diff)?;
-
-            let left_ref = Somr::new(left);
-            let right_ref = Somr::new(right);
-
-            // SAFETY:
-            // we make sure store is the only entry of mutating an item,
-            // and we already hold mutable reference of store, so it's safe to
-            // do so
-            unsafe {
-                let mut left_item = item_ref.get_mut_unchecked();
-                let mut right_item = right_ref.get_mut_unchecked();
-                left_item
-                    .replace_content_with_len(left_ref.get_unchecked().content.clone(), left_ref.get_unchecked().len());
-
-                // we had the correct left/right content
-                // now build the references
-                let right_right_ref = left_item.right.clone();
-                right_item.left = if right_right_ref.is_some() {
-                    let mut right_right = right_right_ref.get_mut_unchecked();
-                    mem::replace(&mut right_right.left, right_ref.clone())
-                } else {
-                    item_ref.clone()
-                };
-                right_item.right = mem::replace(&mut left_item.right, right_ref.clone());
-                right_item.origin_left_id = Some(left_item.last_id());
-                right_item.origin_right_id = left_item.origin_right_id;
-            };
-
-            // Yjs `splitItem`: when the last value of a map key is split, its
-            // right half is the key's value now.
-            if let Some(right_item) = right_ref.get()
-                && right_item.right.is_none()
-                && let (Some(Parent::Type(parent)), Some(key)) = (&right_item.parent, &right_item.parent_sub)
-                // SAFETY: splits run under the store write lock. Callers that
-                // hold a type's data mutably only split list items, which have
-                // no parent_sub.
-                && let Some(mut parent) = unsafe { parent.ty_mut() }
-            {
-                parent.map.insert(key.clone(), right_ref.clone());
+        let (left, pos) = self
+            .get_node_with_idx(id)
+            .ok_or(JwstCodecError::StructSequenceNotExists(id.client))?;
+        let left_idx = left.as_item().ok_or(JwstCodecError::ItemSplitNotSupport)?;
+        let items = &mut self.type_arena.items;
+        items.check_capacity(1)?;
+        let item = items.get_mut(left_idx).expect("stored item");
+        debug_assert!(diff > 0 && diff < item.len);
+        let content = item.content.split_in_place(diff)?;
+        let len = item.len - diff;
+        item.len = diff;
+        let id = Id::new(id.client, item.id.clock + diff);
+        let next = item.right;
+        let mut right = Item {
+            id,
+            len,
+            content,
+            parent: item.parent,
+            parent_sub: item.parent_sub.clone(),
+            left: Some(left_idx),
+            right: next,
+            flags: item.flags,
+            ..Item::default()
+        };
+        right.set_origin_left_id(Some(item.last_id()));
+        right.set_origin_right_id(item.origin_right_id());
+        let update_key = if next.is_none() {
+            match (&right.parent, &right.parent_sub) {
+                (Some(parent), Some(key)) => Some((*parent, key.clone())),
+                _ => None,
             }
-
-            let right = Node::Item(right_ref);
-            let right_ref = right.clone();
-            items.insert(idx + 1, right);
-            Ok((node, right_ref))
         } else {
-            Err(JwstCodecError::ItemSplitNotSupport)
+            None
+        };
+        let right_idx = items.alloc(right)?;
+        items.get_mut(left_idx).expect("left item").right = Some(right_idx);
+        if let Some(next) = next {
+            items.get_mut(next).expect("right neighbor").left = Some(right_idx);
         }
+        if let Some((parent, key)) = update_key {
+            self.type_arena[parent].map_set(key, Some(right_idx));
+        }
+        let kind = if left.deleted() {
+            BlockKind::DeletedItem(right_idx)
+        } else {
+            BlockKind::Item(right_idx)
+        };
+        self.items
+            .get_mut(&id.client)
+            .expect("stored client")
+            .blocks
+            .insert(pos + 1, BlockRef { clock: id.clock, kind });
+        self.collector.merges.push(id);
+        Ok((Node { len: diff, ..left }, Node { id, len, kind }))
     }
 
     pub fn split_at_and_get_right<I: Into<Id>>(&mut self, id: I) -> JwstCodecResult<Node> {
         let id = id.into();
-        if let Some(items) = self.items.get_mut(&id.client)
-            && let Some(index) = Self::get_node_index(items, id.clock)
-        {
-            let item = items.get(index).unwrap().clone();
-            let offset = id.clock - item.clock();
-            if offset > 0 && item.is_item() {
-                let (_, right) = Self::split_node_at(items, index, offset)?;
-                self.collector.merges.push(right.id());
-                return Ok(right);
-            } else {
-                return Ok(item);
-            }
+        let node = self
+            .get_node(id)
+            .ok_or(JwstCodecError::StructSequenceNotExists(id.client))?;
+        let offset = id.clock - node.clock();
+        if offset != 0 && node.is_item() {
+            Ok(self.split_node(id, offset)?.1)
+        } else {
+            Ok(node)
         }
-
-        Err(JwstCodecError::StructSequenceNotExists(id.client))
     }
 
     pub fn split_at_and_get_left<I: Into<Id>>(&mut self, id: I) -> JwstCodecResult<Node> {
         let id = id.into();
-        if let Some(items) = self.items.get_mut(&id.client)
-            && let Some(index) = Self::get_node_index(items, id.clock)
-        {
-            let item = items.get(index).unwrap().clone();
-            let offset = id.clock - item.clock();
-            // only items split; GC and skip structs are returned whole
-            if offset != item.len() - 1 && !item.is_gc() && !item.is_skip() {
-                let (left, right) = Self::split_node_at(items, index, offset + 1)?;
-                self.collector.merges.push(right.id());
-                return Ok(left);
-            } else {
-                return Ok(item);
-            }
+        let node = self
+            .get_node(id)
+            .ok_or(JwstCodecError::StructSequenceNotExists(id.client))?;
+        let cut = id.clock - node.clock() + 1;
+        if cut < node.len() && node.is_item() {
+            Ok(self.split_node(id, cut)?.0)
+        } else {
+            Ok(node)
         }
-
-        Err(JwstCodecError::StructSequenceNotExists(id.client))
     }
 
-    // TODO: use function in code
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn self_check(&self) -> JwstCodecResult {
-        for structs in self.items.values() {
-            for i in 1..structs.len() {
-                let l = &structs[i - 1];
-                let r = &structs[i];
-                if l.clock() + l.len() != r.clock() {
-                    return Err(JwstCodecError::StructSequenceInvalid {
-                        client_id: l.client(),
-                        clock: l.clock(),
-                    });
+        let mut owned = HashSet::new();
+        let timelines = std::iter::once(self).chain(self.type_arena.types().filter_map(|ty| ty.preliminary.as_deref()));
+        for timeline in timelines {
+            for (&client, blocks) in &timeline.items {
+                for n in blocks.nodes(client) {
+                    if let Some(idx) = n.as_item() {
+                        let item = self
+                            .type_arena
+                            .items
+                            .get(idx)
+                            .ok_or(JwstCodecError::StructSequenceNotExists(client))?;
+                        if item.id != n.id || item.len != n.len || item.deleted() != n.deleted() || !owned.insert(idx) {
+                            return Err(JwstCodecError::StructSequenceInvalid {
+                                client_id: client,
+                                clock: n.clock(),
+                            });
+                        }
+                    }
                 }
             }
         }
-
+        let check = |idx| {
+            if owned.contains(&idx) {
+                Ok(())
+            } else {
+                Err(JwstCodecError::IncompleteDocument(
+                    "item slot has no timeline owner".into(),
+                ))
+            }
+        };
+        for (idx, item) in self.type_arena.items.live() {
+            check(idx)?;
+            for link in [item.left, item.right].into_iter().flatten() {
+                check(link)?;
+            }
+        }
+        for ty in self.type_arena.types() {
+            for link in [ty.start, ty.carrier_ref()]
+                .into_iter()
+                .flatten()
+                .chain(ty.map_iter().filter_map(|(_, link)| *link))
+                .chain(
+                    ty.markers
+                        .iter()
+                        .flat_map(|markers| markers.iter().filter_map(|marker| marker.ptr)),
+                )
+            {
+                check(link)?;
+            }
+        }
         Ok(())
     }
 
     // only for creating named type
-    pub fn get_or_create_type(&mut self, store_ref: &StoreRef, name: &str) -> YTypeRef {
-        match self.types.entry(name.to_string()) {
-            Entry::Occupied(e) => e.get().clone(),
-            Entry::Vacant(e) => {
-                let mut inner = YType::new(YTypeKind::Unknown, None);
-                inner.root_name = Some(name.to_string());
-                inner.published = true;
-
-                let ty = YTypeRef {
-                    store: Arc::downgrade(store_ref),
-                    inner: Somr::new(inner),
-                };
-                let ty_ref = ty.clone();
-                e.insert(ty);
-                ty_ref
-            }
+    pub fn get_or_create_type(&mut self, name: &str) -> JwstCodecResult<TypeIdx> {
+        if let Some(ty) = self.types.get(name) {
+            return Ok(*ty);
         }
+
+        let ty = self
+            .type_arena
+            .alloc(YType::new_root(YTypeKind::Unknown, None, name.to_string()))?;
+        self.types.insert(name.to_string(), ty);
+        Ok(ty)
     }
 
-    /// A repair for an item do such things:
-    ///   - split left if needed  (insert in between a splitable item)
-    ///   - split right if needed (insert in between a splitable item)
-    ///   - recover parent to [Parent::Type]
-    ///     - [Parent::String] for root level named type (e.g
-    ///       `doc.get_or_create_text("content")`)
-    ///     - [Parent::Id] for type as item (e.g `doc.create_text()`)
-    ///     - [None] means borrow left.parent or right.parent
-    pub fn repair(&mut self, item: &mut Item, store_ref: &StoreRef) -> JwstCodecResult {
+    /// Resolve the wire origins and parent before publishing an item.
+    fn repair(&mut self, item: &mut Item, parent: Option<WireParent>, offset: u64) -> JwstCodecResult {
         // Same-client origins are never deferred by the update iterator, which
         // assumes they precede the item; an item cannot anchor to a struct
         // created at or after itself (as `ReadDoc` checks).
-        for origin in [item.origin_left_id, item.origin_right_id].into_iter().flatten() {
+        for origin in [item.origin_left_id(), item.origin_right_id()].into_iter().flatten() {
             if origin.client == item.id.client && origin.clock >= item.id.clock {
                 return Err(JwstCodecError::InvalidParent);
             }
         }
 
-        if let Some(left_id) = item.origin_left_id {
-            if let Node::Item(left_ref) = self.split_at_and_get_left(left_id)? {
-                item.origin_left_id = left_ref.get().map(|left| left.last_id());
-                item.left = left_ref;
+        if let Some(left_id) = item.origin_left_id() {
+            if let Some(left_ref) = self.split_at_and_get_left(left_id)?.as_item() {
+                item.set_origin_left_id(self.type_arena.items.get(left_ref).map(|left| left.last_id()));
+                item.left = Some(left_ref);
             } else {
-                item.origin_left_id = None;
+                item.set_origin_left_id(None);
             }
         }
 
-        if let Some(right_id) = item.origin_right_id {
-            if let Node::Item(right_ref) = self.split_at_and_get_right(right_id)? {
-                item.origin_right_id = right_ref.get().map(|right| right.id);
-                item.right = right_ref;
+        if let Some(right_id) = item.origin_right_id() {
+            if let Some(right_ref) = self.split_at_and_get_right(right_id)?.as_item() {
+                item.set_origin_right_id(self.type_arena.items.get(right_ref).map(|right| right.id));
+                item.right = Some(right_ref);
             } else {
-                item.origin_right_id = None;
+                item.set_origin_right_id(None);
             }
         }
 
-        match &item.parent {
+        match &parent {
             // root level named type
             // doc.get_or_create_text("content");
-            //                         ^^^^^^^ Parent::String("content")
-            Some(Parent::String(str)) => {
-                let ty = self.get_or_create_type(store_ref, str);
-                item.parent.replace(Parent::Type(ty));
+            //                         ^^^^^^^ WireParent::Root("content")
+            Some(WireParent::Root(str)) => {
+                if !self.types.contains_key(str.as_str()) {
+                    self.type_arena.items.check_capacity(1 + usize::from(offset > 0))?;
+                }
+                let ty = self.get_or_create_type(str)?;
+                item.parent.replace(ty);
             }
             // type as item
             // let text = doc.create_text();
@@ -471,330 +444,343 @@ impl DocStore {
             // map.insert("p1", text);
             //
             // Item { id: (1, 0), content: Content::Type(_) }
-            //        ^^ Parent::Id((1, 0))
+            //        ^^ WireParent::Item((1, 0))
             // A same-client parent at or after the item cannot have been
             // created before it. Only a partially integrated item (offset > 0)
             // could find such a struct in the store, possibly its own prefix;
             // treat the parent as missing, like any parent not yet integrated,
             // so the item is kept as a GC range instead of being linked.
-            Some(Parent::Id(parent_id)) if parent_id.client == item.id.client && parent_id.clock >= item.id.clock => {
+            Some(WireParent::Item(parent_id))
+                if parent_id.client == item.id.client && parent_id.clock >= item.id.clock =>
+            {
                 item.parent = None;
             }
-            Some(Parent::Id(parent_id)) => {
+            Some(WireParent::Item(parent_id)) => {
                 // Only an integrated carrier can back a stored parent identity.
                 // The update iterator defers missing cross-client dependencies.
                 item.parent = self.get_node(*parent_id).and_then(|node| {
                     let carrier = node.as_item();
-                    match &carrier.get()?.content {
-                        Content::Type(ty) => Some(Parent::Type(ty.clone())),
+                    match &self.type_arena.items.get(carrier?)?.content {
+                        Content::Type(ty) => Some(*ty),
                         _ => None,
                     }
                 });
             }
             // no item.parent, borrow left.parent or right.parent
             None => {
-                if let Some(left) = item.left.get() {
-                    item.parent = left.parent.clone();
+                if let Some(left) = item.left.and_then(|i| self.type_arena.items.get(i)) {
+                    item.parent = left.parent;
                     item.parent_sub = left.parent_sub.clone();
-                } else if let Some(right) = item.right.get() {
-                    item.parent = right.parent.clone();
+                } else if let Some(right) = item.right.and_then(|i| self.type_arena.items.get(i)) {
+                    item.parent = right.parent;
                     item.parent_sub = right.parent_sub.clone();
                 }
             }
-            _ => {}
         };
-
-        // assign store in ytype to ensure store exists if a ytype not has any
-        // children
-        if let Content::Type(ty) = &mut item.content {
-            ty.store = Arc::downgrade(store_ref);
-
-            // we keep ty owner in dangling_types so the delete of any type will
-            // not make it dropped
-            if ty.inner.is_owned() {
-                let owned_inner = ty.inner.swap_take();
-                self.dangling_types.insert(
-                    ty.inner.ptr().as_ptr() as usize,
-                    YTypeRef {
-                        store: ty.store.clone(),
-                        inner: owned_inner,
-                    },
-                );
-            } else {
-                return Err(JwstCodecError::InvalidParent);
-            }
-        }
 
         Ok(())
     }
 
-    pub fn integrate(&mut self, mut node: Node, offset: u64, parent: Option<&mut YType>) -> JwstCodecResult {
-        let mut publish_child = false;
-        match &mut node {
-            Node::Item(item_owner_ref) => {
-                assert!(
-                    item_owner_ref.is_owned(),
-                    "Required a owned Item type but got an shared reference"
-                );
-
-                // SAFETY:
-                // before we integrate struct into store,
-                // the struct => Arc<Item> is owned reference actually,
-                // no one else refer to such item yet, we can safely mutable
-                // refer to it now.
-                let this = &mut *unsafe { item_owner_ref.get_mut_unchecked() };
-
-                if offset > 0 {
-                    this.id.clock += offset;
-                    if let Node::Item(left_ref) =
-                        self.split_at_and_get_left(Id::new(this.id.client, this.id.clock - 1))?
-                    {
-                        // The integrated prefix of this item becomes its left
-                        // neighbor. In honest updates it is the same item, so
-                        // it lives in the same list; a byzantine update can
-                        // claim another container for the remainder, which
-                        // would splice two lists together (or delete the
-                        // parent's own carrier as the "previous map value").
-                        if let Some(left) = left_ref.get()
-                            && !Self::same_container(left, this)
-                        {
-                            return Err(JwstCodecError::InvalidParent);
-                        }
-                        this.origin_left_id = left_ref.get().map(|left| left.last_id());
-                        this.left = left_ref;
-                    }
-                    let right_content = this.content.split(offset)?.1;
-                    this.replace_content_with_len(right_content, this.len - offset);
-                }
-
-                if let Some(Parent::Type(ty)) = &this.parent {
-                    // Corrupt updates may nest a type into itself or one of its
-                    // own descendants. Deleting items of such cyclic types
-                    // would re-lock an already held type lock and deadlock the
-                    // thread, so reject the cycle here instead.
-                    if let Content::Type(inner) = &this.content {
-                        if inner == ty {
-                            return Err(JwstCodecError::InvalidParent);
-                        }
-                        // When integrating from an update no type lock is held
-                        // yet, so the ancestry can be walked safely with read
-                        // locks. Mutation callers already hold the parent lock
-                        // and can only create direct loops, checked above.
-                        if parent.is_none() {
-                            let next_ancestor = |current: &YTypeRef| {
-                                current.ty().and_then(|t| {
-                                    t.item.get().and_then(|item| match &item.parent {
-                                        Some(Parent::Type(parent_ty)) => Some(parent_ty.clone()),
-                                        _ => None,
-                                    })
-                                })
-                            };
-                            let mut visited = HashSet::new();
-                            let mut ancestor = next_ancestor(ty);
-                            while let Some(current) = ancestor {
-                                if !visited.insert(current.clone()) {
-                                    break;
-                                }
-                                if current == *inner {
-                                    return Err(JwstCodecError::InvalidParent);
-                                }
-                                ancestor = next_ancestor(&current);
-                            }
-                        }
-                    }
-                }
-
-                let mut parent_ref = None;
-                let parent = if let Some(parent) = parent {
-                    Some(parent)
-                } else {
-                    if let Some(Parent::Type(ty)) = &this.parent {
-                        // SAFETY: remote integration holds the store write
-                        // lock and no other type reference; the cycle check
-                        // above keeps `this.content` distinct from the parent.
-                        parent_ref = unsafe { ty.ty_mut() };
-                    }
-                    parent_ref.as_deref_mut()
-                };
-
-                let parent = parent.and_then(|parent| {
-                    let deleted = match parent.item.get() {
-                        Some(item) if matches!(item.content, Content::Type(_)) => item.deleted(),
-                        // Named roots and private staging roots have no
-                        // carrier.
-                        None if parent.root_name.is_some() || parent.is_preliminary() && parent.item.is_unset() => {
-                            false
-                        }
-                        // Collection either replaced the containing item or
-                        // dropped its type content.
-                        _ => return None,
-                    };
-                    Some((parent, deleted))
-                });
-
-                if let (Some(Parent::Type(ty)), Some((parent, parent_deleted))) = (&this.parent, parent) {
-                    // Neighbors resolved from origins must share this item's
-                    // list; otherwise linking would cross containers.
-                    for neighbor in [&this.left, &this.right] {
-                        if let Some(neighbor) = neighbor.get()
-                            && !Self::same_container(neighbor, this)
-                        {
-                            return Err(JwstCodecError::InvalidParent);
-                        }
-                    }
-                    publish_child = parent.published;
-                    if matches!(this.content, Content::Format { .. }) {
-                        parent.has_formatting = true;
-                    }
-                    let mut left = this.left.clone();
-                    let mut right = this.right.clone();
-
-                    let right_is_null_or_has_left = match right.get() {
-                        None => true,
-                        Some(r) => r.left.is_some(),
-                    };
-
-                    let left_has_other_right_than_self = match left.get() {
-                        Some(left) => left.right != right,
-                        _ => false,
-                    };
-
-                    // conflicts
-                    if left.is_none() && right_is_null_or_has_left || left_has_other_right_than_self {
-                        // set the first conflicting item
-                        let conflict = if let Some(left) = left.get() {
-                            left.right.clone()
-                        } else if let Some(parent_sub) = &this.parent_sub {
-                            // The map stores the winning tail; conflict
-                            // scanning without a left neighbor must start at
-                            // the chain head.
-                            parent
-                                .map
-                                .get(parent_sub)
-                                .map(|item| Node::Item(item.clone()).head().as_item())
-                                .unwrap_or_else(Somr::none)
-                        } else {
-                            parent.start.clone()
-                        };
-
-                        left = find_conflict_left(
-                            ConflictItem {
-                                id: this.id,
-                                origin_left: this.origin_left_id,
-                                origin_right: this.origin_right_id,
-                            },
-                            left.is_some().then(|| left.clone()),
-                            conflict.is_some().then(|| conflict.clone()),
-                            right.is_some().then(|| right.clone()),
-                            |item| {
-                                item.get().map(|item| ConflictItem {
-                                    id: item.id,
-                                    origin_left: item.origin_left_id,
-                                    origin_right: item.origin_right_id,
-                                })
-                            },
-                            |item| {
-                                item.get()
-                                    .and_then(|item| item.right.is_some().then(|| item.right.clone()))
-                            },
-                            |id| self.get_node(id).map(|node| node.id()),
-                        )
-                        .unwrap_or_else(Somr::none);
-                    }
-
-                    // reconnect left/right
-                    // has left, connect left <-> self <-> left.right
-                    if left.is_some() {
-                        unsafe {
-                            // SAFETY: we get store write lock, no way the left
-                            // get dropped by owner
-                            let mut left = left.get_mut_unchecked();
-                            right = left.right.clone();
-                            left.right = item_owner_ref.clone();
-                        }
-                        this.left = left.clone();
-                    } else {
-                        // no left, parent.start = this
-                        right = if let Some(parent_sub) = &this.parent_sub {
-                            parent.map.get(parent_sub).map(|n| Node::Item(n.clone()).head()).into()
-                        } else {
-                            mem::replace(&mut parent.start, item_owner_ref.clone())
-                        };
-                        this.left = Somr::none();
-                    }
-
-                    // has right, connect
-                    if right.is_some() {
-                        unsafe {
-                            // SAFETY: we get store write lock, no way the left
-                            // get dropped by owner
-                            let mut right = right.get_mut_unchecked();
-                            right.left = item_owner_ref.clone();
-                        }
-                    } else {
-                        // no right, parent.start = this, delete this.left
-                        if let Some(parent_sub) = &this.parent_sub {
-                            parent.map.insert(parent_sub.clone(), item_owner_ref.clone());
-
-                            if let Some(left) = this.left.get() {
-                                self.delete_item(left, Some(parent));
-                            }
-                        }
-                    }
-                    this.right = right.clone();
-
-                    // Yjs `ContentDoc.integrate`, before a deletion below can
-                    // take it back
-                    if let Content::Doc { guid, .. } = &this.content {
-                        self.collector.subdocs_added.push((this.id, guid.clone()));
-                    }
-
-                    // should delete
-                    if parent_deleted || this.parent_sub.is_some() && this.right.is_some() {
-                        self.delete_node(&Node::Item(item_owner_ref.clone()), Some(parent));
-                    } else {
-                        // adjust parent length
-                        if this.parent_sub.is_none() && this.countable() {
-                            parent.len += this.len();
-                        }
-                    }
-
-                    // mark changed item's parent
-                    Self::mark_changed(&mut self.collector.changed, ty.clone(), this.parent_sub.clone());
-                } else {
-                    // Preserve the integrated clock range when the parent is
-                    // missing or collected.
-                    node = Node::new_gc(this.id, this.len());
-                }
+    pub(crate) fn integrate_wire(&mut self, wire: WireStruct, offset: u64) -> JwstCodecResult {
+        let wire = match wire {
+            WireStruct::Gc { id, len } => {
+                let len = len
+                    .checked_sub(offset)
+                    .filter(|&n| n > 0)
+                    .ok_or_else(|| JwstCodecError::IncompleteDocument("zero-length struct".into()))?;
+                return self.add_node(Node::new_gc(id + offset, len));
             }
-            Node::GC(item) => {
-                if offset > 0 {
-                    item.id.clock += offset;
-                    item.len -= offset;
-                }
-            }
-            Node::Skip(_) => {
-                // skip ignored
-            }
+            WireStruct::Skip { id, len } => return self.add_node(Node::new_skip(id, len)),
+            WireStruct::Item(wire) => *wire,
+        };
+        let WireItem {
+            id,
+            len,
+            origin_left_id,
+            origin_right_id,
+            parent,
+            parent_sub,
+            content,
+            flags,
+        } = wire;
+        let mut item = Item {
+            id,
+            len,
+            left: None,
+            right: None,
+            parent: None,
+            parent_sub,
+            // repair resolves neighbors and the parent, never the content,
+            // which is stored only once those are known to exist
+            content: Content::Deleted(len),
+            flags: flags.into(),
+            ..Item::default()
+        };
+        item.set_origin_left_id(origin_left_id);
+        item.set_origin_right_id(origin_right_id);
+        // Every type this struct adds, its own and the root it may name for
+        // the first time, fits or none is added: a root is not left behind
+        // for a type that found no slot.
+        let new_root = matches!(&parent, Some(WireParent::Root(name)) if !self.types.contains_key(name.as_str()));
+        let new_type = matches!(content, WireContent::Type { .. });
+        self.type_arena
+            .check_capacity(usize::from(new_root) + usize::from(new_type))?;
+        if len <= offset {
+            return Err(JwstCodecError::IncompleteDocument("zero-length struct".into()));
         }
-        let child = match &node {
-            Node::Item(item) => match &item.get().unwrap().content {
-                Content::Type(ty) => Some(ty.clone()),
-                _ => None,
-            },
+        self.repair(&mut item, parent, offset)?;
+
+        // A type decoded from the wire enters the arena with its carrier and
+        // leaves it again unless that carrier ends up in the store: nothing
+        // else can refer to the new slot before then.
+        let types_before = self.type_arena.len();
+        item.content = content.into_content(&mut self.type_arena)?;
+        let child = match &item.content {
+            Content::Type(ty) => Some(*ty),
             _ => None,
         };
-        self.add_node(node)?;
-        if let Some(child) = child {
-            if publish_child {
-                // SAFETY: the document write lock is held. The child's carrying
-                // item was just added, and the acyclic child is distinct from
-                // the parent. This covers local, remote and rebuilt children.
-                unsafe { child.ty_mut() }.unwrap().published = true;
-            }
-            self.integrate_preliminary(&child)?;
+        let result = self.integrate_item(item, offset, None);
+        if child.is_some() && !matches!(result, Ok(Some(_))) {
+            self.type_arena.rollback(types_before);
         }
+        result.map(|_| ())
+    }
+
+    pub fn integrate_item(&mut self, mut this: Item, offset: u64, parent: Option<TypeIdx>) -> JwstCodecResult<ItemRef> {
+        if this.len() <= offset {
+            return Err(JwstCodecError::IncompleteDocument("zero-length struct".into()));
+        }
+        if offset > 0 {
+            this.id.clock += offset;
+            if let Some(left_ref) = self
+                .split_at_and_get_left(Id::new(this.id.client, this.id.clock - 1))?
+                .as_item()
+            {
+                // The integrated prefix of this item becomes its left
+                // neighbor. In honest updates it is the same item, so
+                // it lives in the same list; a byzantine update can
+                // claim another container for the remainder, which
+                // would splice two lists together (or delete the
+                // parent's own carrier as the "previous map value").
+                if let Some(left) = self.type_arena.items.get(left_ref)
+                    && !Self::same_container(left, &this)
+                {
+                    return Err(JwstCodecError::InvalidParent);
+                }
+                this.set_origin_left_id(self.type_arena.items.get(left_ref).map(|left| left.last_id()));
+                this.left = Some(left_ref);
+            }
+            let right_content = this.content.split(offset)?.1;
+            this.replace_content_with_len(right_content, this.len - offset);
+        }
+
+        if let Some(ty) = &this.parent {
+            // Corrupt updates may nest a type into itself or one of its
+            // own descendants. Deleting or collecting the items of
+            // such cyclic types would never end, so reject the cycle
+            // here instead.
+            if let Content::Type(inner) = &this.content {
+                if inner == ty {
+                    return Err(JwstCodecError::InvalidParent);
+                }
+                // An update can claim any stored type as the parent,
+                // so walk its ancestors. Local callers insert a type
+                // they checked before (`check_insertable`) and can
+                // only create direct loops, checked above.
+                if parent.is_none() {
+                    let mut visited = HashSet::new();
+                    let mut ancestor = self.type_arena.parent_of(*ty);
+                    while let Some(current) = ancestor {
+                        if !visited.insert(current) {
+                            break;
+                        }
+                        if current == *inner {
+                            return Err(JwstCodecError::InvalidParent);
+                        }
+                        ancestor = self.type_arena.parent_of(current);
+                    }
+                }
+            }
+        }
+
+        let parent = parent.or(this.parent);
+
+        let parent = parent.and_then(|parent| {
+            let ty = self.type_arena.get(parent)?;
+            let deleted = match ty.carrier(&self.type_arena.items) {
+                Carrier::Live(item) => item.deleted(),
+                // Named roots and private staging roots have no
+                // carrier.
+                Carrier::Unset if ty.root_name().is_some() || ty.is_preliminary() => false,
+                // Collection either replaced the containing item or
+                // dropped its type content.
+                _ => return None,
+            };
+            Some((parent, deleted))
+        });
+
+        if let (Some(ty), Some((parent, parent_deleted))) = (this.parent, parent) {
+            // Neighbors resolved from origins must share this item's
+            // list; otherwise linking would cross containers.
+            for neighbor in [&this.left, &this.right] {
+                if let Some(neighbor) = neighbor.and_then(|i| self.type_arena.items.get(i))
+                    && !Self::same_container(neighbor, &this)
+                {
+                    return Err(JwstCodecError::InvalidParent);
+                }
+            }
+            let publish_child = self.type_arena[parent].published;
+            let is_format = matches!(this.content, Content::Format(_));
+            let mut left = this.left;
+            let right = this.right;
+
+            let right_is_null_or_has_left = match right.and_then(|i| self.type_arena.items.get(i)) {
+                None => true,
+                Some(r) => r.left.is_some(),
+            };
+
+            let left_has_other_right_than_self = match left.and_then(|i| self.type_arena.items.get(i)) {
+                Some(left) => left.right != right,
+                _ => false,
+            };
+
+            // conflicts
+            if left.is_none() && right_is_null_or_has_left || left_has_other_right_than_self {
+                // set the first conflicting item
+                let conflict = if let Some(left) = left.and_then(|i| self.type_arena.items.get(i)) {
+                    left.right
+                } else if let Some(parent_sub) = &this.parent_sub {
+                    // The map stores the winning tail; conflict
+                    // scanning without a left neighbor must start at
+                    // the chain head.
+                    self.type_arena[parent]
+                        .map_get(parent_sub)
+                        .and_then(|item| self.head(*item))
+                } else {
+                    self.type_arena[parent].start
+                };
+
+                left = find_conflict_left(
+                    ConflictItem {
+                        id: this.id,
+                        origin_left: this.origin_left_id(),
+                        origin_right: this.origin_right_id(),
+                    },
+                    left,
+                    conflict,
+                    right,
+                    |item| {
+                        self.type_arena.items.get(*item).map(|item| ConflictItem {
+                            id: item.id,
+                            origin_left: item.origin_left_id(),
+                            origin_right: item.origin_right_id(),
+                        })
+                    },
+                    |item| self.type_arena.items.get(*item).and_then(|item| item.right),
+                    |id| self.get_node_id(id),
+                );
+            }
+
+            let right = if let Some(left) = left {
+                self.type_arena.items.get(left).expect("left neighbor").right
+            } else if let Some(ref key) = this.parent_sub {
+                self.type_arena[parent].map_get(key).and_then(|i| self.head(*i))
+            } else {
+                self.type_arena[parent].start
+            };
+            this.left = left;
+            this.right = right;
+            let id = this.id;
+            let len = this.len;
+            let key = this.parent_sub.clone();
+            let child = if let Content::Type(child) = this.content {
+                Some(child)
+            } else {
+                None
+            };
+            let deleted = this.deleted();
+            let countable = this.countable();
+            let new_subdoc = match &this.content {
+                Content::Doc(doc) => Some(doc.guid.clone()),
+                _ => None,
+            };
+            self.check_append(id, len)?;
+            let prepared = child
+                .filter(|child| self.type_arena[*child].preliminary.is_some())
+                .map(|child| self.prepare_preliminary(child, id, len))
+                .transpose()?;
+            let idx = self.type_arena.items.alloc(this)?;
+            if is_format {
+                self.type_arena[parent].has_formatting = true;
+            }
+            let kind = if deleted {
+                BlockKind::DeletedItem(idx)
+            } else {
+                BlockKind::Item(idx)
+            };
+            self.add_node(Node { id, len, kind })?;
+            if let Some(left) = left {
+                self.type_arena.items.get_mut(left).expect("left neighbor").right = Some(idx);
+            } else if key.is_none() {
+                self.type_arena[parent].start = Some(idx);
+            }
+            if let Some(right) = right {
+                self.type_arena.items.get_mut(right).expect("right neighbor").left = Some(idx);
+            } else if let Some(key) = &key {
+                self.type_arena[parent].map_set(key.clone(), Some(idx));
+                if let Some(left) = left {
+                    self.delete_item(left, Some(parent));
+                }
+            }
+            if let Some(child) = child {
+                self.type_arena[child].attach(Some(idx), Some(parent));
+                if publish_child {
+                    self.type_arena[child].published = true;
+                }
+            }
+            if let Some(guid) = new_subdoc {
+                self.collector.subdocs_added.push((id, guid));
+            }
+            if parent_deleted || key.is_some() && right.is_some() {
+                self.delete_item(idx, Some(parent));
+            } else if key.is_none() && countable {
+                self.type_arena[parent].len += len;
+            }
+            Self::mark_changed(&mut self.collector.changed, ty, key);
+            if let Some(prepared) = prepared {
+                prepared.mount(self)?;
+            }
+            Ok(Some(idx))
+        } else {
+            self.add_node(Node::new_gc(this.id, this.len()))?;
+            Ok(None)
+        }
+    }
+
+    fn check_append(&self, id: Id, len: u64) -> JwstCodecResult {
+        if let Some(blocks) = self.items.get(&id.client)
+            && blocks.len() != 0
+            && blocks.end_clock != id.clock
+        {
+            return Err(JwstCodecError::StructClockInvalid {
+                expect: blocks.end_clock,
+                actually: id.clock,
+            });
+        }
+        id.clock
+            .checked_add(len)
+            .ok_or_else(|| JwstCodecError::IncompleteDocument("struct clock overflow".into()))?;
         Ok(())
+    }
+
+    fn head(&self, mut cursor: ItemRef) -> ItemRef {
+        while let Some(left) = cursor
+            .and_then(|i| self.type_arena.items.get(i))
+            .and_then(|item| item.left)
+        {
+            cursor = Some(left);
+        }
+        cursor
     }
 
     /// Whether two items are in the same list: the same parent type and, for
@@ -802,245 +788,151 @@ impl DocStore {
     /// collected instead of linked, so it matches anything.
     fn same_container(other: &Item, this: &Item) -> bool {
         match (&other.parent, &this.parent) {
-            (Some(Parent::Type(a)), Some(Parent::Type(b))) => a == b && other.parent_sub == this.parent_sub,
-            (_, Some(Parent::Type(_))) => false,
+            (Some(a), Some(b)) => a == b && other.parent_sub == this.parent_sub,
+            (_, Some(_)) => false,
             _ => true,
         }
     }
 
-    pub fn delete_item(&mut self, item: &Item, parent: Option<&mut YType>) {
-        self.has_deleted_structs = true;
-        let mut pending_delete_sets = HashMap::new();
-        Self::delete_item_inner(&mut pending_delete_sets, &mut self.collector, item, parent);
-        self.add_deleted(pending_delete_sets);
+    pub fn delete_item(&mut self, idx: ItemIdx, parent: Option<TypeIdx>) {
+        let mut deleted = HashMap::new();
+        self.delete_item_inner(idx, parent, &mut deleted);
+        self.add_deleted(deleted);
     }
 
-    /// Records ranges deleted for the first time.
-    fn add_deleted(&mut self, ranges: HashMap<u64, Vec<Range<u64>>>) {
+    fn add_deleted(&mut self, ranges: HashMap<Client, Vec<Range<u64>>>) {
         for (client, ranges) in ranges {
             self.collector.deleted.batch_add_ranges(client, ranges);
         }
     }
 
-    /// Deletes `item` and, for a type, everything nested in it. Nested types
-    /// are walked with an explicit stack in the order Yjs recurses (each
-    /// child's subtree before its next sibling), so a deeply nested update
-    /// cannot overflow the thread stack, and at most one nested type is
-    /// borrowed mutably at a time.
     fn delete_item_inner(
-        delete_set: &mut HashMap<u64, Vec<Range<u64>>>,
-        collector: &mut Collector,
-        item: &Item,
-        parent: Option<&mut YType>,
+        &mut self,
+        idx: ItemIdx,
+        parent: Option<TypeIdx>,
+        deleted: &mut HashMap<Client, Vec<Range<Clock>>>,
     ) {
-        let Some(ty) = Self::delete_one(delete_set, collector, item, parent) else {
+        let Some(ty) = self.delete_one(idx, parent, deleted) else {
             return;
         };
-
-        // types whose children are being deleted, innermost last
-        let mut stack = vec![DeleteFrame::new(ty)];
+        let mut stack = vec![DeleteFrame::new(&self.type_arena, ty)];
         while let Some(frame) = stack.last_mut() {
-            let DeleteFrame { ty, cursor, map_values } = frame;
-            // SAFETY: store write lock held; the type tree is acyclic, so `ty`
-            // is neither the `parent` borrowed by the caller nor any other
-            // type on this stack, and no other borrow of it is alive. Local
-            // inserts keep it acyclic because `check_insertable` inserts a
-            // type at most once and walks its new ancestors; integrate rejects
-            // cycles in remote updates.
-            let Some(mut ty) = (unsafe { ty.ty_mut() }) else {
+            let ty = frame.ty;
+            let next = if let Some(cursor) = frame.cursor {
+                frame.cursor = self.type_arena.items.get(cursor).expect("child").right;
+                Some(cursor)
+            } else {
+                frame
+                    .map_values
+                    .get_or_insert_with(|| {
+                        self.type_arena[ty]
+                            .map_values()
+                            .copied()
+                            .collect::<Vec<_>>()
+                            .into_iter()
+                    })
+                    .next()
+                    .flatten()
+            };
+            let Some(child) = next else {
                 stack.pop();
                 continue;
             };
-
-            let mut nested = None;
-            // 4. delete all children: list items first, then map values
-            if map_values.is_none() {
-                while let Some(child) = cursor.get() {
-                    let next = child.right.clone();
-                    // items in ty are all refs, not owned
-                    // children deleted earlier are not in this delete set; Yjs
-                    // `ContentType.delete` queues them for merging
-                    if child.deleted() {
-                        collector.merges.push(child.id);
-                    } else {
-                        nested = Self::delete_one(delete_set, collector, child, Some(&mut ty));
-                    }
-                    *cursor = next;
-                    if nested.is_some() {
-                        break;
-                    }
-                }
-                if nested.is_none() {
-                    *map_values = Some(ty.map.values().cloned().collect::<Vec<_>>().into_iter());
-                }
-            }
-            if nested.is_none()
-                && let Some(values) = map_values
-            {
-                for child in values.by_ref() {
-                    if let Some(child) = child.get() {
-                        if child.deleted() {
-                            collector.merges.push(child.id);
-                        } else {
-                            nested = Self::delete_one(delete_set, collector, child, Some(&mut ty));
-                            if nested.is_some() {
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-            // `ty` (no drop glue) is no longer used: pushing the nested
-            // frame below ends its borrow of this one
-
-            match nested {
-                Some(nested) => stack.push(DeleteFrame::new(nested)),
-                None => {
-                    stack.pop();
-                }
+            let item = self.type_arena.items.get(child).expect("child");
+            if item.deleted() {
+                self.collector.merges.push(item.id);
+            } else if let Some(nested) = self.delete_one(child, Some(ty), deleted) {
+                stack.push(DeleteFrame::new(&self.type_arena, nested));
             }
         }
     }
 
-    /// Deletes a single item without descending into its content. Returns the
-    /// type it carries when its children still have to be deleted.
     fn delete_one(
-        delete_set: &mut HashMap<u64, Vec<Range<u64>>>,
-        collector: &mut Collector,
-        item: &Item,
-        parent: Option<&mut YType>,
-    ) -> Option<YTypeRef> {
-        // 1. mark item as deleted, if item is gced, return
+        &mut self,
+        idx: ItemIdx,
+        parent: Option<TypeIdx>,
+        deleted: &mut HashMap<Client, Vec<Range<Clock>>>,
+    ) -> Option<TypeIdx> {
+        let item = self.type_arena.items.get_mut(idx).expect("stored item");
         if !item.delete() {
             return None;
         }
-
-        // 2. add it to delete set
-        let range = item.id.clock..item.id.clock + item.len();
-        delete_set
-            .entry(item.id.client)
-            .and_modify(|v| v.push(range.clone()))
-            .or_insert(vec![range]);
-
-        // 3. adjust parent length
-        if item.parent_sub.is_none() && item.countable() {
-            if let Some(parent) = parent {
-                if parent.len != 0 {
-                    parent.len -= item.len();
-                }
-            } else if let Some(Parent::Type(ty)) = &item.parent
-                // SAFETY: store write lock held; without `parent` the caller
-                // holds no reference to this type.
-                && let Some(mut ty) = unsafe { ty.ty_mut() }
-            {
-                ty.len -= item.len();
-            }
+        let id = item.id;
+        let len = item.len;
+        let blocks = self.items.get_mut(&id.client).expect("stored client");
+        let pos = blocks.find(id.clock).expect("stored clock");
+        debug_assert_eq!(blocks.blocks[pos].clock, id.clock);
+        debug_assert!(matches!(blocks.blocks[pos].kind, BlockKind::Item(i) | BlockKind::DeletedItem(i) if i == idx));
+        blocks.blocks[pos].kind = BlockKind::DeletedItem(idx);
+        self.has_deleted_structs = true;
+        deleted.entry(id.client).or_default().push(id.clock..id.clock + len);
+        let owner = item.parent;
+        let visible = item.parent_sub.is_none() && item.countable();
+        if let Some(owner) = owner {
+            Self::mark_changed(&mut self.collector.changed, owner, item.parent_sub.clone());
         }
-
         let nested = match &item.content {
-            Content::Type(ty) => Some(ty.clone()),
-            // Yjs `ContentDoc.delete`: a subdocument added by this
-            // transaction is no longer added, any other one is removed
-            Content::Doc { guid, .. } => {
-                if let Some(pos) = collector.subdocs_added.iter().position(|(id, _)| *id == item.id) {
-                    collector.subdocs_added.swap_remove(pos);
+            Content::Type(ty) => Some(*ty),
+            Content::Doc(doc) => {
+                let guid = &doc.guid;
+                if let Some(pos) = self.collector.subdocs_added.iter().position(|(old, _)| *old == id) {
+                    self.collector.subdocs_added.swap_remove(pos);
                 } else {
-                    collector.subdocs_removed.push(guid.clone());
+                    self.collector.subdocs_removed.push(guid.clone());
                 }
                 None
             }
             _ => None,
         };
-
-        // mark deleted item's parent
-        if let Some(Parent::Type(ty)) = &item.parent {
-            Self::mark_changed(&mut collector.changed, ty.clone(), item.parent_sub.clone());
+        if visible
+            && let Some(ty) = parent.or(owner)
+            && self.type_arena[ty].len != 0
+        {
+            self.type_arena[ty].len -= len;
         }
-
         nested
     }
 
-    pub fn delete_node(&mut self, struct_info: &Node, parent: Option<&mut YType>) {
-        if let Some(item) = struct_info.as_item().get() {
-            self.delete_item(item, parent);
-        }
-    }
-
-    pub fn delete_range(&mut self, client: u64, range: Range<u64>) -> JwstCodecResult {
-        let start = range.start;
-        let end = range.end;
-
-        if let Some(items) = self.items.get_mut(&client)
-            && let Some(mut idx) = DocStore::get_node_index(items, start)
-        {
-            {
-                // id.clock <= range.start < id.end
-                // need to split the item and delete the right part
-                // -----item-----
-                //    ^start
-                let node = &items[idx];
-                let id = node.id();
-
-                if !node.deleted() && id.clock < start {
-                    let (_, right) = DocStore::split_node_at(items, idx, start - id.clock)?;
-                    self.collector.merges.push(right.id());
-                    idx += 1;
-                }
-            };
-
-            let mut pending_delete_sets = HashMap::new();
-            while idx < items.len() {
-                let node = &items[idx];
-                let id = node.id();
-
-                if id.clock < end {
-                    if !node.deleted() && node.is_item() {
-                        // need to split the item
-                        // -----item-----
-                        //           ^end
-                        if end < id.clock + node.len() {
-                            let (_, right) = DocStore::split_node_at(items, idx, end - id.clock)?;
-                            self.collector.merges.push(right.id());
-                        }
-
-                        // borrow after the split: split_node_at mutates the
-                        // item in place and would
-                        // invalidate a guard acquired earlier
-                        if let Node::Item(owner) = &items[idx]
-                            && let Some(item) = owner.get()
-                        {
-                            self.has_deleted_structs = true;
-                            Self::delete_item_inner(&mut pending_delete_sets, &mut self.collector, item, None);
-                        }
-                    }
-                } else {
-                    break;
-                }
-                idx += 1;
-            }
-            self.add_deleted(pending_delete_sets);
+    pub fn delete_range(&mut self, client: Client, range: Range<Clock>) -> JwstCodecResult {
+        let Some(node) = self.get_node(Id::new(client, range.start)) else {
+            return Ok(());
         };
-
+        if range.is_empty() {
+            return Ok(());
+        }
+        let split_start = !node.deleted() && node.is_item() && range.start > node.clock();
+        let split_end = self
+            .get_node(Id::new(client, range.end))
+            .is_some_and(|n| n.is_item() && !n.deleted() && range.end > n.clock());
+        self.type_arena
+            .items
+            .check_capacity(usize::from(split_start) + usize::from(split_end))?;
+        if split_start {
+            self.split_at_and_get_right(Id::new(client, range.start))?;
+        }
+        let mut clock = range.start;
+        let mut deleted = HashMap::new();
+        while clock < range.end {
+            let Some(node) = self.get_node(Id::new(client, clock)) else {
+                break;
+            };
+            let end = node.clock() + node.len();
+            if !node.deleted()
+                && let Some(idx) = node.as_item()
+            {
+                // An earlier carrier may already have deleted this entire item.
+                if range.end < end
+                    && let Err(err) = self.split_node(node.id, range.end - node.clock())
+                {
+                    self.add_deleted(deleted);
+                    return Err(err);
+                }
+                self.delete_item_inner(idx, None, &mut deleted);
+            }
+            clock = end;
+        }
+        self.add_deleted(deleted);
         Ok(())
-    }
-
-    fn diff_state_vectors(local_state_vector: &StateVector, remote_state_vector: &StateVector) -> Vec<(Client, Clock)> {
-        let mut diff = Vec::new();
-
-        for (client, &remote_clock) in remote_state_vector.iter() {
-            let local_clock = local_state_vector.get(client);
-            if local_clock > remote_clock {
-                diff.push((*client, remote_clock));
-            }
-        }
-
-        for (client, _) in local_state_vector.iter() {
-            if remote_state_vector.get(client) == 0 {
-                diff.push((*client, 0));
-            }
-        }
-
-        diff
     }
 
     pub fn write_state_as_update<W: CrdtWriter>(&self, sv: &StateVector, encoder: &mut W) -> JwstCodecResult {
@@ -1048,26 +940,24 @@ impl DocStore {
             return self.diff_state_vector(sv)?.write(encoder);
         }
 
+        self.write_structs_since(sv, encoder)?;
+        if self.has_deleted_structs {
+            Self::generate_delete_set(&self.items).write(encoder)
+        } else {
+            encoder.write_var_u64(0)
+        }
+    }
+
+    pub(crate) fn write_structs_since<W: CrdtWriter>(&self, sv: &StateVector, encoder: &mut W) -> JwstCodecResult {
         // The store read lock keeps the borrowed structs alive until encoding
         // finishes. Only a recipient clock inside a struct needs a split.
         let mut clients = Vec::new();
         for (&client, nodes) in &self.items {
-            let Some((first, last)) = nodes.front().zip(nodes.back()) else {
-                continue;
-            };
-            let clock = sv.get(&client).max(first.clock());
-            if clock >= last.clock() + last.len() {
-                continue;
-            }
-            let Some(start) = Self::get_node_index(nodes, clock) else {
-                continue;
-            };
-            // Integrated updates can contain empty structs. Keep their
-            // encoding consistent with Update::write.
-            let count = nodes.range(start..).filter(|node| node.len() > 0).count();
-            if count != 0 {
-                clients.push((client, clock, nodes, start, count));
-            }
+            let Some(first) = nodes.blocks.front() else { continue };
+            let clock = sv.get(&client).max(first.clock);
+            let Some(start) = nodes.find(clock) else { continue };
+            let count = nodes.nodes(client).skip(start).filter(|node| node.len > 0).count();
+            clients.push((client, clock, nodes, start, count));
         }
         clients.sort_unstable_by_key(|entry| std::cmp::Reverse(entry.0));
 
@@ -1076,26 +966,25 @@ impl DocStore {
             encoder.write_var_u64(count as u64)?;
             encoder.write_var_u64(client)?;
             encoder.write_var_u64(clock)?;
-            let first = &nodes[start];
+            let first = nodes.node(client, start).expect("first block");
             let offset = clock - first.clock();
             if offset == 0 {
-                first.write(encoder)?;
+                first.write(&self.type_arena, encoder)?;
             } else {
-                first.split_at(offset)?.1.write(encoder)?;
+                WireStruct::from_node(&self.type_arena, &first)?
+                    .split_at(offset)?
+                    .1
+                    .write(encoder)?;
             }
-            for node in nodes.range(start + 1..).filter(|node| node.len() > 0) {
-                node.write(encoder)?;
+            for node in nodes.nodes(client).skip(start + 1).filter(|node| node.len() > 0) {
+                node.write(&self.type_arena, encoder)?;
             }
         }
-        if self.has_deleted_structs {
-            Self::generate_delete_set(&self.items).write(encoder)
-        } else {
-            encoder.write_var_u64(0)
-        }
+        Ok(())
     }
 
     fn diff_state_vector(&self, sv: &StateVector) -> JwstCodecResult<Update> {
-        let update_structs = Self::diff_structs(&self.items, sv)?;
+        let update_structs = Self::diff_structs(&self.type_arena, &self.items, sv)?;
 
         let mut update = Update {
             structs: update_structs,
@@ -1106,10 +995,8 @@ impl DocStore {
         if let Some(pending) = &self.pending {
             // Pending does not mean unknown to the recipient. Apply its SV to
             // these ranges too, while retaining deletions for missing targets.
-            // The structs are shared with `self.pending`: the result is only
-            // used under the store lock.
             let pending = Update {
-                structs: Self::diff_structs(&pending.structs, sv)?,
+                structs: Self::diff_ranges(&pending.structs, sv, |n| (n.clock(), n.len()), |n| Ok(n.clone()))?,
                 delete_set: pending.delete_set.clone(),
                 pending_structs: pending.pending_structs.clone(),
                 missing_state: pending.missing_state.clone(),
@@ -1121,13 +1008,11 @@ impl DocStore {
         Ok(update)
     }
 
-    fn mark_changed(changed: &mut ChangedTypeRefs, parent: YTypeRef, parent_sub: Option<SmolStr>) {
-        if parent.inner.is_some() {
-            let vec = changed.entry(parent).or_default();
-            if let Some(parent_sub) = parent_sub {
-                // only record the sub key if exists
-                vec.push(parent_sub);
-            }
+    fn mark_changed(changed: &mut ChangedTypeRefs, parent: TypeIdx, parent_sub: Option<SmolStr>) {
+        let vec = changed.entry(parent).or_default();
+        if let Some(parent_sub) = parent_sub {
+            // only record the sub key if exists
+            vec.push(parent_sub);
         }
     }
 
@@ -1137,59 +1022,67 @@ impl DocStore {
     }
 
     pub(crate) fn diff_structs(
-        map: &ClientMap<VecDeque<Node>>,
+        types: &TypeArena,
+        map: &ClientMap<ClientBlocks>,
         sv: &StateVector,
-    ) -> JwstCodecResult<ClientMap<VecDeque<Node>>> {
-        let local_state_vector = Self::items_as_state_vector(map);
-        let diff = Self::diff_state_vectors(&local_state_vector, sv);
-        let mut update_structs = ClientMap::new();
-
-        for (client, clock) in diff {
-            // We have made sure that the client is in the local state vector in
-            // diff_state_vectors()
-            if let Some(items) = map.get(&client) {
-                if items.is_empty() {
-                    continue;
-                }
-
-                update_structs.insert(client, VecDeque::new());
-                let vec_struct_info = update_structs.get_mut(&client).unwrap();
-
-                // the smallest clock in items may exceed the clock
-                let clock = items.front().unwrap().id().clock.max(clock);
-                if let Some(index) = Self::get_node_index(items, clock) {
-                    let first_block = items.get(index).unwrap();
-                    // The recipient clock may fall inside a compacted struct;
-                    // split a detached copy so generating a diff leaves the
-                    // store unchanged.
-                    let offset = clock - first_block.clock();
-                    if offset != 0 {
-                        vec_struct_info.push_back(first_block.split_at(offset)?.1);
-                    } else {
-                        vec_struct_info.push_back(first_block.clone());
-                    }
-
-                    for item in items.iter().skip(index + 1) {
-                        vec_struct_info.push_back(item.clone());
-                    }
-                }
+    ) -> JwstCodecResult<ClientMap<VecDeque<WireStruct>>> {
+        let mut diff = ClientMap::new();
+        for (&client, blocks) in map {
+            let Some(first) = blocks.blocks.front() else { continue };
+            let clock = sv.get(&client).max(first.clock);
+            let Some(start) = blocks.find(clock) else { continue };
+            let mut tail = VecDeque::with_capacity(blocks.len() - start);
+            for node in blocks.nodes(client).skip(start) {
+                let wire = WireStruct::from_node(types, &node)?;
+                let offset = clock.saturating_sub(node.clock());
+                tail.push_back(if offset != 0 { wire.split_at(offset)?.1 } else { wire });
             }
+            diff.insert(client, tail);
         }
-
-        Ok(update_structs)
+        Ok(diff)
     }
 
-    fn generate_delete_set(refs: &ClientMap<VecDeque<Node>>) -> DeleteSet {
+    fn diff_ranges<T>(
+        map: &ClientMap<VecDeque<T>>,
+        sv: &StateVector,
+        range: impl Fn(&T) -> (Clock, u64),
+        copy: impl Fn(&T) -> JwstCodecResult<WireStruct>,
+    ) -> JwstCodecResult<ClientMap<VecDeque<WireStruct>>> {
+        let mut diff = ClientMap::new();
+        for (&client, nodes) in map {
+            let Some((first, last)) = nodes.front().zip(nodes.back()) else {
+                continue;
+            };
+            let clock = sv.get(&client).max(range(first).0);
+            let (last_start, last_len) = range(last);
+            if clock >= last_start + last_len {
+                continue;
+            }
+            let Some(start) = find_clock_segment(nodes.len(), clock, |idx| nodes.get(idx).map(&range)) else {
+                continue;
+            };
+            let mut tail = VecDeque::with_capacity(nodes.len() - start);
+            let first = copy(&nodes[start])?;
+            let offset = clock - first.clock();
+            tail.push_back(if offset == 0 { first } else { first.split_at(offset)?.1 });
+            for n in nodes.range(start + 1..) {
+                tail.push_back(copy(n)?);
+            }
+            diff.insert(client, tail);
+        }
+        Ok(diff)
+    }
+
+    fn generate_delete_set(refs: &ClientMap<ClientBlocks>) -> DeleteSet {
         let mut delete_set = DeleteSet::default();
 
         for (&client, nodes) in refs {
-            let mut deleted = nodes.iter().filter(|node| node.deleted() && node.len() != 0);
-            let Some(first) = deleted.next() else { continue };
-            let mut current = first.clock()..first.clock() + first.len();
+            let mut deleted = nodes.deleted_ranges();
+            let Some(mut current) = deleted.next() else { continue };
             let mut previous = VecDeque::new();
             for node in deleted {
-                let start = node.clock();
-                let end = start + node.len();
+                let start = node.start;
+                let end = node.end;
                 if start <= current.end {
                     current.end = current.end.max(end);
                 } else {
@@ -1197,13 +1090,10 @@ impl DocStore {
                     current = start..end;
                 }
             }
-            let ranges = if previous.is_empty() {
-                OrderRange::Range(current)
-            } else {
-                previous.push_back(current);
-                OrderRange::Fragment(previous)
-            };
-            delete_set.insert(client, ranges);
+            previous.push_back(current);
+            delete_set
+                .clients
+                .insert(client, OrderRange::from_sorted_disjoint(previous));
         }
 
         delete_set
@@ -1226,6 +1116,12 @@ impl DocStore {
         self.merge_delete_set(&deleted);
         self.make_continuous(state);
         self.merge_split_points(&merges);
+        if let Some(moved) = self.type_arena.items.finish() {
+            for blocks in self.items.values_mut() {
+                blocks.remap(&moved);
+            }
+            self.type_arena.remap_items(&moved);
+        }
     }
 
     /// Full GC and merge over the whole delete set and every struct.
@@ -1253,13 +1149,13 @@ impl DocStore {
                     continue;
                 };
 
-                while let Some(node) = self.items.get(client).and_then(|items| items.get(idx)).cloned() {
+                while let Some(node) = self.items.get(client).and_then(|items| items.node(*client, idx)) {
                     if range.end <= node.clock() {
                         break;
                     }
 
-                    if let Node::Item(item_ref) = &node
-                        && let Some(item) = item_ref.get()
+                    if let Some(item_ref) = node.as_item()
+                        && let Some(item) = self.type_arena.items.get(item_ref)
                         && item.deleted()
                         && !item.keep()
                         && !self.is_retained(item.id, item.len())
@@ -1278,51 +1174,66 @@ impl DocStore {
     /// `ContentDeleted` or, when its parent type is being collected too, is
     /// replaced by a GC struct.
     /// `item_ref` is a live item of this store.
-    fn gc_item(&mut self, item_ref: &ItemRef, parent_gced: bool) {
+    fn gc_item(&mut self, item_ref: ItemIdx, parent_gced: bool) {
         // An explicit stack instead of recursing through nested types:
         // `Visit` collects an item's children (Yjs `ContentType.gc`) and queues
         // them before its own `Finish`, so children are collected first, in
         // the order Yjs recurses.
         enum Step {
-            Visit(ItemRef, bool),
-            Finish(ItemRef, bool),
+            Visit(ItemIdx, bool),
+            Finish(ItemIdx, bool),
         }
 
-        let mut steps = vec![Step::Visit(item_ref.clone(), parent_gced)];
+        let mut steps = vec![Step::Visit(item_ref, parent_gced)];
         while let Some(step) = steps.pop() {
             match step {
                 Step::Visit(item_ref, parent_gced) => {
-                    let children = match &item_ref.get().expect("collected items are live").content {
-                        Content::Type(ty) => self.take_type_children(ty),
+                    let children = match &self
+                        .type_arena
+                        .items
+                        .get(item_ref)
+                        .expect("collected items are live")
+                        .content
+                    {
+                        Content::Type(ty) => self.take_type_children(*ty),
                         _ => Vec::new(),
                     };
                     steps.push(Step::Finish(item_ref, parent_gced));
                     steps.extend(children.into_iter().rev().map(|child| Step::Visit(child, true)));
                 }
-                Step::Finish(item_ref, parent_gced) => self.gc_item_content(&item_ref, parent_gced),
+                Step::Finish(item_ref, parent_gced) => self.gc_item_content(item_ref, parent_gced),
             }
         }
     }
 
     /// The item half of Yjs `Item.gc`, once the children of its type have
     /// been collected.
-    fn gc_item_content(&mut self, item_ref: &ItemRef, parent_gced: bool) {
-        let item = item_ref.get().expect("collected items are live");
+    fn gc_item_content(&mut self, item_ref: ItemIdx, parent_gced: bool) {
+        let item = self.type_arena.items.get(item_ref).expect("collected items are live");
         debug_assert!(item.deleted());
         let (id, len) = (item.id, item.len());
+
+        // Either way the carrier stops holding its type: retire the type
+        // before its item is replaced, or merged away as plain deleted
+        // content, so nothing is left pointing at it.
+        if let Content::Type(ty) = &item.content
+            && let Some(ty) = self.type_arena.get_mut(*ty)
+        {
+            ty.retire();
+        }
 
         if parent_gced {
             let items = self.items.get_mut(&id.client).expect("live items are in the store");
             let idx = Self::get_node_index(items, id.clock).expect("live items are in the store");
-            debug_assert_eq!(items[idx].id(), id);
-            items[idx] = Node::new_gc(id, len);
+            debug_assert_eq!(items.blocks[idx].clock, id.clock);
+            items.blocks[idx].kind = BlockKind::Gc;
+            self.type_arena.items.retire(item_ref);
             // Overwritten map values are neither in this delete set nor queued
             // by `delete_item_inner`, so Yjs leaves their GC structs unmerged;
             // queue every replaced child instead.
             self.collector.merges.push(id);
         } else {
-            // SAFETY: GC runs under the store write lock with nothing borrowed.
-            let mut item = unsafe { item_ref.get_mut_unchecked() };
+            let item = self.type_arena.items.get_mut(item_ref).expect("live item");
             item.replace_content(Content::Deleted(len));
             item.flags.clear_countable();
         }
@@ -1330,32 +1241,27 @@ impl DocStore {
 
     /// Yjs `ContentType.gc`: detaches every child of a type whose item is
     /// being collected and returns them for collection.
-    fn take_type_children(&mut self, ty: &YTypeRef) -> Vec<ItemRef> {
+    pub(crate) fn take_type_children(&mut self, ty: TypeIdx) -> Vec<ItemIdx> {
         let mut children = Vec::new();
-        if let Some(ty) = ty.ty() {
-            let mut item = ty.start.clone();
-            while let Some(next) = item.get().map(|i| i.right.clone()) {
-                children.push(item);
-                item = next;
-            }
-            for value in ty.map.values() {
-                let mut item = value.clone();
-                while let Some(next) = item.get().map(|i| i.left.clone()) {
-                    children.push(item);
-                    item = next;
-                }
+        let parent = &self.type_arena[ty];
+        let mut next = parent.start;
+        while let Some(idx) = next {
+            children.push(idx);
+            next = self.type_arena.items.get(idx).expect("list child").right;
+        }
+        for value in parent.map_values() {
+            let mut next = *value;
+            while let Some(idx) = next {
+                children.push(idx);
+                next = self.type_arena.items.get(idx).expect("map child").left;
             }
         }
-
-        // SAFETY: GC runs under the store write lock with no type borrowed.
-        if let Some(mut ty) = unsafe { ty.ty_mut() } {
-            ty.start = Somr::none();
-            ty.map.clear();
-            if let Some(markers) = &mut ty.markers {
-                markers.clear();
-            }
+        let parent = &mut self.type_arena[ty];
+        parent.start = None;
+        parent.clear_map();
+        if let Some(markers) = &mut parent.markers {
+            markers.clear();
         }
-
         children
     }
 
@@ -1376,8 +1282,8 @@ impl DocStore {
                     continue;
                 };
                 let mut si = (nodes.len() - 1).min(last + 1);
-                while si > 0 && nodes[si].clock() >= range.start {
-                    si = si.saturating_sub(1 + Self::merge_with_lefts(nodes, si));
+                while si > 0 && nodes.blocks[si].clock >= range.start {
+                    si = si.saturating_sub(1 + Self::merge_with_lefts(&mut self.type_arena, nodes, si));
                 }
             }
         }
@@ -1396,7 +1302,7 @@ impl DocStore {
             let mut idx = nodes.len() - 1;
 
             while idx > 0 && idx >= first_change {
-                idx = idx.saturating_sub(Self::merge_with_lefts(nodes, idx) + 1);
+                idx = idx.saturating_sub(Self::merge_with_lefts(&mut self.type_arena, nodes, idx) + 1);
             }
         }
 
@@ -1413,83 +1319,107 @@ impl DocStore {
             let Some(pos) = Self::get_node_index(nodes, id.clock) else {
                 continue;
             };
-            if pos + 1 < nodes.len() && Self::merge_with_lefts(nodes, pos + 1) > 1 {
+            if pos + 1 < nodes.len() && Self::merge_with_lefts(&mut self.type_arena, nodes, pos + 1) > 1 {
                 // both neighbors are already merged
                 continue;
             }
             if pos > 0 {
-                Self::merge_with_lefts(nodes, pos);
+                Self::merge_with_lefts(&mut self.type_arena, nodes, pos);
             }
         }
     }
 
     /// Yjs `tryToMergeWithLefts`: merges `nodes[idx]` into its left
     /// neighbors as far as possible and returns how many were merged.
-    fn merge_with_lefts(nodes: &mut VecDeque<Node>, idx: usize) -> usize {
+    fn merge_with_lefts(types: &mut TypeArena, nodes: &mut ClientBlocks, idx: usize) -> usize {
         let mut pos = idx;
-        loop {
-            if pos == 0 {
-                break;
+        while pos > 0 {
+            let left = nodes.blocks[pos - 1];
+            let right = nodes.blocks[pos];
+            match (left.kind, right.kind) {
+                (BlockKind::Gc, BlockKind::Gc) | (BlockKind::Skip, BlockKind::Skip) => {}
+                (BlockKind::Item(l), BlockKind::Item(r)) | (BlockKind::DeletedItem(l), BlockKind::DeletedItem(r)) => {
+                    if !Self::merge_items(types, l, r) {
+                        break;
+                    }
+                }
+                _ => break,
             }
-
-            let right = nodes.get(pos).unwrap().clone();
-            let left = nodes.get_mut(pos - 1).unwrap();
-
-            if !left.merge(&right) {
-                break;
-            }
-
-            // the merged right item may be the current value of its map key
-            if let Node::Item(right) = &right
-                && let Some(item) = right.get()
-                && let (Some(Parent::Type(parent)), Some(key)) = (&item.parent, &item.parent_sub)
-                // SAFETY: merging runs under the store write lock with no type
-                // borrowed.
-                && let Some(mut parent) = unsafe { parent.ty_mut() }
-                && parent.map.get(key).is_some_and(|current| current.ptr_eq(right))
-            {
-                parent.map.insert(key.clone(), left.as_item());
-            }
-
             pos -= 1;
         }
-        nodes.drain(pos + 1..=idx);
-
-        // return the index of processed items
+        nodes.blocks.drain(pos + 1..=idx);
         idx - pos
     }
 
-    pub fn deep_compare(&self, other: &Self) -> bool {
-        if self.items.len() != other.items.len() {
+    fn merge_items(types: &mut TypeArena, l: ItemIdx, r: ItemIdx) -> bool {
+        let parent = types.items.get(l).expect("stored item").parent;
+        let merge_strings = parent.is_some_and(|t| matches!(types[t].kind(), YTypeKind::Text | YTypeKind::XMLText));
+        let (left, right) = types.items.get_two_mut(l, r).expect("distinct live neighbors");
+        if left.right != Some(r)
+            || right.left != Some(l)
+            || left.id.client != right.id.client
+            || left.id.clock + left.len != right.id.clock
+            || Some(left.last_id()) != right.origin_left_id()
+            || left.origin_right_id() != right.origin_right_id()
+            || !Self::same_container(left, right)
+        {
             return false;
         }
-
-        for (client, structs) in self.items.iter() {
-            if let Some(other_structs) = other.items.get(client) {
-                if structs.len() != other_structs.len() {
-                    return false;
-                }
-
-                for (struct_info, other_struct_info) in structs.iter().zip(other_structs.iter()) {
-                    if struct_info != other_struct_info {
-                        return false;
-                    }
-                    if let (Node::Item(item), Node::Item(other_item)) = (struct_info, other_struct_info)
-                        && !match (item.get(), other_item.get()) {
-                            (Some(item), Some(other_item)) => item.deep_compare(other_item),
-                            (None, None) => true,
-                            _ => false,
-                        }
-                    {
-                        return false;
-                    }
-                }
-            } else {
-                return false;
+        let shift = if left.indexable() { -(left.len as i64) } else { 0 };
+        match (&mut left.content, &mut right.content) {
+            (Content::Deleted(a), Content::Deleted(b)) => *a += *b,
+            (Content::Json(a), Content::Json(b)) => a.append(b),
+            (Content::Any(a), Content::Any(b)) => a.append(b),
+            (Content::String(a), Content::String(b)) if merge_strings => a.push_str(b),
+            _ => return false,
+        }
+        if right.keep() {
+            left.flags.set_keep();
+        }
+        left.len += right.len;
+        let next = right.right;
+        left.right = next;
+        let key = right.parent_sub.clone();
+        if let Some(next) = next {
+            types.items.get_mut(next).expect("neighbor").left = Some(l);
+        }
+        if let Some(parent) = parent {
+            let parent = &mut types[parent];
+            if let Some(markers) = &mut parent.markers {
+                markers.replace_marker(Some(r), Some(l), shift);
+            }
+            if let Some(key) = key
+                && parent.map_get(&key) == Some(&Some(r))
+            {
+                parent.map_set(key, Some(l));
             }
         }
-
+        types.items.retire(r);
         true
+    }
+
+    pub fn deep_compare(&self, other: &Self) -> bool {
+        self.items.len() == other.items.len()
+            && self.items.iter().all(|(&client, blocks)| {
+                let Some(others) = other.items.get(&client) else {
+                    return false;
+                };
+                blocks.len() == others.len()
+                    && blocks.nodes(client).zip(others.nodes(client)).all(|(a, b)| {
+                        if a.id != b.id || a.len != b.len {
+                            return false;
+                        }
+                        match (a.as_item(), b.as_item()) {
+                            (Some(l), Some(r)) => self.type_arena.items.get(l).expect("item").deep_compare(
+                                &self.type_arena.items,
+                                other.type_arena.items.get(r).expect("item"),
+                                &other.type_arena.items,
+                            ),
+                            (None, None) => a.kind == b.kind,
+                            _ => false,
+                        }
+                    })
+            })
     }
 }
 
@@ -1517,7 +1447,7 @@ mod tests {
             assert!(update.structs.is_empty());
             let store = receiver.store.read().unwrap();
             let generated = DocStore::generate_delete_set(&store.items);
-            assert_eq!(generated[&101], OrderRange::Range(1..2));
+            assert_eq!(generated[&101], OrderRange::from(1..2));
             assert_eq!(generated, update.delete_set);
         });
     }
@@ -1540,7 +1470,7 @@ mod tests {
                 // inside the struct being written.
                 let store = source.store.read().unwrap();
                 assert_eq!(store.items[&101].len(), 1);
-                assert_eq!(store.items[&101][0].len(), 5);
+                assert_eq!(store.items[&101].node(101, 0).unwrap().len(), 5);
             }
             for state in [
                 StateVector::default(),
@@ -1586,9 +1516,9 @@ mod tests {
             let struct_info1 = Node::new_gc(Id::new(1, 1), 5);
             let struct_info2 = Node::new_skip(Id::new(1, 6), 7);
 
-            doc_store
-                .items
-                .insert(client_id, VecDeque::from([struct_info1, struct_info2.clone()]));
+            for node in [struct_info1, struct_info2] {
+                doc_store.add_node(node).unwrap();
+            }
 
             let state = doc_store.get_state(client_id);
 
@@ -1616,10 +1546,13 @@ mod tests {
             let struct_info2 = Node::new_gc((2, 0).into(), 6);
             let struct_info3 = Node::new_skip((2, 6).into(), 1);
 
-            doc_store.items.insert(client1, VecDeque::from([struct_info1.clone()]));
-            doc_store
-                .items
-                .insert(client2, VecDeque::from([struct_info2, struct_info3.clone()]));
+            {
+                let node = struct_info1;
+                doc_store.add_node(node).unwrap();
+            }
+            for node in [struct_info2, struct_info3] {
+                doc_store.add_node(node).unwrap();
+            }
 
             let state_map = doc_store.get_state_vector();
 
@@ -1640,13 +1573,13 @@ mod tests {
             let struct_info3_err = Node::new_skip(Id::new(1, 5), 1);
             let struct_info3 = Node::new_skip(Id::new(1, 6), 1);
 
-            assert!(doc_store.add_node(struct_info1.clone()).is_ok());
+            assert!(doc_store.add_node(struct_info1).is_ok());
             assert!(doc_store.add_node(struct_info2).is_ok());
             assert_eq!(
                 doc_store.add_node(struct_info3_err),
                 Err(JwstCodecError::StructClockInvalid { expect: 6, actually: 5 })
             );
-            assert!(doc_store.add_node(struct_info3.clone()).is_ok());
+            assert!(doc_store.add_node(struct_info3).is_ok());
             assert_eq!(
                 doc_store.get_state(struct_info1.client()),
                 struct_info3.clock() + struct_info3.len()
@@ -1659,7 +1592,7 @@ mod tests {
         loom_model!({
             let mut doc_store = DocStore::with_client(1);
             let struct_info = Node::new_gc(Id::new(1, 0), 10);
-            doc_store.add_node(struct_info.clone()).unwrap();
+            doc_store.add_node(struct_info).unwrap();
 
             assert_eq!(doc_store.get_node(Id::new(1, 9)), Some(struct_info));
         });
@@ -1669,7 +1602,7 @@ mod tests {
             let struct_info1 = Node::new_gc(Id::new(1, 0), 10);
             let struct_info2 = Node::new_gc(Id::new(1, 10), 20);
             doc_store.add_node(struct_info1).unwrap();
-            doc_store.add_node(struct_info2.clone()).unwrap();
+            doc_store.add_node(struct_info2).unwrap();
 
             assert_eq!(doc_store.get_node(Id::new(1, 25)), Some(struct_info2));
         });
@@ -1739,47 +1672,171 @@ mod tests {
     #[test]
     fn test_split_node_at() {
         loom_model!({
-            let node = Node::Item(Somr::new(
-                ItemBuilder::new()
-                    .id((1, 0).into())
-                    .content(Content::String(String::from("octo")))
-                    .build(),
-            ));
-            let mut list = VecDeque::from([node.clone()]);
-
-            let (left, right) = DocStore::split_node_at(&mut list, 0, 2).unwrap();
-
-            assert_eq!(
-                node.as_item().ptr().as_ptr() as usize,
-                left.as_item().ptr().as_ptr() as usize
-            );
-            assert_eq!(node.len(), 2);
-            assert_eq!(left.len(), 2);
-            assert_eq!(right.len(), 2);
-            assert_eq!(left.right(), Some(right.clone()));
-            assert_eq!(right.left(), Some(left));
+            let mut store = DocStore::with_client(1);
+            for (client, text, expected) in [(1, "octo", ["oc", "to"]), (2, "a😀b", ["a�", "�b"])] {
+                let id = Id::new(client, 0);
+                let item = ItemBuilder::new().id(id).content(Content::String(text.into())).build();
+                let node = Node::store_item(&mut store.type_arena, item);
+                store.add_node(node).unwrap();
+                let (left, right) = store.split_node(id, 2).unwrap();
+                assert_eq!(left.as_item(), node.as_item());
+                assert_eq!((left.len, right.len), (2, 2));
+                let a = left.item(&store.type_arena);
+                let b = right.item(&store.type_arena);
+                assert_eq!((a.right, b.left), (right.as_item(), left.as_item()));
+                assert_eq!(a.content, Content::String(expected[0].into()));
+                assert_eq!(b.content, Content::String(expected[1].into()));
+                assert_eq!(b.origin_left_id(), Some(Id::new(client, 1)));
+            }
         });
+    }
+
+    #[test]
+    fn get_or_create_type_keeps_root_after_first_handle_drops() {
+        loom_model!({
+            let mut store = DocStore::with_client(1);
+            let first = store.get_or_create_type("root").unwrap();
+            let second = store.get_or_create_type("root").unwrap();
+            assert_eq!(first, second);
+            assert_eq!(store.types["root"], first);
+            assert_eq!(store.type_arena.len(), 1);
+            assert_eq!(store.type_arena[first].root_name(), Some("root"));
+
+            let doc = Doc::with_client(1);
+            {
+                let _first = doc.get_or_create_text("t").unwrap();
+            }
+            let mut second = doc.get_or_create_text("t").unwrap();
+            second.insert(0, "alive").unwrap();
+            assert_eq!(second.to_string(), "alive");
+        });
+    }
+
+    #[test]
+    fn remote_repair_created_root_survives_item_delete_and_gc() {
+        loom_model!({
+            let src = Doc::with_client(1);
+            let mut src_text = src.get_or_create_text("remote_root").unwrap();
+            src_text.insert(0, "hi").unwrap();
+            let create_update = src.encode_update_v1().unwrap();
+
+            let mut dst = Doc::with_client(2);
+            dst.apply_update_from_binary_v1(create_update).unwrap();
+            let root = dst.store.read().unwrap().types["remote_root"];
+
+            src_text.remove(0, 2).unwrap();
+            let delete_update = src.encode_update_v1().unwrap();
+            dst.apply_update_from_binary_v1(delete_update).unwrap();
+            dst.gc().unwrap();
+
+            {
+                let store = dst.store.read().unwrap();
+                assert_eq!(store.types["remote_root"], root);
+                assert_eq!(store.type_arena[root].root_name(), Some("remote_root"));
+            }
+            let mut dst_text = dst.get_or_create_text("remote_root").unwrap();
+            dst_text.insert(0, "ok").unwrap();
+            assert_eq!(dst_text.to_string(), "ok");
+        });
+    }
+
+    /// A struct that names a root for the first time and carries a type
+    /// needs two slots: with one left, neither is taken.
+    #[test]
+    fn a_full_arena_refuses_a_remote_type_without_leaving_its_root() {
+        loom_model!({
+            let source = Doc::with_client(1);
+            source
+                .get_or_create_array("fresh")
+                .unwrap()
+                .push(source.create_map().unwrap())
+                .unwrap();
+            let update = source.encode_update_v1().unwrap();
+
+            let mut target = Doc::with_client(2);
+            target.store.write().unwrap().type_arena.set_limit(Some(1));
+            assert!(matches!(
+                target.apply_update_from_binary_v1(&update),
+                Err(JwstCodecError::IncompleteDocument(_))
+            ));
+            {
+                let store = target.store.read().unwrap();
+                assert!(store.types.is_empty());
+                assert_eq!(store.type_arena.len(), 0);
+                assert!(store.items.is_empty());
+            }
+
+            target.store.write().unwrap().type_arena.set_limit(None);
+            target.apply_update_from_binary_v1(&update).unwrap();
+            assert_eq!(target.get_or_create_array("fresh").unwrap().len(), 1);
+            assert_eq!(target.store.read().unwrap().type_arena.len(), 2);
+        });
+    }
+
+    #[test]
+    #[cfg_attr(loom, ignore)]
+    fn split_node_at_repeated_splits_do_not_amplify_capacity() {
+        let (n, k) = if cfg!(miri) { (1024, 8) } else { (64 * 1024, 256) };
+
+        let mut src = Doc::with_client(1);
+        src.get_or_create_text("text")
+            .unwrap()
+            .insert(0, "a".repeat(n))
+            .unwrap();
+        let base_update = src.encode_update_v1().unwrap();
+
+        let mut dst = Doc::with_client(2);
+        dst.apply_update_from_binary_v1(base_update).unwrap();
+        let mut text = dst.get_or_create_text("text").unwrap();
+        for i in 0..k {
+            text.insert((1 + 2 * i) as u64, "x").unwrap();
+        }
+
+        let edits = dst.encode_state_as_update_v1(&src.get_state_vector()).unwrap();
+        src.apply_update_from_binary_v1(edits).unwrap();
+        for doc in [&dst, &src] {
+            let store = doc.store.read().unwrap();
+            let client1_items = store.items.get(&1).unwrap();
+            let mut fragments = 0usize;
+            let mut total_cap = 0usize;
+            for node in client1_items.nodes(1) {
+                if let Some(item) = node.as_item().and_then(|i| store.type_arena.items.get(i))
+                    && let Content::String(s) = &item.content
+                {
+                    fragments += 1;
+                    total_cap += s.capacity();
+                }
+            }
+            assert_eq!(fragments, k + 1);
+            assert!(
+                total_cap <= 2 * n,
+                "split fragments amplified capacity: total_cap={total_cap} > 2*n={}",
+                2 * n
+            );
+        }
     }
 
     #[test]
     fn test_split_and_get() {
         loom_model!({
             let mut doc_store = DocStore::with_client(1);
-            let struct_info1 = Node::Item(Somr::new(
+            let struct_info1 = Node::store_item(
+                &mut doc_store.type_arena,
                 ItemBuilder::new()
                     .id((1, 0).into())
                     .content(Content::String(String::from("octo")))
                     .build(),
-            ));
+            );
 
-            let struct_info2 = Node::Item(Somr::new(
+            let struct_info2 = Node::store_item(
+                &mut doc_store.type_arena,
                 ItemBuilder::new()
                     .id((1, struct_info1.len()).into())
                     .left_id(Some(struct_info1.id()))
                     .content(Content::String(String::from("base")))
                     .build(),
-            ));
-            let s1_ref = struct_info1.clone();
+            );
+            let s1_ref = struct_info1;
             doc_store.add_node(struct_info1).unwrap();
             doc_store.add_node(struct_info2).unwrap();
 
@@ -1790,7 +1847,11 @@ mod tests {
 
             // s1 used to be (1, 4), but it actually ref of first item in store,
             // so now it should be (1, 2)
-            assert_eq!(s1, left, "doc internal mutation should not modify the pointer");
+            assert_eq!(
+                s1.as_item(),
+                left.as_item(),
+                "doc internal mutation should not modify the pointer"
+            );
             let right = doc_store.split_at_and_get_right((1, 5)).unwrap();
             assert_eq!(right.len(), 3); // base => b_ase
         });
@@ -1816,31 +1877,31 @@ mod tests {
                 let changed = collected(tx);
                 // for array, we will only record the type ref itself
                 assert_eq!(changed.len(), 1);
-                assert_eq!(changed.get(&arr.0), Some(&vec![]));
+                assert_eq!(changed.get(&arr.0.id.unwrap()), Some(&vec![]));
 
                 tx.text(&text)?.insert(0, "hello world")?;
                 tx.text(&text)?.remove(5, 6)?;
                 let changed = collected(tx);
                 assert_eq!(changed.len(), 1);
-                assert_eq!(changed.get(&text.0), Some(&vec![]));
+                assert_eq!(changed.get(&text.0.id.unwrap()), Some(&vec![]));
 
                 tx.map(&map)?.insert("key".into(), 123)?;
                 let changed = collected(tx);
                 assert_eq!(changed.len(), 1);
-                assert_eq!(changed.get(&map.0), Some(&vec!["key".into()]));
+                assert_eq!(changed.get(&map.0.id.unwrap()), Some(&vec!["key".into()]));
 
                 tx.map(&map)?.remove("key");
                 let changed = collected(tx);
                 assert_eq!(changed.len(), 1);
-                assert_eq!(changed.get(&map.0), Some(&vec!["key".into()]));
+                assert_eq!(changed.get(&map.0.id.unwrap()), Some(&vec!["key".into()]));
 
                 tx.array(&arr)?.remove(0, 1)?;
                 let changed = collected(tx);
                 assert_eq!(changed.len(), 2);
                 // text's children mark parent(text) changed
-                assert_eq!(changed.get(&text.0), Some(&vec![]));
+                assert_eq!(changed.get(&text.0.id.unwrap()), Some(&vec![]));
                 // text mark parent(arr) changed
-                assert_eq!(changed.get(&arr.0), Some(&vec![]));
+                assert_eq!(changed.get(&arr.0.id.unwrap()), Some(&vec![]));
                 Ok(())
             })
             .unwrap();
@@ -1853,7 +1914,7 @@ mod tests {
     #[test]
     fn should_replace_gc_item_with_content_deleted() {
         loom_model!({
-            let item1 = ItemBuilder::new()
+            let mut item1 = ItemBuilder::new()
                 .id((1, 0).into())
                 .content(Content::String(String::from("octo")))
                 .build();
@@ -1866,14 +1927,16 @@ mod tests {
 
             let mut store = DocStore::with_client(1);
 
-            store.add_node(Node::Item(Somr::new(item1))).unwrap();
-            store.add_node(Node::Item(Somr::new(item2))).unwrap();
+            for item in [item1, item2] {
+                let node = Node::store_item(&mut store.type_arena, item);
+                store.add_node(node).unwrap();
+            }
 
             let ds = store.get_delete_sets();
             store.gc_delete_set(&ds);
 
             assert_eq!(
-                &store.get_node((1, 0)).unwrap().as_item().get().unwrap().content,
+                &store.get_node((1, 0)).unwrap().item(&store.type_arena).content,
                 &Content::Deleted(4)
             );
         });
@@ -1899,7 +1962,7 @@ mod tests {
             store.gc_delete_set(&ds);
 
             assert_eq!(
-                &store.get_node((1, 0)).unwrap().as_item().get().unwrap().content,
+                &store.get_node((1, 0)).unwrap().item(&store.type_arena).content,
                 &Content::Deleted(1)
             );
 
@@ -1927,24 +1990,18 @@ mod tests {
 
             let mut store = doc.store.write().unwrap();
             // keep the text item (1, 0) itself
-            store
-                .get_node((1, 0))
-                .unwrap()
-                .as_item()
-                .get()
-                .unwrap()
-                .flags
-                .set_keep();
+            let idx = store.get_node((1, 0)).unwrap().as_item().unwrap();
+            store.type_arena.items.get_mut(idx).unwrap().flags.set_keep();
             let ds = store.get_delete_sets();
             store.gc_delete_set(&ds);
 
             assert!(matches!(
-                &store.get_node((1, 0)).unwrap().as_item().get().unwrap().content,
+                &store.get_node((1, 0)).unwrap().item(&store.type_arena).content,
                 Content::Type(_)
             ));
             let hello = store.get_node((1, 1)).unwrap();
             assert!(hello.is_item());
-            assert_eq!(&hello.as_item().get().unwrap().content, &Content::Deleted(5));
+            assert_eq!(&hello.item(&store.type_arena).content, &Content::Deleted(5));
         });
     }
 
@@ -1975,7 +2032,7 @@ mod tests {
             store.gc_delete_set(&ds);
 
             assert_eq!(
-                &store.get_node((1, 0)).unwrap().as_item().get().unwrap().content,
+                &store.get_node((1, 0)).unwrap().item(&store.type_arena).content,
                 &Content::Deleted(1)
             );
 
@@ -2041,29 +2098,31 @@ mod tests {
     fn should_merge_same_sibling_items() {
         loom_model!({
             let mut store = DocStore::with_client(1);
-            store.items.insert(
-                1,
-                VecDeque::from([
-                    Node::new_gc((1, 0).into(), 2),
-                    Node::new_gc((1, 2).into(), 2),
-                    Node::new_skip((1, 4).into(), 2),
-                    Node::Item(Somr::new(
-                        ItemBuilder::new()
-                            .id((1, 6).into())
-                            .content(Content::String(String::from("hello")))
-                            .build(),
-                    )),
-                    // actually not mergable, due to runtime continuous check
-                    // will cover it in [test_merge_same_sibling_items2]
-                    Node::Item(Somr::new(
-                        ItemBuilder::new()
-                            .id((1, 11).into())
-                            .content(Content::String(String::from("world")))
-                            .left_id(Some((1, 11).into()))
-                            .build(),
-                    )),
-                ]),
-            );
+            let nodes = [
+                Node::new_gc((1, 0).into(), 2),
+                Node::new_gc((1, 2).into(), 2),
+                Node::new_skip((1, 4).into(), 2),
+                Node::store_item(
+                    &mut store.type_arena,
+                    ItemBuilder::new()
+                        .id((1, 6).into())
+                        .content(Content::String(String::from("hello")))
+                        .build(),
+                ),
+                // actually not mergable, due to runtime continuous check
+                // will cover it in [test_merge_same_sibling_items2]
+                Node::store_item(
+                    &mut store.type_arena,
+                    ItemBuilder::new()
+                        .id((1, 11).into())
+                        .content(Content::String(String::from("world")))
+                        .left_id(Some((1, 11).into()))
+                        .build(),
+                ),
+            ];
+            for node in nodes {
+                store.add_node(node).unwrap();
+            }
 
             store.make_continuous(store.get_state_vector());
 

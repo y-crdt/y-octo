@@ -26,12 +26,11 @@ impl BuildHasher for ClientHasherBuilder {
 // use ClientID as key
 pub type ClientMap<V> = HashMap<Client, V, ClientHasherBuilder>;
 
-#[cfg(test)]
+#[cfg(all(test, not(loom)))]
 mod tests {
     use super::*;
 
     #[test]
-    #[cfg(not(loom))]
     fn client_hashes_are_seeded() {
         // the old identity hash returned the client ID itself
         let state = ClientHasherBuilder::default();

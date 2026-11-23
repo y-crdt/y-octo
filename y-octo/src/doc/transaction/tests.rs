@@ -7,6 +7,24 @@ use std::sync::{Arc, Mutex};
 
 use super::*;
 
+#[test]
+fn dropping_the_first_of_three_guards_releases_callbacks_only_after_the_last() {
+    let docs = [Doc::with_client(1), Doc::with_client(2), Doc::with_client(3)];
+    let guards: Vec<_> = docs.iter().map(|d| read_store(&d.store).unwrap()).collect();
+    let called = Arc::new(AtomicBool::new(false));
+    let flag = Arc::clone(&called);
+    after_unlock(move || flag.store(true, Ordering::Relaxed));
+    let mut guards = guards.into_iter();
+    drop(guards.next().unwrap());
+    assert!(read_store(&docs[0].store).is_ok());
+    assert!(matches!(read_store(&docs[1].store), Err(JwstCodecError::Reentrant)));
+    assert!(matches!(read_store(&docs[2].store), Err(JwstCodecError::Reentrant)));
+    drop(guards.next().unwrap());
+    assert!(!called.load(Ordering::Relaxed));
+    drop(guards);
+    assert!(called.load(Ordering::Relaxed));
+}
+
 /// Records every delivered event.
 fn record(doc: &Doc) -> (Subscription, Arc<Mutex<Vec<CommitEvent>>>) {
     let events = Arc::new(Mutex::new(Vec::new()));
@@ -269,6 +287,37 @@ fn incoming_commit_ranges_leave_pending_clock_gaps() {
 }
 
 #[test]
+fn commit_encoding_matches_materialized_structs_for_partial_and_multi_client_updates() {
+    let mut doc = Doc::with_client(1);
+    let mut text = doc.get_or_create_text("text").unwrap();
+    text.insert(0, "a😀b").unwrap();
+    let peer = Doc::with_client(2);
+    let mut map = peer.get_or_create_map("map").unwrap();
+    map.insert("key".into(), 42).unwrap();
+    map.insert("key".into(), 43).unwrap();
+    doc.apply_update_from_binary_v1(peer.encode_update_v1().unwrap())
+        .unwrap();
+    let store = doc.store.read().unwrap();
+    let mut deleted = DeleteSet::default();
+    deleted.add(1, 0, 1);
+    for before in [
+        StateVector::default(),
+        StateVector::from([(1, 2)]),
+        StateVector::from([(2, 1)]),
+        store.get_state_vector(),
+    ] {
+        let expected = Update {
+            structs: DocStore::diff_structs(&store.type_arena, &store.items, &before).unwrap(),
+            delete_set: deleted.clone(),
+            ..Update::default()
+        }
+        .encode_v1()
+        .unwrap();
+        assert_eq!(encode_commit(&store, &before, &deleted).unwrap(), expected);
+    }
+}
+
+#[test]
 fn update_bytes_hold_only_the_transaction() {
     let doc = Doc::with_client(1);
     let mut text = doc.get_or_create_text("text").unwrap();
@@ -299,6 +348,7 @@ fn update_bytes_hold_only_the_transaction() {
     }
     assert!(events[0].deleted.get(&1).is_some());
     assert!(events[1].deleted.is_empty());
+    assert!(Update::decode_v1(&events[1].update).unwrap().delete_set.is_empty());
 
     // replaying the events onto the follower matches the source
     for event in &events {
