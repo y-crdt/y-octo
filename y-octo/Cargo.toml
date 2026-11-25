@@ -34,6 +34,7 @@ serde         = { workspace = true, features = ["derive"] }
 serde_json    = { workspace = true, features = ["float_roundtrip"] }
 smol_str      = { workspace = true }
 thiserror     = { workspace = true }
+y-octo-core   = { workspace = true }
 
 [features]
 bench      = []

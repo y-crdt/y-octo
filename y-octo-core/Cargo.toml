@@ -1,0 +1,11 @@
+[package]
+description = "Pure, unsafe-free CRDT core extracted to Lean 4 via Charon and Aeneas"
+edition     = "2024"
+license     = "MIT"
+name        = "y-octo-core"
+version     = "0.1.0"
+
+[dependencies]
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(aeneas_extract)'] }

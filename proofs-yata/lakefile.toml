@@ -1,0 +1,10 @@
+defaultTargets = ["YoctoSpec", "yocto-spec"]
+name           = "yocto-spec"
+version        = "0.1.0"
+
+[[lean_lib]]
+name = "YoctoSpec"
+
+[[lean_exe]]
+name = "yocto-spec"
+root = "Main"

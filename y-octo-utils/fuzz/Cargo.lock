@@ -914,7 +914,12 @@ dependencies = [
  "serde_json",
  "smol_str",
  "thiserror",
+ "y-octo-core",
 ]
+
+[[package]]
+name = "y-octo-core"
+version = "0.1.0"
 
 [[package]]
 name = "y-octo-fuzz"
