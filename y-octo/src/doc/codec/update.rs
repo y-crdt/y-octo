@@ -38,28 +38,45 @@ impl<'a> CrdtRead<RawDecoder<'a>> for Update {
 
 impl Update {
     fn read_with_max_any_depth(decoder: &mut RawDecoder<'_>, max_any_depth: usize) -> JwstCodecResult<Self> {
+        let (update, _) = Self::read_with_max_any_depth_and_skipped_zeros(decoder, max_any_depth)?;
+        Ok(update)
+    }
+
+    pub(crate) fn decode_v1_with_skipped_zero_origins<T: AsRef<[u8]>>(buffer: T) -> JwstCodecResult<(Self, Vec<Id>)> {
+        Self::read_with_max_any_depth_and_skipped_zeros(&mut RawDecoder::new(buffer.as_ref()), Any::DEFAULT_MAX_DEPTH)
+    }
+
+    fn read_with_max_any_depth_and_skipped_zeros(
+        decoder: &mut RawDecoder<'_>,
+        max_any_depth: usize,
+    ) -> JwstCodecResult<(Self, Vec<Id>)> {
         let limits = decoder::DecodeLimits {
             max_any_depth: max_any_depth.min(Any::MAX_CONFIGURABLE_DEPTH),
             ..decoder::DecodeLimits::UPDATE
         };
-        let update =
-            decoder::decode(decoder.rest_ref(), OwnedUpdateSink::default(), limits).map_err(|error| match error {
-                decoder::Error::Codec(error) => error,
-                decoder::Error::Resource(name) => JwstCodecError::IncompleteDocument(format!("{name} exceeds limit")),
-            })?;
+        let mut skipped_zero_origins = Vec::new();
+        let sink = OwnedUpdateSink {
+            skipped_zero_origins: Some(&mut skipped_zero_origins),
+            ..Default::default()
+        };
+        let update = decoder::decode(decoder.rest_ref(), sink, limits).map_err(|error| match error {
+            decoder::Error::Codec(error) => error,
+            decoder::Error::Resource(name) => JwstCodecError::IncompleteDocument(format!("{name} exceeds limit")),
+        })?;
         decoder.consume_rest();
-        Ok(update)
+        Ok((update, skipped_zero_origins))
     }
 }
 
 #[derive(Default)]
-struct OwnedUpdateSink {
+struct OwnedUpdateSink<'s> {
     update: Update,
     deletes: Vec<(Client, Range<u64>)>,
     json: Vec<Option<String>>,
     content_any: Vec<Any>,
     any_stack: Vec<AnyFrame>,
     any_root: Option<Any>,
+    skipped_zero_origins: Option<&'s mut Vec<Id>>,
 }
 
 enum AnyFrame {
@@ -67,7 +84,7 @@ enum AnyFrame {
     Array(Vec<Any>),
 }
 
-impl OwnedUpdateSink {
+impl OwnedUpdateSink<'_> {
     fn push_any(&mut self, value: Any) -> decoder::Result<()> {
         match self.any_stack.last_mut() {
             Some(AnyFrame::Array(values)) => values.push(value),
@@ -90,7 +107,7 @@ impl OwnedUpdateSink {
     }
 }
 
-impl<'a> decoder::Sink<'a> for OwnedUpdateSink {
+impl<'a> decoder::Sink<'a> for OwnedUpdateSink<'_> {
     type Output = Update;
     type Content = WireContent;
     type Any = Any;
@@ -276,6 +293,12 @@ impl<'a> decoder::Sink<'a> for OwnedUpdateSink {
     fn delete_range(&mut self, client: u64, range: Range<u64>) -> decoder::Result<()> {
         self.deletes.push((client, range));
         Ok(())
+    }
+
+    fn skipped_zero_origin(&mut self, origin_left: Id) {
+        if let Some(skipped) = self.skipped_zero_origins.as_mut() {
+            skipped.push(origin_left);
+        }
     }
 
     fn finish(mut self) -> decoder::Result<Update> {

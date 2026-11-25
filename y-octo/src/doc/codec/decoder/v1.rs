@@ -112,6 +112,7 @@ pub(crate) trait Sink<'a>: Sized {
     fn gc(&mut self, id: Id, len: u64) -> Result<()>;
     fn skip(&mut self, id: Id, len: u64) -> Result<()>;
     fn item(&mut self, id: Id, len: u64, meta: ItemMeta<'a>, content: Self::Content) -> Result<()>;
+    fn skipped_zero_origin(&mut self, _origin_left: Id) {}
 
     fn content_atom(&mut self, atom: ContentAtom<'a>) -> Result<Self::Content>;
     fn json_start(&mut self, count: usize) -> Result<()>;
@@ -406,6 +407,12 @@ impl<'a, S: Sink<'a>> core_v1::V1Sink for Adapter<'a, S> {
         };
         let res = self.sink.item(Self::wire_id(id), len, mapped_meta, content);
         self.forward(res)
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn on_skipped_zero_origin(&mut self, origin_left: core_v1::WireId) {
+        self.sink.skipped_zero_origin(Self::wire_id(origin_left));
     }
 
     #[cfg_attr(not(debug_assertions), inline(always))]
@@ -1402,5 +1409,1185 @@ mod tests {
                 nom::error::Error::new(overflow_u64.len() + 1, nom::error::ErrorKind::TooLarge),
             ))),
         );
+    }
+
+    #[test]
+    fn test_zero_length_items_skipped_across_all_pipelines() {
+        use crate::{
+            Doc, DocOptions, ReadDoc, StateVector, Update, diff_update_v1, encode_state_vector_from_update_v1,
+            merge_updates_v1, revert_update_v1, validate_update_v1,
+        };
+
+        // Reproduce the historical Yjs ZWJ-emoji + deleted empty
+        // ContentString("") + deleted colliding "\n" pattern inside a real
+        // nested `ContentType(Y.Text)` stored under `Y.Map` `"blocks"["b1"]`,
+        // with an interleaved map key update splitting `seq_ranges` and a
+        // zero-length item sharing clock 9 strictly inside DeleteSet `[4, 11)`.
+        let emoji_prefix = "😮\u{200d}"; // 3 UTF-16 code units: clocks 4..7
+        let emoji_suffix = "💨"; // 2 UTF-16 code units: clocks 7..9
+
+        for (label, zero_tag) in [("ContentString(\"\")", 4u8), ("ContentDeleted(0)", 1u8)] {
+            let update = enc()
+                .varu(1) // 1 client
+                // Client 1 (start_clock = 0, 9 structs total -> 8 emitted):
+                //  0..1:  blocks["b1"] = ContentType(Y.Text, kind=2)
+                //  1..3:  nested Y.Text (parent=Item((1,0))) "hi"
+                //  3..4:  meta["k"] = "v" (splits seq_ranges)
+                //  4..7:  nested Y.Text emoji_prefix with origin_left=(1,2)
+                //  7..9:  nested Y.Text emoji_suffix with origin_left=(1,6)
+                //  9..9:  zero-len item with origin_left=(1,8), origin_right=None
+                //         (adjacent outer end of [4, 9), strictly inside DS [4, 11))
+                //  9..10: meta["k2"] = "w" (non-colliding map entry at clock 9)
+                //  10..11: nested Y.Text "\n" with origin_left=(1,8) (deleted by
+                //          DS [4, 11), no dependents, matching empty-string.bin)
+                //  11..12: root "t" "!" (independent root text)
+                .varu(9)
+                .varu(1)
+                .varu(0)
+                // 0..1: blocks["b1"] = Y.Text (tag=7, parent_sub="b1", type_ref=2)
+                .byte(0x27)
+                .varu(1)
+                .vstr("blocks")
+                .vstr("b1")
+                .varu(2)
+                // 1..3: nested Y.Text "hi" (parent=Item((1,0)), no parent_sub)
+                .byte(0x04)
+                .varu(0)
+                .varu(1)
+                .varu(0)
+                .vstr("hi")
+                // 3..4: interleaved map entry meta["k"] = "v"
+                .byte(0x24)
+                .varu(1)
+                .vstr("meta")
+                .vstr("k")
+                .vstr("v")
+                // 4..7: nested Y.Text emoji_prefix (origin_left=(1,2))
+                .byte(0x84)
+                .varu(1)
+                .varu(2)
+                .vstr(emoji_prefix)
+                // 7..9: nested Y.Text emoji_suffix (origin_left=(1,6))
+                .byte(0x84)
+                .varu(1)
+                .varu(6)
+                .vstr(emoji_suffix)
+                // 9..9: zero-length item with origin_left=(1,8) (adjacent end of [4,9))
+                .byte(0x80 | zero_tag)
+                .varu(1)
+                .varu(8)
+                .varu(0)
+                // 9..10: non-colliding map entry meta["k2"] = "w"
+                .byte(0x24)
+                .varu(1)
+                .vstr("meta")
+                .vstr("k2")
+                .vstr("w")
+                // 10..11: colliding "\n" (origin_left=(1,8)), deleted by DS [4, 11)
+                .byte(0x84)
+                .varu(1)
+                .varu(8)
+                .vstr("\n")
+                // 11..12: root "t" "!"
+                .byte(0x04)
+                .varu(1)
+                .vstr("t")
+                .vstr("!")
+                // DeleteSet: client 1 [4, 11) strictly covers clock 9 and deletes 10.
+                .varu(1)
+                .varu(1)
+                .varu(1)
+                .varu(4)
+                .varu(7)
+                .bytes();
+
+            // 1. Raw probe sink sees only the 8 positive-length structs.
+            let probed = decode(&update, ProbeSink::default(), DecodeLimits::UNRESTRICTED).expect(label);
+            assert_eq!(
+                probed.structs,
+                [
+                    (Id::new(1, 0), 1),
+                    (Id::new(1, 1), 2),
+                    (Id::new(1, 3), 1),
+                    (Id::new(1, 4), 3),
+                    (Id::new(1, 7), 2),
+                    (Id::new(1, 9), 1),
+                    (Id::new(1, 10), 1),
+                    (Id::new(1, 11), 1),
+                ],
+                "{label}"
+            );
+
+            // 2. Wire validator & state-vector extractor.
+            validate_update_v1(&update).expect(label);
+            let sv_bytes = encode_state_vector_from_update_v1(&update).expect(label);
+            let sv = StateVector::decode_v1(&sv_bytes).unwrap();
+            assert_eq!(sv.get(&1), 12, "{label}");
+
+            // 3. Diff extractor at empty SV, mid-client SV (clock 9), and full
+            //    SV.
+            let diff_all = diff_update_v1(&update, &StateVector::default().encode_v1().unwrap()).expect(label);
+            let mut mid_sv = StateVector::default();
+            mid_sv.set_max(1, 9);
+            let diff_mid = diff_update_v1(&update, &mid_sv.encode_v1().unwrap()).expect(label);
+            validate_update_v1(&diff_mid).expect(label);
+            let diff_done = diff_update_v1(&update, &sv.encode_v1().unwrap()).expect(label);
+            let decoded_done = Update::decode_v1(&diff_done).expect(label);
+            assert!(decoded_done.structs.is_empty(), "{label}");
+
+            // 4. Update decode/encode + merge_updates_v1 strip zero-length
+            //    items.
+            let decoded = Update::decode_v1(&update).expect(label);
+            assert_eq!(decoded.structs.get(&1).unwrap().len(), 8, "{label}");
+            let merged = merge_updates_v1([&update]).expect(label).encode_v1().unwrap();
+            let merged_probe = decode(&merged, ProbeSink::default(), DecodeLimits::UNRESTRICTED).expect(label);
+            assert_eq!(merged_probe.structs, probed.structs, "{label}");
+
+            // 5. ReadDoc snapshot reader.
+            let read_doc = ReadDoc::from_full_update_v1(update.clone()).expect(label);
+            assert_eq!(read_doc.text("t").unwrap().to_string(), "!", "{label}");
+
+            // 6. Doc integration, mid-SV diff application, and revert_update_v1
+            //    (wrapped in loom_model! so Loom CI runs these checks too).
+            let prefix_only = enc()
+                .varu(1)
+                .varu(5)
+                .varu(1)
+                .varu(0)
+                .byte(0x27)
+                .varu(1)
+                .vstr("blocks")
+                .vstr("b1")
+                .varu(2)
+                .byte(0x04)
+                .varu(0)
+                .varu(1)
+                .varu(0)
+                .vstr("hi")
+                .byte(0x24)
+                .varu(1)
+                .vstr("meta")
+                .vstr("k")
+                .vstr("v")
+                .byte(0x84)
+                .varu(1)
+                .varu(2)
+                .vstr(emoji_prefix)
+                .byte(0x84)
+                .varu(1)
+                .varu(6)
+                .vstr(emoji_suffix)
+                .varu(0)
+                .bytes();
+            let update_clone = update.clone();
+            let diff_all_clone = diff_all.clone();
+            let diff_mid_clone = diff_mid.clone();
+            let sv_clone = sv.clone();
+            crate::loom_model!({
+                let read_b1 = |doc: &Doc| {
+                    doc.get_or_create_map("blocks")
+                        .unwrap()
+                        .get("b1")
+                        .and_then(|v| match v {
+                            crate::Value::Text(t) => Some(t.to_string()),
+                            _ => None,
+                        })
+                };
+                let mut doc = Doc::with_options(DocOptions {
+                    client_id: 100,
+                    ..Default::default()
+                });
+                doc.apply_update_from_binary_v1(&update_clone).expect(label);
+                assert_eq!(read_b1(&doc), Some("hi".to_owned()), "{label}");
+                assert_eq!(doc.get_or_create_text("t").unwrap().to_string(), "!", "{label}");
+                assert_eq!(doc.get_state_vector(), sv_clone, "{label}");
+
+                let mut doc_from_diff = Doc::with_options(DocOptions {
+                    client_id: 99,
+                    ..Default::default()
+                });
+                doc_from_diff.apply_update_from_binary_v1(&diff_all_clone).expect(label);
+                assert_eq!(read_b1(&doc_from_diff), Some("hi".to_owned()), "{label}");
+
+                let mut doc_mid = Doc::with_options(DocOptions {
+                    client_id: 98,
+                    ..Default::default()
+                });
+                doc_mid.apply_update_from_binary_v1(&prefix_only).expect(label);
+                doc_mid.apply_update_from_binary_v1(&diff_mid_clone).expect(label);
+                assert_eq!(read_b1(&doc_mid), Some("hi".to_owned()), "{label}");
+                assert_eq!(doc_mid.get_state_vector(), sv_clone, "{label}");
+
+                let revert = revert_update_v1(&update_clone, &prefix_only).expect(label);
+                doc.apply_update_from_binary_v1(&revert).expect(label);
+                assert_eq!(
+                    read_b1(&doc),
+                    Some(format!("hi{emoji_prefix}{emoji_suffix}")),
+                    "{label}"
+                );
+            });
+        }
+
+        // Positive control for non-splitting surrogate-pair boundary inside a
+        // proven ContentType(Y.Text): `😀` (1..3) followed by adjacent deleted
+        // zero-length `ContentDeleted(0)` with `origin_left=(1,2)` and
+        // non-colliding map entry at clock 3 yields `"😀"` and SV `{1: 4}`.
+        let emoji_boundary_ok = enc()
+            .varu(1)
+            .varu(4)
+            .varu(1)
+            .varu(0)
+            .byte(0x27)
+            .varu(1)
+            .vstr("blocks")
+            .vstr("b1")
+            .varu(2)
+            .byte(0x04)
+            .varu(0)
+            .varu(1)
+            .varu(0)
+            .vstr("😀")
+            .byte(0x81)
+            .varu(1)
+            .varu(2)
+            .varu(0)
+            .byte(0x24)
+            .varu(1)
+            .vstr("meta")
+            .vstr("k")
+            .vstr("v")
+            .varu(0)
+            .bytes();
+        let _emoji_read = ReadDoc::from_full_update_v1(emoji_boundary_ok.clone()).unwrap();
+        crate::loom_model!({
+            let mut doc = Doc::with_options(DocOptions {
+                client_id: 101,
+                ..Default::default()
+            });
+            doc.apply_update_from_binary_v1(&emoji_boundary_ok).unwrap();
+            assert_eq!(
+                doc.get_or_create_map("blocks")
+                    .unwrap()
+                    .get("b1")
+                    .and_then(|v| match v {
+                        crate::Value::Text(t) => Some(t.to_string()),
+                        _ => None,
+                    }),
+                Some("😀".to_owned())
+            );
+            assert_eq!(doc.get_state_vector().get(&1), 4);
+        });
+
+        // Unsafe / unproven / non-YText / live / colliding zero-length forms
+        // MUST remain rejected with "zero-length struct".
+        let zero_len_err = ExpectedError::Codec(JwstCodecError::IncompleteDocument("zero-length struct".to_owned()));
+        let rejected: [(&str, Vec<u8>); 32] = [
+            (
+                "same-client later live item sharing skipped Z origin_left (Yjs 😀yx vs 😀xy)",
+                enc()
+                    .varu(1)
+                    .varu(5)
+                    .varu(10)
+                    .varu(0)
+                    .byte(0x27)
+                    .varu(1)
+                    .vstr("blocks")
+                    .vstr("b1")
+                    .varu(2)
+                    .byte(0x04)
+                    .varu(0)
+                    .varu(10)
+                    .varu(0)
+                    .vstr("😀")
+                    .byte(0x81)
+                    .varu(10)
+                    .varu(2)
+                    .varu(0)
+                    .byte(0x24)
+                    .varu(1)
+                    .vstr("meta")
+                    .vstr("k")
+                    .vstr("v")
+                    .byte(0x84)
+                    .varu(10)
+                    .varu(2)
+                    .vstr("x")
+                    .varu(0)
+                    .bytes(),
+            ),
+            (
+                "cross-client live item sharing skipped Z origin_left",
+                enc()
+                    .varu(2)
+                    .varu(4)
+                    .varu(10)
+                    .varu(0)
+                    .byte(0x27)
+                    .varu(1)
+                    .vstr("blocks")
+                    .vstr("b1")
+                    .varu(2)
+                    .byte(0x04)
+                    .varu(0)
+                    .varu(10)
+                    .varu(0)
+                    .vstr("😀")
+                    .byte(0x81)
+                    .varu(10)
+                    .varu(2)
+                    .varu(0)
+                    .byte(0x24)
+                    .varu(1)
+                    .vstr("meta")
+                    .vstr("k")
+                    .vstr("v")
+                    .varu(1)
+                    .varu(5)
+                    .varu(0)
+                    .byte(0x84)
+                    .varu(10)
+                    .varu(2)
+                    .vstr("x")
+                    .varu(0)
+                    .bytes(),
+            ),
+            (
+                "2-hop live descendant of deleted colliding item sharing Z origin_left",
+                enc()
+                    .varu(1)
+                    .varu(6)
+                    .varu(10)
+                    .varu(0)
+                    .byte(0x27)
+                    .varu(1)
+                    .vstr("blocks")
+                    .vstr("b1")
+                    .varu(2)
+                    .byte(0x04)
+                    .varu(0)
+                    .varu(10)
+                    .varu(0)
+                    .vstr("😀")
+                    .byte(0x81)
+                    .varu(10)
+                    .varu(2)
+                    .varu(0)
+                    .byte(0x24)
+                    .varu(1)
+                    .vstr("meta")
+                    .vstr("k")
+                    .vstr("v")
+                    .byte(0x81)
+                    .varu(10)
+                    .varu(2)
+                    .varu(1)
+                    .byte(0x84)
+                    .varu(10)
+                    .varu(4)
+                    .vstr("w")
+                    .varu(0)
+                    .bytes(),
+            ),
+            (
+                "non-adjacent Z where origin_left.clock != Z.clock - 1 (Z.lastId gap)",
+                enc()
+                    .varu(1)
+                    .varu(4)
+                    .varu(10)
+                    .varu(0)
+                    .byte(0x27)
+                    .varu(1)
+                    .vstr("blocks")
+                    .vstr("b1")
+                    .varu(2)
+                    .byte(0x04)
+                    .varu(0)
+                    .varu(10)
+                    .varu(0)
+                    .vstr("a")
+                    .byte(0x24)
+                    .varu(1)
+                    .vstr("meta")
+                    .vstr("k")
+                    .vstr("v")
+                    .byte(0x81)
+                    .varu(10)
+                    .varu(1)
+                    .varu(0)
+                    .varu(0)
+                    .bytes(),
+            ),
+            (
+                "nested ContentType(Y.Text) with two consecutive zero-length items at same clock",
+                vec![
+                    1, 7, 1, 0, 0x27, 1, 1, b'b', 1, b't', 2, 0x04, 0, 1, 0, 2, b'a', b'b', 0x24, 1, 1, b'm', 1, b'k',
+                    1, b'v', 0x84, 1, 2, 1, b'c', 0x81, 1, 4, 0, 0x81, 1, 2, 0, 0x84, 1, 4, 1, b'd', 0,
+                ],
+            ),
+            (
+                "adjacent raw wire DS [2,3)+[3,4) leaves ContentString(\"\") live in Yjs",
+                vec![
+                    0x01, 0x06, 0x01, 0x00, 0x06, 0x01, 0x01, 0x74, 0x04, 0x62, 0x6f, 0x6c, 0x64, 0x04, 0x6e, 0x75,
+                    0x6c, 0x6c, 0x46, 0x01, 0x00, 0x04, 0x62, 0x6f, 0x6c, 0x64, 0x04, 0x74, 0x72, 0x75, 0x65, 0x28,
+                    0x01, 0x01, 0x6d, 0x01, 0x6b, 0x01, 0x77, 0x01, 0x76, 0x84, 0x01, 0x01, 0x00, 0x84, 0x01, 0x00,
+                    0x01, 0x77, 0x84, 0x01, 0x03, 0x01, 0x61, 0x01, 0x01, 0x02, 0x02, 0x01, 0x03, 0x01,
+                ],
+            ),
+            (
+                "deleted ContentDeleted(0) right-anchor in Y.Array",
+                vec![
+                    0x01, 0x04, 0x0a, 0x00, 0x08, 0x01, 0x01, 0x74, 0x01, 0x77, 0x01, 0x61, 0x48, 0x0a, 0x00, 0x01,
+                    0x77, 0x01, 0x62, 0x81, 0x0a, 0x01, 0x00, 0xc8, 0x0a, 0x01, 0x0a, 0x00, 0x01, 0x77, 0x01, 0x64,
+                    0x00,
+                ],
+            ),
+            (
+                "nested ContentType(Y.Text) with adjacent raw wire DS [4,5)+[5,6)",
+                vec![
+                    1, 6, 1, 0, 0x27, 1, 1, b'b', 1, b't', 2, 0x04, 0, 1, 0, 2, b'a', b'b', 0x24, 1, 1, b'm', 1, b'k',
+                    1, b'v', 0x84, 1, 2, 1, b'c', 0x84, 1, 4, 0, 0x24, 1, 1, b'm', 1, b'j', 1, b'w', 1, 1, 2, 4, 1, 5,
+                    1,
+                ],
+            ),
+            (
+                "nested ContentType(Y.Text) with same-clock colliding successor",
+                vec![
+                    1, 4, 1, 0, 0x27, 1, 1, b'b', 1, b't', 2, 0x04, 0, 1, 0, 1, b'a', 0x81, 1, 1, 0, 0x84, 1, 1, 1,
+                    b'b', 0,
+                ],
+            ),
+            (
+                "live ContentString(\"\") pure ASCII next-insert anchor (bdXa vs bXda)",
+                vec![
+                    0x01, 0x04, 0x0a, 0x00, 0x04, 0x01, 0x01, 0x74, 0x01, 0x61, 0x44, 0x0a, 0x00, 0x01, 0x62, 0x84,
+                    0x0a, 0x01, 0x00, 0xc4, 0x0a, 0x01, 0x0a, 0x00, 0x01, 0x64, 0x00,
+                ],
+            ),
+            (
+                "live ContentString(\"\") with DS [2,3) starting at clock 2 (Yjs leaves it live)",
+                vec![
+                    0x01, 0x04, 0x0a, 0x00, 0x04, 0x01, 0x01, 0x74, 0x01, 0x61, 0x44, 0x0a, 0x00, 0x01, 0x62, 0x84,
+                    0x0a, 0x01, 0x00, 0xc4, 0x0a, 0x01, 0x0a, 0x00, 0x01, 0x64, 0x01, 0x0a, 0x01, 0x02, 0x01,
+                ],
+            ),
+            (
+                "live ContentString(\"\") between bold=true and bold=null (format cleanup barrier)",
+                vec![
+                    0x01, 0x04, 0x01, 0x00, 0x06, 0x01, 0x01, 0x74, 0x04, 0x62, 0x6f, 0x6c, 0x64, 0x04, 0x6e, 0x75,
+                    0x6c, 0x6c, 0x46, 0x01, 0x00, 0x04, 0x62, 0x6f, 0x6c, 0x64, 0x04, 0x74, 0x72, 0x75, 0x65, 0xc4,
+                    0x01, 0x01, 0x01, 0x00, 0x00, 0x84, 0x01, 0x00, 0x01, 0x61, 0x00,
+                ],
+            ),
+            (
+                "ContentDeleted(0) with origin_right present",
+                enc()
+                    .varu(1)
+                    .varu(3)
+                    .varu(1)
+                    .varu(0)
+                    .byte(0x04)
+                    .varu(1)
+                    .vstr("t")
+                    .vstr("a")
+                    .byte(0x41)
+                    .varu(1)
+                    .varu(0)
+                    .varu(0)
+                    .byte(0x84)
+                    .varu(1)
+                    .varu(0)
+                    .vstr("b")
+                    .varu(0)
+                    .bytes(),
+            ),
+            (
+                "origin_left splits inside UTF-16 surrogate pair (😀 at 0..2, ol=(1,0))",
+                enc()
+                    .varu(1)
+                    .varu(3)
+                    .varu(1)
+                    .varu(0)
+                    .byte(0x04)
+                    .varu(1)
+                    .vstr("t")
+                    .vstr("😀")
+                    .byte(0x81)
+                    .varu(1)
+                    .varu(0)
+                    .varu(0)
+                    .byte(0x84)
+                    .varu(1)
+                    .varu(1)
+                    .vstr("x")
+                    .varu(0)
+                    .bytes(),
+            ),
+            (
+                "origin_right splits inside UTF-16 surrogate pair (😀 at 0..2, or=(1,1))",
+                enc()
+                    .varu(1)
+                    .varu(3)
+                    .varu(1)
+                    .varu(0)
+                    .byte(0x04)
+                    .varu(1)
+                    .vstr("t")
+                    .vstr("😀")
+                    .byte(0x41)
+                    .varu(1)
+                    .varu(1)
+                    .varu(0)
+                    .byte(0x84)
+                    .varu(1)
+                    .varu(1)
+                    .vstr("x")
+                    .varu(0)
+                    .bytes(),
+            ),
+            (
+                "inbound Yjs incremental diff whose origin lies outside the block",
+                vec![
+                    0x01, 0x03, 0x01, 0x01, 0x84, 0x01, 0x00, 0x01, b'b', 0x84, 0x01, 0x01, 0x00, 0x84, 0x01, 0x01,
+                    0x01, b'c', 0x00,
+                ],
+            ),
+            ("explicit root ContentString(\"\")", root_item_update(4, vec![0])),
+            ("explicit root ContentDeleted(0)", root_item_update(1, vec![0])),
+            (
+                "map key ContentAny([])",
+                enc()
+                    .varu(1)
+                    .varu(2)
+                    .varu(1)
+                    .varu(0)
+                    .byte(0x28)
+                    .varu(1)
+                    .vstr("m")
+                    .vstr("k")
+                    .varu(0)
+                    .byte(0x04)
+                    .varu(1)
+                    .vstr("t")
+                    .vstr("a")
+                    .varu(0)
+                    .bytes(),
+            ),
+            (
+                "map key ContentString(\"\")",
+                enc()
+                    .varu(1)
+                    .varu(2)
+                    .varu(1)
+                    .varu(0)
+                    .byte(0x24)
+                    .varu(0)
+                    .varu(1)
+                    .varu(0)
+                    .vstr("k")
+                    .varu(0)
+                    .byte(0x04)
+                    .varu(1)
+                    .vstr("t")
+                    .vstr("a")
+                    .varu(0)
+                    .bytes(),
+            ),
+            (
+                "cross-client inherited map key ContentString(\"\")",
+                enc()
+                    .varu(2)
+                    // client 2: zero-len inheriting map key from (1,0), then "a" to "t"
+                    .varu(2)
+                    .varu(2)
+                    .varu(0)
+                    .byte(0x84)
+                    .varu(1)
+                    .varu(0)
+                    .varu(0)
+                    .byte(0x04)
+                    .varu(1)
+                    .vstr("t")
+                    .vstr("a")
+                    // client 1: m["k"] = "v"
+                    .varu(1)
+                    .varu(1)
+                    .varu(0)
+                    .byte(0x24)
+                    .varu(1)
+                    .vstr("m")
+                    .vstr("k")
+                    .vstr("v")
+                    .varu(0)
+                    .bytes(),
+            ),
+            (
+                "same-client inherited map key ContentString(\"\")",
+                enc()
+                    .varu(1)
+                    .varu(2)
+                    .varu(1)
+                    .varu(0)
+                    .byte(0x24)
+                    .varu(1)
+                    .vstr("m")
+                    .vstr("k")
+                    .vstr("v")
+                    .byte(0x84)
+                    .varu(1)
+                    .varu(0)
+                    .varu(0)
+                    .varu(0)
+                    .bytes(),
+            ),
+            (
+                "2-hop cross-client inherited map key ContentString(\"\")",
+                enc()
+                    .varu(2)
+                    // client 2: positive item inheriting (1,0) at (2,0..1), then zero-len at (2,1) inheriting (2,0)
+                    .varu(2)
+                    .varu(2)
+                    .varu(0)
+                    .byte(0x84)
+                    .varu(1)
+                    .varu(0)
+                    .vstr("x")
+                    .byte(0x84)
+                    .varu(2)
+                    .varu(0)
+                    .varu(0)
+                    // client 1: m["k"] = "v"
+                    .varu(1)
+                    .varu(1)
+                    .varu(0)
+                    .byte(0x24)
+                    .varu(1)
+                    .vstr("m")
+                    .vstr("k")
+                    .vstr("v")
+                    .varu(0)
+                    .bytes(),
+            ),
+            (
+                "mixed block missing nested Item((3,0)) parent",
+                enc()
+                    .varu(1)
+                    .varu(2)
+                    .varu(2)
+                    .varu(0)
+                    .byte(0x04)
+                    .varu(0)
+                    .varu(3)
+                    .varu(0)
+                    .varu(0)
+                    .byte(0x04)
+                    .varu(1)
+                    .vstr("t")
+                    .vstr("a")
+                    .varu(0)
+                    .bytes(),
+            ),
+            (
+                "mixed block missing origin_left=(3,0)",
+                enc()
+                    .varu(1)
+                    .varu(2)
+                    .varu(2)
+                    .varu(0)
+                    .byte(0x84)
+                    .varu(3)
+                    .varu(0)
+                    .varu(0)
+                    .byte(0x04)
+                    .varu(1)
+                    .vstr("t")
+                    .vstr("a")
+                    .varu(0)
+                    .bytes(),
+            ),
+            (
+                "mixed block missing origin_right=(3,0)",
+                enc()
+                    .varu(1)
+                    .varu(3)
+                    .varu(1)
+                    .varu(0)
+                    .byte(0x04)
+                    .varu(1)
+                    .vstr("t")
+                    .vstr("a")
+                    .byte(0xc4)
+                    .varu(1)
+                    .varu(0)
+                    .varu(3)
+                    .varu(0)
+                    .varu(0)
+                    .byte(0x84)
+                    .varu(1)
+                    .varu(0)
+                    .vstr("b")
+                    .varu(0)
+                    .bytes(),
+            ),
+            (
+                "ITEM_HAS_PARENT_SUB set alongside origin_left",
+                enc()
+                    .varu(1)
+                    .varu(2)
+                    .varu(1)
+                    .varu(0)
+                    .byte(0x04)
+                    .varu(1)
+                    .vstr("t")
+                    .vstr("a")
+                    .byte(0xa4)
+                    .varu(1)
+                    .varu(0)
+                    .varu(0)
+                    .varu(0)
+                    .bytes(),
+            ),
+            (
+                "inherited ContentAny([])",
+                enc()
+                    .varu(1)
+                    .varu(2)
+                    .varu(1)
+                    .varu(0)
+                    .byte(0x04)
+                    .varu(1)
+                    .vstr("t")
+                    .vstr("a")
+                    .byte(0x88)
+                    .varu(1)
+                    .varu(0)
+                    .varu(0)
+                    .varu(0)
+                    .bytes(),
+            ),
+            (
+                "inherited ContentJSON([])",
+                enc()
+                    .varu(1)
+                    .varu(2)
+                    .varu(1)
+                    .varu(0)
+                    .byte(0x04)
+                    .varu(1)
+                    .vstr("t")
+                    .vstr("a")
+                    .byte(0x82)
+                    .varu(1)
+                    .varu(0)
+                    .varu(0)
+                    .varu(0)
+                    .bytes(),
+            ),
+            (
+                "zero-length-only client start_clock=0",
+                enc()
+                    .varu(1)
+                    .varu(1)
+                    .varu(1)
+                    .varu(0)
+                    .byte(0x84)
+                    .varu(1)
+                    .varu(0)
+                    .varu(0)
+                    .varu(0)
+                    .bytes(),
+            ),
+            (
+                "zero-length-only client start_clock=7",
+                enc()
+                    .varu(1)
+                    .varu(1)
+                    .varu(1)
+                    .varu(7)
+                    .byte(0x84)
+                    .varu(1)
+                    .varu(6)
+                    .varu(0)
+                    .varu(0)
+                    .bytes(),
+            ),
+            ("zero-length skip", vec![1, 1, 0, 0, 10, 0, 0]),
+        ];
+        for (name, bytes) in &rejected {
+            assert_decode_err(name, bytes, DecodeLimits::UNRESTRICTED, &zero_len_err);
+            assert!(
+                ReadDoc::from_full_update_v1(bytes.clone()).is_err(),
+                "{name}: ReadDoc must reject"
+            );
+            assert!(
+                merge_updates_v1([bytes]).is_err(),
+                "{name}: merge_updates_v1 must reject"
+            );
+        }
+
+        // Clock boundary: a deleted zero-length ContentDeleted(0) at u64::MAX
+        // inside a proven ContentType(Y.Text) succeeds, while a subsequent
+        // non-colliding positive struct overflows with StructClockInvalid.
+        let near_max = u64::MAX - 2;
+        let at_max_ok = enc()
+            .varu(1)
+            .varu(3)
+            .varu(1)
+            .varu(near_max)
+            .byte(0x27)
+            .varu(1)
+            .vstr("b")
+            .vstr("t")
+            .varu(2)
+            .byte(0x04)
+            .varu(0)
+            .varu(1)
+            .varu(near_max)
+            .vstr("a")
+            .byte(0x81)
+            .varu(1)
+            .varu(near_max + 1)
+            .varu(0)
+            .varu(0)
+            .bytes();
+        let probed_max = decode(&at_max_ok, ProbeSink::default(), DecodeLimits::UNRESTRICTED).unwrap();
+        assert_eq!(
+            probed_max.structs,
+            [(Id::new(1, near_max), 1), (Id::new(1, near_max + 1), 1)]
+        );
+
+        let at_max_overflow = enc()
+            .varu(1)
+            .varu(4)
+            .varu(1)
+            .varu(near_max)
+            .byte(0x27)
+            .varu(1)
+            .vstr("b")
+            .vstr("t")
+            .varu(2)
+            .byte(0x04)
+            .varu(0)
+            .varu(1)
+            .varu(near_max)
+            .vstr("a")
+            .byte(0x81)
+            .varu(1)
+            .varu(near_max + 1)
+            .varu(0)
+            .byte(0x24)
+            .varu(1)
+            .vstr("m")
+            .vstr("k")
+            .vstr("v")
+            .varu(0)
+            .bytes();
+        assert_decode_err(
+            "zero-length at u64::MAX followed by positive item overflows",
+            &at_max_overflow,
+            DecodeLimits::UNRESTRICTED,
+            &ExpectedError::Codec(JwstCodecError::StructClockInvalid {
+                expect: u64::MAX,
+                actually: u64::MAX,
+            }),
+        );
+
+        // Invalid UTF-8 in the parent name of a zero-length item is still
+        // rejected with a UTF-8 error before zero-length handling.
+        let bad_parent = enc()
+            .varu(1)
+            .varu(1)
+            .varu(1)
+            .varu(0)
+            .byte(0x04)
+            .varu(1)
+            .varu(1)
+            .byte(0xff)
+            .varu(0)
+            .varu(0)
+            .bytes();
+        let err = decode(&bad_parent, ProbeSink::default(), DecodeLimits::UNRESTRICTED).unwrap_err();
+        assert!(
+            matches!(&err, Error::Codec(JwstCodecError::IncompleteDocument(msg)) if msg.contains("invalid utf-8")),
+            "expected utf-8 error, got {err:?}"
+        );
+
+        // `max_structs` still bounds zero-length items (no DoS bypass).
+        let many_empty = enc()
+            .varu(1)
+            .varu(3)
+            .varu(1)
+            .varu(0)
+            .byte(0x04)
+            .varu(1)
+            .vstr("t")
+            .vstr("a")
+            .byte(0x84)
+            .varu(1)
+            .varu(0)
+            .varu(0)
+            .byte(0x84)
+            .varu(1)
+            .varu(0)
+            .varu(0)
+            .varu(0)
+            .bytes();
+        let tight = DecodeLimits {
+            max_structs: 2,
+            ..DecodeLimits::UNRESTRICTED
+        };
+        assert_decode_err(
+            "zero-length items count toward max_structs",
+            &many_empty,
+            tight,
+            &ExpectedError::Resource("structs"),
+        );
+
+        // Cross-frame `merge_updates_v1` consistency: if Frame A strips a
+        // deleted zero-length item at `ol=(10,1)` and Frame B adds a live
+        // colliding item at `ol=(10,1)` (or a 2-hop dependent of a deleted
+        // colliding item), `merge_updates_v1([A, B])` rejects the batch just
+        // like single-frame decoding of `A+B`.
+        let frame_a = enc()
+            .varu(1)
+            .varu(4)
+            .varu(10)
+            .varu(0)
+            .byte(0x27)
+            .varu(1)
+            .vstr("b")
+            .vstr("t")
+            .varu(2)
+            .byte(0x04)
+            .varu(0)
+            .varu(10)
+            .varu(0)
+            .vstr("a")
+            .byte(0x81)
+            .varu(10)
+            .varu(1)
+            .varu(0)
+            .byte(0x24)
+            .varu(1)
+            .vstr("m")
+            .vstr("k")
+            .vstr("v")
+            .varu(0)
+            .bytes();
+        let frame_b_live_collider = enc()
+            .varu(1)
+            .varu(1)
+            .varu(10)
+            .varu(3)
+            .byte(0x84)
+            .varu(10)
+            .varu(1)
+            .vstr("x")
+            .varu(0)
+            .bytes();
+        assert!(
+            crate::merge_updates_v1([frame_a.as_slice(), frame_b_live_collider.as_slice()]).is_err(),
+            "merge_updates_v1 must reject cross-frame live collider sharing skipped zero-length origin_left"
+        );
+        // Reversed order `[B, A]` is also rejected.
+        assert!(
+            crate::merge_updates_v1([frame_b_live_collider.as_slice(), frame_a.as_slice()]).is_err(),
+            "merge_updates_v1 must reject cross-frame live collider regardless of frame order"
+        );
+        // Cross-frame deleted single-clock collider with a 2-hop live
+        // dependent in Frame B is rejected.
+        let frame_b_deleted_collider_with_dep = enc()
+            .varu(1)
+            .varu(2)
+            .varu(10)
+            .varu(3)
+            .byte(0x84)
+            .varu(10)
+            .varu(1)
+            .vstr("x")
+            .byte(0x84)
+            .varu(10)
+            .varu(3)
+            .vstr("y")
+            .varu(1)
+            .varu(10)
+            .varu(1)
+            .varu(3)
+            .varu(1)
+            .bytes();
+        assert!(
+            crate::merge_updates_v1([frame_a.as_slice(), frame_b_deleted_collider_with_dep.as_slice()]).is_err(),
+            "merge_updates_v1 must reject cross-frame 2-hop dependent of deleted collider"
+        );
+        // Cross-frame deleted single-clock collider with no dependents is
+        // accepted cleanly.
+        let frame_b_deleted_collider_clean = enc()
+            .varu(1)
+            .varu(1)
+            .varu(10)
+            .varu(3)
+            .byte(0x84)
+            .varu(10)
+            .varu(1)
+            .vstr("\n")
+            .varu(1)
+            .varu(10)
+            .varu(1)
+            .varu(3)
+            .varu(1)
+            .bytes();
+        assert!(
+            crate::merge_updates_v1([frame_a.as_slice(), frame_b_deleted_collider_clean.as_slice()]).is_ok(),
+            "merge_updates_v1 must accept cross-frame unreferenced deleted single-clock collider"
+        );
+        // Overlap slicing across a skipped zero-length clock boundary:
+        // Frame A ends with `Z = ContentDeleted(0)` at `(10,2)` (`ol=(10,1)`),
+        // Frame B has `"ax"` at `(10,1..3)` (which crosses `(10,1) -> (10,2)`
+        // and would slice into live `"x"` at `(10,2)` with synthesized
+        // `ol=(10,1)`). Rejected in both frame orders.
+        let frame_a_trailing_z = enc()
+            .varu(1)
+            .varu(3)
+            .varu(10)
+            .varu(0)
+            .byte(0x27)
+            .varu(1)
+            .vstr("b")
+            .vstr("t")
+            .varu(2)
+            .byte(0x04)
+            .varu(0)
+            .varu(10)
+            .varu(0)
+            .vstr("a")
+            .byte(0x81)
+            .varu(10)
+            .varu(1)
+            .varu(0)
+            .varu(0)
+            .bytes();
+        let frame_b_overlap_ax = enc()
+            .varu(1)
+            .varu(1)
+            .varu(10)
+            .varu(1)
+            .byte(0x04)
+            .varu(0)
+            .varu(10)
+            .varu(0)
+            .vstr("ax")
+            .varu(0)
+            .bytes();
+        assert!(
+            crate::merge_updates_v1([frame_a_trailing_z.as_slice(), frame_b_overlap_ax.as_slice()]).is_err(),
+            "merge_updates_v1 must reject overlap crossing a skipped zero-length boundary"
+        );
+        assert!(
+            crate::merge_updates_v1([frame_b_overlap_ax.as_slice(), frame_a_trailing_z.as_slice()]).is_err(),
+            "merge_updates_v1 must reject overlap crossing a skipped zero-length boundary in reversed order"
+        );
+        // Same-client same-clock `(10,2)` successor with `ol=(10,1)`, even if
+        // `ContentDeleted(1)`, must be unconditionally rejected in both frame
+        // orders to match single-frame `emit_tracked_item`.
+        let frame_b_same_clock_deleted = enc()
+            .varu(1)
+            .varu(1)
+            .varu(10)
+            .varu(2)
+            .byte(0x81)
+            .varu(10)
+            .varu(1)
+            .varu(1)
+            .varu(0)
+            .bytes();
+        assert!(
+            crate::merge_updates_v1([frame_a_trailing_z.as_slice(), frame_b_same_clock_deleted.as_slice()]).is_err(),
+            "merge_updates_v1 must unconditionally reject same-clock successor with skipped origin_left"
+        );
+        assert!(
+            crate::merge_updates_v1([frame_b_same_clock_deleted.as_slice(), frame_a_trailing_z.as_slice()]).is_err(),
+            "merge_updates_v1 must unconditionally reject same-clock successor in reversed order"
+        );
+        // Cross-frame reference from another stripped zero-length item:
+        // Frame 1 strips `Z1` at `(10,2)` with `ol=(10,1)`; Frame 2 has
+        // deleted collider `C` at `(10,3)` (`ol=(10,1)`) followed by stripped
+        // `Z2` at `(10,4)` with `ol=(10,3)` referencing `C`. Both frames pass
+        // alone, while packed and `merge_updates_v1` in either order reject
+        // (and removing `Z2` is an accepting control).
+        let text_hdr: &[u8] = &[0x27, 1, 1, b'b', 1, b't', 2];
+        let item_a: &[u8] = &[4, 0, 10, 0, 1, b'a'];
+        let z1: &[u8] = &[0x81, 10, 1, 0];
+        let map_kv: &[u8] = &[0x24, 1, 1, b'm', 1, b'k', 1, b'v'];
+        let collider_c: &[u8] = &[0x81, 10, 1, 1];
+        let z2: &[u8] = &[0x81, 10, 3, 0];
+        let mk_frame = |items: &[&[u8]]| -> Vec<u8> {
+            let mut bytes = vec![1, u8::try_from(items.len()).unwrap(), 10, 0];
+            for item in items {
+                bytes.extend_from_slice(item);
+            }
+            bytes.push(0);
+            bytes
+        };
+        let ref_first = mk_frame(&[text_hdr, item_a, z1]);
+        let ref_second = mk_frame(&[text_hdr, item_a, map_kv, collider_c, z2]);
+        let ref_packed = mk_frame(&[text_hdr, item_a, z1, map_kv, collider_c, z2]);
+        let ref_clean_second = mk_frame(&[text_hdr, item_a, map_kv, collider_c]);
+        assert!(crate::Update::decode_v1(&ref_first).is_ok());
+        assert!(crate::Update::decode_v1(&ref_second).is_ok());
+        assert!(crate::Update::decode_v1(&ref_packed).is_err());
+        assert!(crate::merge_updates_v1([&ref_first, &ref_clean_second]).is_ok());
+        assert!(crate::merge_updates_v1([&ref_first, &ref_second]).is_err());
+        assert!(crate::merge_updates_v1([&ref_second, &ref_first]).is_err());
+
+        // Recovery contract (`gc: false` valid-struct preservation): if the
+        // containing `Y.Text` is deleted in the DS, stripping the zero-length
+        // item preserves unrelated same-clock map entries (`m.k = "v"`) and
+        // `SV[10] = 3` rather than replicating Yjs 13.6.33's `gc: true`
+        // `findIndexSS` struct-overwrite bug.
+        let deleted_parent_with_zero = enc()
+            .varu(1)
+            .varu(4)
+            .varu(10)
+            .varu(0)
+            .byte(0x27)
+            .varu(1)
+            .vstr("b")
+            .vstr("t")
+            .varu(2)
+            .byte(0x04)
+            .varu(0)
+            .varu(10)
+            .varu(0)
+            .vstr("a")
+            .byte(0x81)
+            .varu(10)
+            .varu(1)
+            .varu(0)
+            .byte(0x24)
+            .varu(1)
+            .vstr("m")
+            .vstr("k")
+            .vstr("v")
+            .varu(1)
+            .varu(10)
+            .varu(1)
+            .varu(0)
+            .varu(1)
+            .bytes();
+        assert!(
+            decode(
+                &deleted_parent_with_zero,
+                ProbeSink::default(),
+                DecodeLimits::UNRESTRICTED
+            )
+            .is_ok()
+        );
+        #[cfg(not(loom))]
+        {
+            let mut doc = crate::Doc::default();
+            doc.apply_update_from_binary_v1(&deleted_parent_with_zero).unwrap();
+            let map_m = doc.get_or_create_map("m").unwrap();
+            assert_eq!(map_m.get("k"), Some(crate::Value::Any(crate::Any::String("v".into()))));
+            assert_eq!(doc.get_state_vector().get(&10), 3);
+        }
     }
 }

@@ -62,7 +62,7 @@ structure client_blocks.ClientBlocksCore where
   end_clock : Std.U64
 
 /-- [y_octo_core::decoder_v1::DecodeLimitsCore]
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 24:0-30:1
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 25:0-31:1
     Visibility: public -/
 structure decoder_v1.DecodeLimitsCore where
   max_structs : Std.Usize
@@ -72,7 +72,7 @@ structure decoder_v1.DecodeLimitsCore where
   max_content_bytes : Std.Usize
 
 /-- [y_octo_core::decoder_v1::UpdateSummary]
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 46:0-51:1
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 47:0-52:1
     Visibility: public -/
 structure decoder_v1.UpdateSummary where
   clients : Std.Usize
@@ -81,21 +81,21 @@ structure decoder_v1.UpdateSummary where
   delete_ranges : Std.Usize
 
 /-- [y_octo_core::decoder_v1::Span]
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 55:0-58:1
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 56:0-59:1
     Visibility: public -/
 structure decoder_v1.Span where
   start : Std.Usize
   «end» : Std.Usize
 
 /-- [y_octo_core::decoder_v1::WireId]
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 62:0-65:1
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 63:0-66:1
     Visibility: public -/
 structure decoder_v1.WireId where
   client : Std.U64
   clock : Std.U64
 
 /-- [y_octo_core::decoder_v1::WireParentCore]
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 69:0-73:1
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 70:0-74:1
     Visibility: public -/
 @[discriminant isize]
 inductive decoder_v1.WireParentCore where
@@ -104,7 +104,7 @@ inductive decoder_v1.WireParentCore where
 | Inherit : decoder_v1.WireParentCore
 
 /-- [y_octo_core::decoder_v1::ItemMetaCore]
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 77:0-83:1
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 78:0-84:1
     Visibility: public -/
 structure decoder_v1.ItemMetaCore where
   origin_left : Option decoder_v1.WireId
@@ -157,7 +157,7 @@ inductive CodecError where
 | SinkAborted : CodecError
 
 /-- Trait declaration: [y_octo_core::decoder_v1::V1Sink]
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 110:0-154:1
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 111:0-156:1
     Visibility: public -/
 structure decoder_v1.V1Sink (Self : Type _) where
   core_validates_utf8 : Self → Result Bool
@@ -175,6 +175,7 @@ structure decoder_v1.V1Sink (Self : Type _) where
     ((core.result.Result Unit CodecError) × Self)
   on_item : Self → decoder_v1.WireId → Std.U64 → decoder_v1.ItemMetaCore
     → Result ((core.result.Result Unit CodecError) × Self)
+  on_skipped_zero_origin : Self → decoder_v1.WireId → Result Self
   on_deleted : Self → Std.U64 → Result ((core.result.Result Unit
     CodecError) × Self)
   on_json_start : Self → Std.Usize → Result ((core.result.Result Unit
@@ -235,7 +236,7 @@ structure decoder_v1.V1Sink (Self : Type _) where
     ((core.result.Result Unit CodecError) × Self)
 
 /-- Trait declaration: [y_octo_core::decoder_v1::SvSink]
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 157:0-160:1
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 159:0-162:1
     Visibility: public -/
 structure decoder_v1.SvSink (Self : Type _) where
   on_sv_len : Self → Std.Usize → Result ((core.result.Result Unit
@@ -290,7 +291,7 @@ structure delete_set.DeleteSetCore where
   entries : alloc.vec.Vec delete_set.DeleteSetEntry
 
 /-- [y_octo_core::decoder_v1::ItemHeader]
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 1000:0-1005:1 -/
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 1002:0-1007:1 -/
 structure decoder_v1.ItemHeader where
   origin_left : Option decoder_v1.WireId
   origin_right : Option decoder_v1.WireId
@@ -298,14 +299,27 @@ structure decoder_v1.ItemHeader where
   parent_sub : Option decoder_v1.Span
 
 /-- [y_octo_core::decoder_v1::DecodeAcc]
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 1008:0-1012:1 -/
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 1010:0-1014:1 -/
 structure decoder_v1.DecodeAcc where
   structs : Std.Usize
   entries : Std.Usize
   content_bytes : Std.Usize
 
+/-- [y_octo_core::decoder_v1::ClientSeqState]
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 1209:0-1214:1 -/
+structure decoder_v1.ClientSeqState where
+  active : Bool
+  ytext_types : alloc.vec.Vec order_range.ClockRange
+  seq_ranges : alloc.vec.Vec order_range.ClockRange
+  just_skipped_ol : Option decoder_v1.WireId
+
+/-- [y_octo_core::decoder_v1::NoopSink]
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 1490:0-1490:16 -/
+@[reducible]
+def decoder_v1.NoopSink := Unit
+
 /-- [y_octo_core::decoder_v1::SummarySink]
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 1361:0-1364:1 -/
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 2629:0-2632:1 -/
 structure decoder_v1.SummarySink where
   seen_clients : alloc.vec.Vec Std.U64
   summary : decoder_v1.UpdateSummary

@@ -1836,47 +1836,47 @@ def clock_search.find_clock_segment
   clock_search.find_clock_segment_loop segments clock 0#usize high
 
 /-- [y_octo_core::decoder_v1::MIN_CLIENT_BYTES]
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 11:0-11:32 -/
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 12:0-12:32 -/
 @[global_simps, irreducible] def decoder_v1.MIN_CLIENT_BYTES : Std.U64 := 3#u64
 
 /-- [y_octo_core::decoder_v1::MIN_STRUCT_BYTES]
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 12:0-12:32 -/
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 13:0-13:32 -/
 @[global_simps, irreducible] def decoder_v1.MIN_STRUCT_BYTES : Std.U64 := 2#u64
 
 /-- [y_octo_core::decoder_v1::MIN_DELETE_CLIENT_BYTES]
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 13:0-13:39 -/
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 14:0-14:39 -/
 @[global_simps, irreducible]
 def decoder_v1.MIN_DELETE_CLIENT_BYTES : Std.U64 := 2#u64
 
 /-- [y_octo_core::decoder_v1::MIN_DELETE_RANGE_BYTES]
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 14:0-14:38 -/
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 15:0-15:38 -/
 @[global_simps, irreducible]
 def decoder_v1.MIN_DELETE_RANGE_BYTES : Std.U64 := 2#u64
 
 /-- [y_octo_core::decoder_v1::MIN_ENTRY_BYTES]
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 15:0-15:31 -/
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 16:0-16:31 -/
 @[global_simps, irreducible] def decoder_v1.MIN_ENTRY_BYTES : Std.U64 := 1#u64
 
 /-- [y_octo_core::decoder_v1::MIN_OBJECT_ENTRY_BYTES]
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 16:0-16:38 -/
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 17:0-17:38 -/
 @[global_simps, irreducible]
 def decoder_v1.MIN_OBJECT_ENTRY_BYTES : Std.U64 := 2#u64
 
 /-- [y_octo_core::decoder_v1::ITEM_HAS_PARENT_SUB]
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 18:0-18:44 -/
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 19:0-19:44 -/
 @[global_simps, irreducible]
 def decoder_v1.ITEM_HAS_PARENT_SUB : Std.U8 := 32#u8
 
 /-- [y_octo_core::decoder_v1::ITEM_HAS_RIGHT_ID]
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 19:0-19:42 -/
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 20:0-20:42 -/
 @[global_simps, irreducible] def decoder_v1.ITEM_HAS_RIGHT_ID : Std.U8 := 64#u8
 
 /-- [y_octo_core::decoder_v1::ITEM_HAS_LEFT_ID]
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 20:0-20:41 -/
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 21:0-21:41 -/
 @[global_simps, irreducible] def decoder_v1.ITEM_HAS_LEFT_ID : Std.U8 := 128#u8
 
 /-- [y_octo_core::decoder_v1::{impl core::clone::Clone for y_octo_core::decoder_v1::DecodeLimitsCore}::clone]:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 22:9-22:14
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 23:9-23:14
     Visibility: public -/
 def decoder_v1.DecodeLimitsCore.Insts.CoreCloneClone.clone
   (self : decoder_v1.DecodeLimitsCore) :
@@ -1885,7 +1885,7 @@ def decoder_v1.DecodeLimitsCore.Insts.CoreCloneClone.clone
   ok self
 
 /-- Trait implementation: [y_octo_core::decoder_v1::{impl core::clone::Clone for y_octo_core::decoder_v1::DecodeLimitsCore}]
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 22:9-22:14 -/
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 23:9-23:14 -/
 @[reducible]
 def decoder_v1.DecodeLimitsCore.Insts.CoreCloneClone : core.clone.Clone
   decoder_v1.DecodeLimitsCore := {
@@ -1893,7 +1893,7 @@ def decoder_v1.DecodeLimitsCore.Insts.CoreCloneClone : core.clone.Clone
 }
 
 /-- Trait implementation: [y_octo_core::decoder_v1::{impl core::marker::Copy for y_octo_core::decoder_v1::DecodeLimitsCore}]
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 22:16-22:20 -/
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 23:16-23:20 -/
 @[reducible]
 def decoder_v1.DecodeLimitsCore.Insts.CoreMarkerCopy : core.marker.Copy
   decoder_v1.DecodeLimitsCore := {
@@ -1901,7 +1901,7 @@ def decoder_v1.DecodeLimitsCore.Insts.CoreMarkerCopy : core.marker.Copy
 }
 
 /-- [y_octo_core::decoder_v1::{y_octo_core::decoder_v1::DecodeLimitsCore}::default_update]:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 33:4-41:5
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 34:4-42:5
     Visibility: public -/
 def decoder_v1.DecodeLimitsCore.default_update
   : Result decoder_v1.DecodeLimitsCore := do
@@ -1915,14 +1915,14 @@ def decoder_v1.DecodeLimitsCore.default_update
     }
 
 /-- [y_octo_core::decoder_v1::{impl core::clone::Clone for y_octo_core::decoder_v1::UpdateSummary}::clone]:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 44:9-44:14
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 45:9-45:14
     Visibility: public -/
 def decoder_v1.UpdateSummary.Insts.CoreCloneClone.clone
   (self : decoder_v1.UpdateSummary) : Result decoder_v1.UpdateSummary := do
   ok self
 
 /-- Trait implementation: [y_octo_core::decoder_v1::{impl core::clone::Clone for y_octo_core::decoder_v1::UpdateSummary}]
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 44:9-44:14 -/
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 45:9-45:14 -/
 @[reducible]
 def decoder_v1.UpdateSummary.Insts.CoreCloneClone : core.clone.Clone
   decoder_v1.UpdateSummary := {
@@ -1930,7 +1930,7 @@ def decoder_v1.UpdateSummary.Insts.CoreCloneClone : core.clone.Clone
 }
 
 /-- Trait implementation: [y_octo_core::decoder_v1::{impl core::marker::Copy for y_octo_core::decoder_v1::UpdateSummary}]
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 44:16-44:20 -/
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 45:16-45:20 -/
 @[reducible]
 def decoder_v1.UpdateSummary.Insts.CoreMarkerCopy : core.marker.Copy
   decoder_v1.UpdateSummary := {
@@ -1938,14 +1938,14 @@ def decoder_v1.UpdateSummary.Insts.CoreMarkerCopy : core.marker.Copy
 }
 
 /-- [y_octo_core::decoder_v1::{impl core::clone::Clone for y_octo_core::decoder_v1::Span}::clone]:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 53:9-53:14
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 54:9-54:14
     Visibility: public -/
 def decoder_v1.Span.Insts.CoreCloneClone.clone
   (self : decoder_v1.Span) : Result decoder_v1.Span := do
   ok self
 
 /-- Trait implementation: [y_octo_core::decoder_v1::{impl core::clone::Clone for y_octo_core::decoder_v1::Span}]
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 53:9-53:14 -/
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 54:9-54:14 -/
 @[reducible]
 def decoder_v1.Span.Insts.CoreCloneClone : core.clone.Clone decoder_v1.Span
   := {
@@ -1953,7 +1953,7 @@ def decoder_v1.Span.Insts.CoreCloneClone : core.clone.Clone decoder_v1.Span
 }
 
 /-- Trait implementation: [y_octo_core::decoder_v1::{impl core::marker::Copy for y_octo_core::decoder_v1::Span}]
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 53:16-53:20 -/
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 54:16-54:20 -/
 @[reducible]
 def decoder_v1.Span.Insts.CoreMarkerCopy : core.marker.Copy decoder_v1.Span
   := {
@@ -1961,14 +1961,14 @@ def decoder_v1.Span.Insts.CoreMarkerCopy : core.marker.Copy decoder_v1.Span
 }
 
 /-- [y_octo_core::decoder_v1::{impl core::clone::Clone for y_octo_core::decoder_v1::WireId}::clone]:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 60:9-60:14
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 61:9-61:14
     Visibility: public -/
 def decoder_v1.WireId.Insts.CoreCloneClone.clone
   (self : decoder_v1.WireId) : Result decoder_v1.WireId := do
   ok self
 
 /-- Trait implementation: [y_octo_core::decoder_v1::{impl core::clone::Clone for y_octo_core::decoder_v1::WireId}]
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 60:9-60:14 -/
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 61:9-61:14 -/
 @[reducible]
 def decoder_v1.WireId.Insts.CoreCloneClone : core.clone.Clone decoder_v1.WireId
   := {
@@ -1976,7 +1976,7 @@ def decoder_v1.WireId.Insts.CoreCloneClone : core.clone.Clone decoder_v1.WireId
 }
 
 /-- Trait implementation: [y_octo_core::decoder_v1::{impl core::marker::Copy for y_octo_core::decoder_v1::WireId}]
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 60:16-60:20 -/
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 61:16-61:20 -/
 @[reducible]
 def decoder_v1.WireId.Insts.CoreMarkerCopy : core.marker.Copy decoder_v1.WireId
   := {
@@ -1984,14 +1984,14 @@ def decoder_v1.WireId.Insts.CoreMarkerCopy : core.marker.Copy decoder_v1.WireId
 }
 
 /-- [y_octo_core::decoder_v1::{impl core::clone::Clone for y_octo_core::decoder_v1::WireParentCore}::clone]:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 67:9-67:14
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 68:9-68:14
     Visibility: public -/
 def decoder_v1.WireParentCore.Insts.CoreCloneClone.clone
   (self : decoder_v1.WireParentCore) : Result decoder_v1.WireParentCore := do
   ok self
 
 /-- Trait implementation: [y_octo_core::decoder_v1::{impl core::clone::Clone for y_octo_core::decoder_v1::WireParentCore}]
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 67:9-67:14 -/
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 68:9-68:14 -/
 @[reducible]
 def decoder_v1.WireParentCore.Insts.CoreCloneClone : core.clone.Clone
   decoder_v1.WireParentCore := {
@@ -1999,7 +1999,7 @@ def decoder_v1.WireParentCore.Insts.CoreCloneClone : core.clone.Clone
 }
 
 /-- Trait implementation: [y_octo_core::decoder_v1::{impl core::marker::Copy for y_octo_core::decoder_v1::WireParentCore}]
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 67:16-67:20 -/
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 68:16-68:20 -/
 @[reducible]
 def decoder_v1.WireParentCore.Insts.CoreMarkerCopy : core.marker.Copy
   decoder_v1.WireParentCore := {
@@ -2007,14 +2007,14 @@ def decoder_v1.WireParentCore.Insts.CoreMarkerCopy : core.marker.Copy
 }
 
 /-- [y_octo_core::decoder_v1::{impl core::clone::Clone for y_octo_core::decoder_v1::ItemMetaCore}::clone]:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 75:9-75:14
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 76:9-76:14
     Visibility: public -/
 def decoder_v1.ItemMetaCore.Insts.CoreCloneClone.clone
   (self : decoder_v1.ItemMetaCore) : Result decoder_v1.ItemMetaCore := do
   ok self
 
 /-- Trait implementation: [y_octo_core::decoder_v1::{impl core::clone::Clone for y_octo_core::decoder_v1::ItemMetaCore}]
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 75:9-75:14 -/
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 76:9-76:14 -/
 @[reducible]
 def decoder_v1.ItemMetaCore.Insts.CoreCloneClone : core.clone.Clone
   decoder_v1.ItemMetaCore := {
@@ -2022,12 +2022,22 @@ def decoder_v1.ItemMetaCore.Insts.CoreCloneClone : core.clone.Clone
 }
 
 /-- Trait implementation: [y_octo_core::decoder_v1::{impl core::marker::Copy for y_octo_core::decoder_v1::ItemMetaCore}]
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 75:16-75:20 -/
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 76:16-76:20 -/
 @[reducible]
 def decoder_v1.ItemMetaCore.Insts.CoreMarkerCopy : core.marker.Copy
   decoder_v1.ItemMetaCore := {
   cloneInst := decoder_v1.ItemMetaCore.Insts.CoreCloneClone
 }
+
+/-- [y_octo_core::decoder_v1::V1Sink::on_skipped_zero_origin]:
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 122:4-122:65
+    Visibility: public -/
+@[trait_default]
+def decoder_v1.V1Sink.on_skipped_zero_origin.default
+  {Self : Type _} (self : Self) (_origin_left : decoder_v1.WireId) :
+  Result Self
+  := do
+  ok self
 
 /-- [y_octo_core::state_vector::{y_octo_core::state_vector::StateVectorCore}::find_index]: loop body 0:
     Source: 'y-octo-core/src/state_vector.rs', lines 33:8-45:5 -/
@@ -2102,7 +2112,7 @@ def state_vector.StateVectorCore.set
       ok { entries := v }
 
 /-- [y_octo_core::decoder_v1::{impl y_octo_core::decoder_v1::SvSink for y_octo_core::state_vector::StateVectorCore}::on_sv_entry]:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 167:4-170:5
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 169:4-172:5
     Visibility: public -/
 def state_vector.StateVectorCore.Insts.Y_octo_coreDecoder_v1SvSink.on_sv_entry
   (self : state_vector.StateVectorCore) (client : Std.U64) (clock : Std.U64) :
@@ -2112,7 +2122,7 @@ def state_vector.StateVectorCore.Insts.Y_octo_coreDecoder_v1SvSink.on_sv_entry
   ok (core.result.Result.Ok (), self1)
 
 /-- [y_octo_core::decoder_v1::{impl y_octo_core::decoder_v1::SvSink for y_octo_core::state_vector::StateVectorCore}::on_sv_len]:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 163:4-165:5
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 165:4-167:5
     Visibility: public -/
 def state_vector.StateVectorCore.Insts.Y_octo_coreDecoder_v1SvSink.on_sv_len
   (self : state_vector.StateVectorCore) (_count : Std.Usize) :
@@ -2121,7 +2131,7 @@ def state_vector.StateVectorCore.Insts.Y_octo_coreDecoder_v1SvSink.on_sv_len
   ok (core.result.Result.Ok (), self)
 
 /-- Trait implementation: [y_octo_core::decoder_v1::{impl y_octo_core::decoder_v1::SvSink for y_octo_core::state_vector::StateVectorCore}]
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 162:0-171:1 -/
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 164:0-173:1 -/
 @[reducible]
 def state_vector.StateVectorCore.Insts.Y_octo_coreDecoder_v1SvSink :
   decoder_v1.SvSink state_vector.StateVectorCore := {
@@ -2132,7 +2142,7 @@ def state_vector.StateVectorCore.Insts.Y_octo_coreDecoder_v1SvSink :
 }
 
 /-- [y_octo_core::decoder_v1::checked_usize_from_u64]:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 174:0-180:1 -/
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 176:0-182:1 -/
 def decoder_v1.checked_usize_from_u64
   (v : Std.U64) : Result (core.result.Result Std.Usize CodecError) := do
   let i ← lift (UScalar.cast .U64 core.num.Usize.MAX)
@@ -2142,7 +2152,7 @@ def decoder_v1.checked_usize_from_u64
        ok (core.result.Result.Ok i1)
 
 /-- [y_octo_core::decoder_v1::checked_usize_limit]:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 183:0-189:1 -/
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 185:0-191:1 -/
 def decoder_v1.checked_usize_limit
   (v : Std.U64) (kind : LimitKind) :
   Result (core.result.Result Std.Usize CodecError)
@@ -2154,7 +2164,7 @@ def decoder_v1.checked_usize_limit
        ok (core.result.Result.Ok i1)
 
 /-- [y_octo_core::decoder_v1::check_fits]:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 192:0-199:1 -/
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 194:0-201:1 -/
 def decoder_v1.check_fits
   (remaining : Std.Usize) (count : Std.Usize) (min_bytes : Std.U64) :
   Result (core.result.Result Unit CodecError)
@@ -2167,7 +2177,7 @@ def decoder_v1.check_fits
   else ok (core.result.Result.Ok ())
 
 /-- [y_octo_core::decoder_v1::check_fits_kind]:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 202:0-209:1 -/
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 204:0-211:1 -/
 def decoder_v1.check_fits_kind
   (remaining : Std.Usize) (count : Std.Usize) (min_bytes : Std.U64)
   (kind : LimitKind) :
@@ -2181,7 +2191,7 @@ def decoder_v1.check_fits_kind
   else ok (core.result.Result.Ok ())
 
 /-- [y_octo_core::decoder_v1::fail_with]:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 213:0-216:1 -/
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 215:0-218:1 -/
 def decoder_v1.fail_with
   {S : Type _} (V1SinkInst : decoder_v1.V1Sink S) (sink : S) (err : CodecError)
   (a : Std.Usize) (b : Std.U64) :
@@ -2191,7 +2201,7 @@ def decoder_v1.fail_with
   ok (err, sink1)
 
 /-- [y_octo_core::decoder_v1::check_fits_kind_sink]:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 219:0-232:1 -/
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 221:0-234:1 -/
 def decoder_v1.check_fits_kind_sink
   {S : Type _} (V1SinkInst : decoder_v1.V1Sink S) (remaining : Std.Usize)
   (count : Std.Usize) (min_bytes : Std.U64) (kind : LimitKind) (sink : S) :
@@ -2209,7 +2219,7 @@ def decoder_v1.check_fits_kind_sink
   else ok (core.result.Result.Ok (), sink)
 
 /-- [y_octo_core::decoder_v1::checked_add_usize]:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 235:0-241:1 -/
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 237:0-243:1 -/
 def decoder_v1.checked_add_usize
   (a : Std.Usize) (b : Std.Usize) :
   Result (core.result.Result Std.Usize CodecError)
@@ -2221,7 +2231,7 @@ def decoder_v1.checked_add_usize
        ok (core.result.Result.Ok i1)
 
 /-- [y_octo_core::decoder_v1::checked_add_limit]:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 244:0-250:1 -/
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 246:0-252:1 -/
 def decoder_v1.checked_add_limit
   (a : Std.Usize) (b : Std.Usize) (kind : LimitKind) :
   Result (core.result.Result Std.Usize CodecError)
@@ -2233,7 +2243,7 @@ def decoder_v1.checked_add_limit
        ok (core.result.Result.Ok i1)
 
 /-- [y_octo_core::decoder_v1::read_u8_at]:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 253:0-258:1 -/
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 255:0-260:1 -/
 def decoder_v1.read_u8_at
   (input : Slice Std.U8) (pos : Std.Usize) :
   Result (core.result.Result (Std.U8 × Std.Usize) CodecError)
@@ -2247,7 +2257,7 @@ def decoder_v1.read_u8_at
     ok (core.result.Result.Ok (i1, i2))
 
 /-- [y_octo_core::decoder_v1::read_u32_be_at]:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 261:0-270:1 -/
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 263:0-272:1 -/
 def decoder_v1.read_u32_be_at
   (input : Slice Std.U8) (pos : Std.Usize) :
   Result (core.result.Result (Std.U32 × Std.Usize) CodecError)
@@ -2282,7 +2292,7 @@ def decoder_v1.read_u32_be_at
       ok (core.result.Result.Ok (i15, i16))
 
 /-- [y_octo_core::decoder_v1::read_u64_be_at]:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 273:0-286:1 -/
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 275:0-288:1 -/
 def decoder_v1.read_u64_be_at
   (input : Slice Std.U8) (pos : Std.Usize) :
   Result (core.result.Result (Std.U64 × Std.Usize) CodecError)
@@ -2411,7 +2421,7 @@ def varint.decode_var_u64
   varint.decode_var_u64_loop input 0#u64 0#usize
 
 /-- [y_octo_core::decoder_v1::read_var_u64_at]:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 289:0-302:1 -/
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 291:0-304:1 -/
 def decoder_v1.read_var_u64_at
   (input : Slice Std.U8) (pos : Std.Usize) :
   Result (core.result.Result (Std.U64 × Std.Usize) CodecError)
@@ -2533,7 +2543,7 @@ def varint.decode_var_i32_with_sign
       6#u32
 
 /-- [y_octo_core::decoder_v1::read_var_i32_with_sign_at]:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 305:0-314:1 -/
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 307:0-316:1 -/
 def decoder_v1.read_var_i32_with_sign_at
   (input : Slice Std.U8) (pos : Std.Usize) :
   Result (core.result.Result ((Std.I32 × Bool) × Std.Usize) CodecError)
@@ -2563,7 +2573,7 @@ def decoder_v1.read_var_i32_with_sign_at
         residual
 
 /-- [y_octo_core::decoder_v1::read_var_u64_sink]:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 317:0-325:1 -/
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 319:0-327:1 -/
 def decoder_v1.read_var_u64_sink
   {S : Type _} (V1SinkInst : decoder_v1.V1Sink S) (input : Slice Std.U8)
   (pos : Std.Usize) (sink : S) :
@@ -2583,7 +2593,7 @@ def decoder_v1.read_var_u64_sink
     ok (core.result.Result.Err ce, sink1)
 
 /-- [y_octo_core::decoder_v1::read_var_i32_with_sign_sink]:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 328:0-340:1 -/
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 330:0-342:1 -/
 def decoder_v1.read_var_i32_with_sign_sink
   {S : Type _} (V1SinkInst : decoder_v1.V1Sink S) (input : Slice Std.U8)
   (pos : Std.Usize) (sink : S) :
@@ -2604,7 +2614,7 @@ def decoder_v1.read_var_i32_with_sign_sink
     ok (core.result.Result.Err ce, sink1)
 
 /-- [y_octo_core::decoder_v1::read_bytes_slice_at]:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 343:0-359:1 -/
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 345:0-361:1 -/
 def decoder_v1.read_bytes_slice_at
   {S : Type _} (V1SinkInst : decoder_v1.V1Sink S) (input : Slice Std.U8)
   (pos : Std.Usize) (sink : S) :
@@ -2870,7 +2880,7 @@ def utf16.is_valid_utf8 (bytes : Slice Std.U8) : Result Bool := do
   utf16.is_valid_utf8_loop bytes 0#usize len
 
 /-- [y_octo_core::decoder_v1::read_str_slice_at]:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 362:0-368:1 -/
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 364:0-370:1 -/
 def decoder_v1.read_str_slice_at
   {S : Type _} (V1SinkInst : decoder_v1.V1Sink S) (input : Slice Std.U8)
   (pos : Std.Usize) (sink : S) :
@@ -2899,7 +2909,7 @@ def decoder_v1.read_str_slice_at
     ok (r1, sink1)
 
 /-- [y_octo_core::decoder_v1::read_early_str_slice_at]:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 371:0-381:1 -/
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 373:0-383:1 -/
 def decoder_v1.read_early_str_slice_at
   {S : Type _} (V1SinkInst : decoder_v1.V1Sink S) (input : Slice Std.U8)
   (pos : Std.Usize) (slot : Std.U8) (sink : S) :
@@ -2938,7 +2948,7 @@ def decoder_v1.read_early_str_slice_at
     ok (r1, sink1)
 
 /-- [y_octo_core::decoder_v1::read_wire_id_at]:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 384:0-388:1 -/
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 386:0-390:1 -/
 def decoder_v1.read_wire_id_at
   {S : Type _} (V1SinkInst : decoder_v1.V1Sink S) (input : Slice Std.U8)
   (pos : Std.Usize) (sink : S) :
@@ -2970,7 +2980,7 @@ def decoder_v1.read_wire_id_at
     ok (r1, sink1)
 
 /-- [y_octo_core::decoder_v1::advance_clock_sink]:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 391:0-399:1 -/
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 393:0-401:1 -/
 def decoder_v1.advance_clock_sink
   {S : Type _} (V1SinkInst : decoder_v1.V1Sink S) (clock : Std.U64)
   (len : Std.U64) (sink : S) :
@@ -2990,7 +3000,7 @@ def decoder_v1.advance_clock_sink
          ok (core.result.Result.Ok i1, sink)
 
 /-- [y_octo_core::decoder_v1::read_sv_entry]:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 402:0-406:1 -/
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 404:0-408:1 -/
 def decoder_v1.read_sv_entry
   (input : Slice Std.U8) (cur : Std.Usize) :
   Result (core.result.Result (Std.U64 × Std.U64 × Std.Usize) CodecError)
@@ -3016,7 +3026,7 @@ def decoder_v1.read_sv_entry
       residual
 
 /-- [y_octo_core::decoder_v1::read_state_vector_v1_with]: loop body 0:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 422:4-433:5
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 424:4-435:5
     Visibility: public -/
 @[rust_loop_body]
 def decoder_v1.read_state_vector_v1_with_loop.body
@@ -3046,7 +3056,7 @@ def decoder_v1.read_state_vector_v1_with_loop.body
   else ok (done (sink, cur, err))
 
 /-- [y_octo_core::decoder_v1::read_state_vector_v1_with]: loop 0:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 422:4-433:5
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 424:4-435:5
     Visibility: public -/
 @[rust_loop]
 def decoder_v1.read_state_vector_v1_with_loop
@@ -3062,7 +3072,7 @@ def decoder_v1.read_state_vector_v1_with_loop
     (sink, cur, err, i)
 
 /-- [y_octo_core::decoder_v1::read_state_vector_v1_with]:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 410:0-435:1
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 412:0-437:1
     Visibility: public -/
 def decoder_v1.read_state_vector_v1_with
   {S : Type _} (SvSinkInst : decoder_v1.SvSink S) (input : Slice Std.U8)
@@ -3125,7 +3135,7 @@ def state_vector.StateVectorCore.new
   ok { entries := (alloc.vec.Vec.new (Std.U64 × Std.U64)) }
 
 /-- [y_octo_core::decoder_v1::read_state_vector_v1]: loop body 0:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 451:4-460:5
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 453:4-462:5
     Visibility: public -/
 @[rust_loop_body]
 def decoder_v1.read_state_vector_v1_loop.body
@@ -3153,7 +3163,7 @@ def decoder_v1.read_state_vector_v1_loop.body
   else ok (done (cur, sv, err))
 
 /-- [y_octo_core::decoder_v1::read_state_vector_v1]: loop 0:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 451:4-460:5
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 453:4-462:5
     Visibility: public -/
 @[rust_loop]
 def decoder_v1.read_state_vector_v1_loop
@@ -3168,7 +3178,7 @@ def decoder_v1.read_state_vector_v1_loop
     (cur, sv, err, i)
 
 /-- [y_octo_core::decoder_v1::read_state_vector_v1]:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 441:0-462:1
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 443:0-464:1
     Visibility: public -/
 def decoder_v1.read_state_vector_v1
   (input : Slice Std.U8) (pos : Std.Usize) :
@@ -3214,7 +3224,7 @@ def decoder_v1.read_state_vector_v1
         CodecError) residual
 
 /-- [y_octo_core::decoder_v1::decode_state_vector_v1]:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 465:0-471:1
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 467:0-473:1
     Visibility: public -/
 def decoder_v1.decode_state_vector_v1
   (input : Slice Std.U8) :
@@ -3234,7 +3244,7 @@ def decoder_v1.decode_state_vector_v1
       state_vector.StateVectorCore (core.convert.FromSame CodecError) residual
 
 /-- [y_octo_core::decoder_v1::read_one_delete_range]:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 474:0-481:1 -/
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 476:0-483:1 -/
 def decoder_v1.read_one_delete_range
   (input : Slice Std.U8) (cur : Std.Usize) :
   Result (core.result.Result (Std.U64 × Std.U64 × Std.Usize) CodecError)
@@ -3264,7 +3274,7 @@ def decoder_v1.read_one_delete_range
       residual
 
 /-- [y_octo_core::decoder_v1::read_one_delete_range_sink]:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 484:0-495:1 -/
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 486:0-497:1 -/
 def decoder_v1.read_one_delete_range_sink
   {S : Type _} (V1SinkInst : decoder_v1.V1Sink S) (input : Slice Std.U8)
   (cur : Std.Usize) (sink : S) :
@@ -4533,7 +4543,7 @@ def delete_set.DeleteSetCore.try_insert
         ok (core.result.Result.Ok (), { entries := v })
 
 /-- [y_octo_core::decoder_v1::read_delete_ranges_for_client]: loop body 0:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 508:4-521:5 -/
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 510:4-523:5 -/
 @[rust_loop_body]
 def decoder_v1.read_delete_ranges_for_client_loop.body
   (input : Slice Std.U8) (client : Std.U64) (range_count : Std.Usize)
@@ -4571,7 +4581,7 @@ def decoder_v1.read_delete_ranges_for_client_loop.body
   else ok (done (ds, cur, err))
 
 /-- [y_octo_core::decoder_v1::read_delete_ranges_for_client]: loop 0:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 508:4-521:5 -/
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 510:4-523:5 -/
 @[rust_loop]
 def decoder_v1.read_delete_ranges_for_client_loop
   (input : Slice Std.U8) (client : Std.U64) (range_count : Std.Usize)
@@ -4586,7 +4596,7 @@ def decoder_v1.read_delete_ranges_for_client_loop
     (ds, cur, r_idx, err)
 
 /-- [y_octo_core::decoder_v1::read_delete_ranges_for_client]:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 498:0-523:1 -/
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 500:0-525:1 -/
 def decoder_v1.read_delete_ranges_for_client
   (input : Slice Std.U8) (start_pos : Std.Usize) (client : Std.U64)
   (range_count : Std.Usize) (ds : delete_set.DeleteSetCore) :
@@ -4601,7 +4611,7 @@ def decoder_v1.read_delete_ranges_for_client
   | some e => ok (core.result.Result.Err e, ds1)
 
 /-- [y_octo_core::decoder_v1::read_delete_client_header]:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 526:0-540:1 -/
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 528:0-542:1 -/
 def decoder_v1.read_delete_client_header
   (input : Slice Std.U8) (cur : Std.Usize)
   (limits : decoder_v1.DecodeLimitsCore) (total_entries : Std.Usize) :
@@ -4658,7 +4668,7 @@ def delete_set.DeleteSetCore.new : Result delete_set.DeleteSetCore := do
   ok { entries := (alloc.vec.Vec.new delete_set.DeleteSetEntry) }
 
 /-- [y_octo_core::decoder_v1::read_delete_set_v1]: loop body 0:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 570:4-596:5
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 572:4-598:5
     Visibility: public -/
 @[rust_loop_body]
 def decoder_v1.read_delete_set_v1_loop.body
@@ -4716,7 +4726,7 @@ def decoder_v1.read_delete_set_v1_loop.body
   else ok (done (cur, ds, total_ranges, err))
 
 /-- [y_octo_core::decoder_v1::read_delete_set_v1]: loop 0:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 570:4-596:5
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 572:4-598:5
     Visibility: public -/
 @[rust_loop]
 def decoder_v1.read_delete_set_v1_loop
@@ -4735,7 +4745,7 @@ def decoder_v1.read_delete_set_v1_loop
     (cur, ds, total_entries, total_ranges, c_idx, err)
 
 /-- [y_octo_core::decoder_v1::read_delete_set_v1]:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 544:0-602:1
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 546:0-604:1
     Visibility: public -/
 def decoder_v1.read_delete_set_v1
   (input : Slice Std.U8) (pos : Std.Usize)
@@ -4794,7 +4804,7 @@ def decoder_v1.read_delete_set_v1
         (core.convert.FromSame CodecError) residual
 
 /-- [y_octo_core::decoder_v1::decode_delete_ranges_for_client]: loop body 0:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 615:4-633:5 -/
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 617:4-635:5 -/
 @[rust_loop_body]
 def decoder_v1.decode_delete_ranges_for_client_loop.body
   {S : Type _} (V1SinkInst : decoder_v1.V1Sink S) (input : Slice Std.U8)
@@ -4829,7 +4839,7 @@ def decoder_v1.decode_delete_ranges_for_client_loop.body
   else ok (done (sink, cur, err))
 
 /-- [y_octo_core::decoder_v1::decode_delete_ranges_for_client]: loop 0:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 615:4-633:5 -/
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 617:4-635:5 -/
 @[rust_loop]
 def decoder_v1.decode_delete_ranges_for_client_loop
   {S : Type _} (V1SinkInst : decoder_v1.V1Sink S) (input : Slice Std.U8)
@@ -4844,7 +4854,7 @@ def decoder_v1.decode_delete_ranges_for_client_loop
     (sink, cur, r_idx, err)
 
 /-- [y_octo_core::decoder_v1::decode_delete_ranges_for_client]:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 605:0-635:1 -/
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 607:0-637:1 -/
 def decoder_v1.decode_delete_ranges_for_client
   {S : Type _} (V1SinkInst : decoder_v1.V1Sink S) (input : Slice Std.U8)
   (start_pos : Std.Usize) (client : Std.U64) (range_count : Std.Usize)
@@ -4859,7 +4869,7 @@ def decoder_v1.decode_delete_ranges_for_client
   | some e => ok (core.result.Result.Err e, sink1)
 
 /-- [y_octo_core::decoder_v1::decode_delete_client_header]:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 638:0-653:1 -/
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 640:0-655:1 -/
 def decoder_v1.decode_delete_client_header
   {S : Type _} (V1SinkInst : decoder_v1.V1Sink S) (input : Slice Std.U8)
   (cur : Std.Usize) (limits : decoder_v1.DecodeLimitsCore)
@@ -4919,7 +4929,7 @@ def decoder_v1.decode_delete_client_header
     ok (r1, sink1)
 
 /-- [y_octo_core::decoder_v1::decode_delete_set_v1]: loop body 0:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 682:4-708:5 -/
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 684:4-710:5 -/
 @[rust_loop_body]
 def decoder_v1.decode_delete_set_v1_loop.body
   {S : Type _} (V1SinkInst : decoder_v1.V1Sink S) (input : Slice Std.U8)
@@ -4976,7 +4986,7 @@ def decoder_v1.decode_delete_set_v1_loop.body
   else ok (done (sink, cur, err))
 
 /-- [y_octo_core::decoder_v1::decode_delete_set_v1]: loop 0:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 682:4-708:5 -/
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 684:4-710:5 -/
 @[rust_loop]
 def decoder_v1.decode_delete_set_v1_loop
   {S : Type _} (V1SinkInst : decoder_v1.V1Sink S) (input : Slice Std.U8)
@@ -4992,7 +5002,7 @@ def decoder_v1.decode_delete_set_v1_loop
     (sink, cur, total_entries, c_idx, err)
 
 /-- [y_octo_core::decoder_v1::decode_delete_set_v1]:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 656:0-710:1 -/
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 658:0-712:1 -/
 def decoder_v1.decode_delete_set_v1
   {S : Type _} (V1SinkInst : decoder_v1.V1Sink S) (input : Slice Std.U8)
   (pos : Std.Usize) (limits : decoder_v1.DecodeLimitsCore)
@@ -5056,7 +5066,7 @@ def decoder_v1.decode_delete_set_v1
       ok (r1, sink1)
 
 /-- [y_octo_core::decoder_v1::decode_any_scalar]:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 713:0-757:1 -/
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 715:0-759:1 -/
 def decoder_v1.decode_any_scalar
   {S : Type _} (V1SinkInst : decoder_v1.V1Sink S) (input : Slice Std.U8)
   (tag : Std.U8) (cur : Std.Usize) (sink : S) :
@@ -5289,7 +5299,7 @@ def decoder_v1.decode_any_scalar
                         tag), sink)
 
 /-- [y_octo_core::decoder_v1::open_any_container]:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 761:0-802:1 -/
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 763:0-804:1 -/
 def decoder_v1.open_any_container
   {S : Type _} (V1SinkInst : decoder_v1.V1Sink S) (input : Slice Std.U8)
   (is_obj : Bool) (cur : Std.Usize) (limits : decoder_v1.DecodeLimitsCore)
@@ -5415,7 +5425,7 @@ def decoder_v1.open_any_container
     ok (r1, «open», sink1)
 
 /-- [y_octo_core::decoder_v1::close_finished_containers]: loop body 0:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 813:4-823:5 -/
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 815:4-825:5 -/
 @[rust_loop_body]
 def decoder_v1.close_finished_containers_loop.body
   {S : Type _} (V1SinkInst : decoder_v1.V1Sink S)
@@ -5445,7 +5455,7 @@ def decoder_v1.close_finished_containers_loop.body
   else ok (done (sink, depth, err))
 
 /-- [y_octo_core::decoder_v1::close_finished_containers]: loop 0:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 813:4-823:5 -/
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 815:4-825:5 -/
 @[rust_loop]
 def decoder_v1.close_finished_containers_loop
   {S : Type _} (V1SinkInst : decoder_v1.V1Sink S)
@@ -5460,7 +5470,7 @@ def decoder_v1.close_finished_containers_loop
     (sink, depth, stop, err)
 
 /-- [y_octo_core::decoder_v1::close_finished_containers]:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 805:0-825:1 -/
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 807:0-827:1 -/
 def decoder_v1.close_finished_containers
   {S : Type _} (V1SinkInst : decoder_v1.V1Sink S)
   («open» : Slice (Std.Usize × Bool)) (start_depth : Std.Usize) (sink : S) :
@@ -5474,7 +5484,7 @@ def decoder_v1.close_finished_containers
   | some e => ok (core.result.Result.Err e, sink1)
 
 /-- [y_octo_core::decoder_v1::decode_any_step]:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 828:0-873:1 -/
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 830:0-875:1 -/
 def decoder_v1.decode_any_step
   {S : Type _} (V1SinkInst : decoder_v1.V1Sink S) (input : Slice Std.U8)
   (start_cur : Std.Usize) (limits : decoder_v1.DecodeLimitsCore)
@@ -5794,7 +5804,7 @@ def decoder_v1.decode_any_step
           ok (r1, open1, sink)
 
 /-- [y_octo_core::decoder_v1::decode_any_v1]: loop body 0:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 921:4-931:5 -/
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 923:4-933:5 -/
 @[rust_loop_body]
 def decoder_v1.decode_any_v1_loop0.body
   {S : Type _} (V1SinkInst : decoder_v1.V1Sink S) (input : Slice Std.U8)
@@ -5836,7 +5846,7 @@ def decoder_v1.decode_any_v1_loop0.body
   else ok (done (sink, cur, entries, depth, err))
 
 /-- [y_octo_core::decoder_v1::decode_any_v1]: loop 0:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 921:4-931:5 -/
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 923:4-933:5 -/
 @[rust_loop]
 def decoder_v1.decode_any_v1_loop0
   {S : Type _} (V1SinkInst : decoder_v1.V1Sink S) (input : Slice Std.U8)
@@ -5853,7 +5863,7 @@ def decoder_v1.decode_any_v1_loop0
     (sink, «open», cur, entries, depth, step, err)
 
 /-- [y_octo_core::decoder_v1::decode_any_v1]: loop body 1:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 921:4-931:5 -/
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 923:4-933:5 -/
 @[rust_loop_body]
 def decoder_v1.decode_any_v1_loop1.body
   {S : Type _} (V1SinkInst : decoder_v1.V1Sink S) (input : Slice Std.U8)
@@ -5895,7 +5905,7 @@ def decoder_v1.decode_any_v1_loop1.body
   else ok (done (sink, cur, entries, depth, err))
 
 /-- [y_octo_core::decoder_v1::decode_any_v1]: loop 1:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 921:4-931:5 -/
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 923:4-933:5 -/
 @[rust_loop]
 def decoder_v1.decode_any_v1_loop1
   {S : Type _} (V1SinkInst : decoder_v1.V1Sink S) (input : Slice Std.U8)
@@ -5912,7 +5922,7 @@ def decoder_v1.decode_any_v1_loop1
     (sink, «open», cur, entries, depth, step, err)
 
 /-- [y_octo_core::decoder_v1::decode_any_v1]: loop body 2:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 921:4-931:5 -/
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 923:4-933:5 -/
 @[rust_loop_body]
 def decoder_v1.decode_any_v1_loop2.body
   {S : Type _} (V1SinkInst : decoder_v1.V1Sink S) (input : Slice Std.U8)
@@ -5954,7 +5964,7 @@ def decoder_v1.decode_any_v1_loop2.body
   else ok (done (sink, cur, entries, depth, err))
 
 /-- [y_octo_core::decoder_v1::decode_any_v1]: loop 2:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 921:4-931:5 -/
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 923:4-933:5 -/
 @[rust_loop]
 def decoder_v1.decode_any_v1_loop2
   {S : Type _} (V1SinkInst : decoder_v1.V1Sink S) (input : Slice Std.U8)
@@ -5971,7 +5981,7 @@ def decoder_v1.decode_any_v1_loop2
     (sink, «open», cur, entries, depth, step, err)
 
 /-- [y_octo_core::decoder_v1::decode_any_v1]: loop body 3:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 921:4-931:5 -/
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 923:4-933:5 -/
 @[rust_loop_body]
 def decoder_v1.decode_any_v1_loop3.body
   {S : Type _} (V1SinkInst : decoder_v1.V1Sink S) (input : Slice Std.U8)
@@ -6013,7 +6023,7 @@ def decoder_v1.decode_any_v1_loop3.body
   else ok (done (sink, cur, entries, depth, err))
 
 /-- [y_octo_core::decoder_v1::decode_any_v1]: loop 3:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 921:4-931:5 -/
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 923:4-933:5 -/
 @[rust_loop]
 def decoder_v1.decode_any_v1_loop3
   {S : Type _} (V1SinkInst : decoder_v1.V1Sink S) (input : Slice Std.U8)
@@ -6030,7 +6040,7 @@ def decoder_v1.decode_any_v1_loop3
     (sink, «open», cur, entries, depth, step, err)
 
 /-- [y_octo_core::decoder_v1::decode_any_v1]:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 876:0-943:1 -/
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 878:0-945:1 -/
 def decoder_v1.decode_any_v1
   {S : Type _} (V1SinkInst : decoder_v1.V1Sink S) (input : Slice Std.U8)
   (start_pos : Std.Usize) (limits : decoder_v1.DecodeLimitsCore)
@@ -6340,7 +6350,7 @@ def decoder_v1.decode_any_v1
     ok (r1, sink1)
 
 /-- [y_octo_core::decoder_v1::decode_json_entries]: loop body 0:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 955:4-966:5 -/
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 957:4-968:5 -/
 @[rust_loop_body]
 def decoder_v1.decode_json_entries_loop.body
   {S : Type _} (V1SinkInst : decoder_v1.V1Sink S) (input : Slice Std.U8)
@@ -6368,7 +6378,7 @@ def decoder_v1.decode_json_entries_loop.body
   else ok (done (sink, cur, err))
 
 /-- [y_octo_core::decoder_v1::decode_json_entries]: loop 0:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 955:4-966:5 -/
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 957:4-968:5 -/
 @[rust_loop]
 def decoder_v1.decode_json_entries_loop
   {S : Type _} (V1SinkInst : decoder_v1.V1Sink S) (input : Slice Std.U8)
@@ -6382,7 +6392,7 @@ def decoder_v1.decode_json_entries_loop
     (sink, cur, i, err)
 
 /-- [y_octo_core::decoder_v1::decode_json_entries]:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 946:0-968:1 -/
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 948:0-970:1 -/
 def decoder_v1.decode_json_entries
   {S : Type _} (V1SinkInst : decoder_v1.V1Sink S) (input : Slice Std.U8)
   (start_pos : Std.Usize) (count : Std.Usize) (sink : S) :
@@ -6396,7 +6406,7 @@ def decoder_v1.decode_json_entries
   | some e => ok (core.result.Result.Err e, sink1)
 
 /-- [y_octo_core::decoder_v1::decode_any_entries]: loop body 0:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 983:4-995:5 -/
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 985:4-997:5 -/
 @[rust_loop_body]
 def decoder_v1.decode_any_entries_loop.body
   {S : Type _} (V1SinkInst : decoder_v1.V1Sink S) (input : Slice Std.U8)
@@ -6428,7 +6438,7 @@ def decoder_v1.decode_any_entries_loop.body
   else ok (done (sink, cur, entries, err))
 
 /-- [y_octo_core::decoder_v1::decode_any_entries]: loop 0:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 983:4-995:5 -/
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 985:4-997:5 -/
 @[rust_loop]
 def decoder_v1.decode_any_entries_loop
   {S : Type _} (V1SinkInst : decoder_v1.V1Sink S) (input : Slice Std.U8)
@@ -6444,7 +6454,7 @@ def decoder_v1.decode_any_entries_loop
     (sink, cur, entries, i, err)
 
 /-- [y_octo_core::decoder_v1::decode_any_entries]:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 971:0-997:1 -/
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 973:0-999:1 -/
 def decoder_v1.decode_any_entries
   {S : Type _} (V1SinkInst : decoder_v1.V1Sink S) (input : Slice Std.U8)
   (start_pos : Std.Usize) (count : Std.Usize)
@@ -6459,14 +6469,14 @@ def decoder_v1.decode_any_entries
   | some e => ok (core.result.Result.Err e, sink1)
 
 /-- [y_octo_core::decoder_v1::{impl core::clone::Clone for y_octo_core::decoder_v1::ItemHeader}::clone]:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 999:9-999:14
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 1001:9-1001:14
     Visibility: public -/
 def decoder_v1.ItemHeader.Insts.CoreCloneClone.clone
   (self : decoder_v1.ItemHeader) : Result decoder_v1.ItemHeader := do
   ok self
 
 /-- Trait implementation: [y_octo_core::decoder_v1::{impl core::clone::Clone for y_octo_core::decoder_v1::ItemHeader}]
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 999:9-999:14 -/
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 1001:9-1001:14 -/
 @[reducible]
 def decoder_v1.ItemHeader.Insts.CoreCloneClone : core.clone.Clone
   decoder_v1.ItemHeader := {
@@ -6474,7 +6484,7 @@ def decoder_v1.ItemHeader.Insts.CoreCloneClone : core.clone.Clone
 }
 
 /-- Trait implementation: [y_octo_core::decoder_v1::{impl core::marker::Copy for y_octo_core::decoder_v1::ItemHeader}]
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 999:16-999:20 -/
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 1001:16-1001:20 -/
 @[reducible]
 def decoder_v1.ItemHeader.Insts.CoreMarkerCopy : core.marker.Copy
   decoder_v1.ItemHeader := {
@@ -6482,14 +6492,14 @@ def decoder_v1.ItemHeader.Insts.CoreMarkerCopy : core.marker.Copy
 }
 
 /-- [y_octo_core::decoder_v1::{impl core::clone::Clone for y_octo_core::decoder_v1::DecodeAcc}::clone]:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 1007:9-1007:14
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 1009:9-1009:14
     Visibility: public -/
 def decoder_v1.DecodeAcc.Insts.CoreCloneClone.clone
   (self : decoder_v1.DecodeAcc) : Result decoder_v1.DecodeAcc := do
   ok self
 
 /-- Trait implementation: [y_octo_core::decoder_v1::{impl core::clone::Clone for y_octo_core::decoder_v1::DecodeAcc}]
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 1007:9-1007:14 -/
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 1009:9-1009:14 -/
 @[reducible]
 def decoder_v1.DecodeAcc.Insts.CoreCloneClone : core.clone.Clone
   decoder_v1.DecodeAcc := {
@@ -6497,7 +6507,7 @@ def decoder_v1.DecodeAcc.Insts.CoreCloneClone : core.clone.Clone
 }
 
 /-- Trait implementation: [y_octo_core::decoder_v1::{impl core::marker::Copy for y_octo_core::decoder_v1::DecodeAcc}]
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 1007:16-1007:20 -/
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 1009:16-1009:20 -/
 @[reducible]
 def decoder_v1.DecodeAcc.Insts.CoreMarkerCopy : core.marker.Copy
   decoder_v1.DecodeAcc := {
@@ -6505,7 +6515,7 @@ def decoder_v1.DecodeAcc.Insts.CoreMarkerCopy : core.marker.Copy
 }
 
 /-- [y_octo_core::decoder_v1::decode_item_header]:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 1015:0-1069:1 -/
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 1017:0-1071:1 -/
 def decoder_v1.decode_item_header
   {S : Type _} (V1SinkInst : decoder_v1.V1Sink S) (input : Slice Std.U8)
   (start_pos : Std.Usize) (info : Std.U8) (sink : S) :
@@ -7267,7 +7277,7 @@ def utf16.utf16_len (bytes : Slice Std.U8) : Result Std.Usize := do
   utf16.utf16_len_loop bytes 0#usize 0#usize len
 
 /-- [y_octo_core::decoder_v1::decode_item_content]:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 1072:0-1153:1 -/
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 1074:0-1163:1 -/
 def decoder_v1.decode_item_content
   {S : Type _} (V1SinkInst : decoder_v1.V1Sink S) (input : Slice Std.U8)
   (cur : Std.Usize) (tag : Std.U8) (limits : decoder_v1.DecodeLimitsCore)
@@ -7282,17 +7292,20 @@ def decoder_v1.decode_item_content
     match cf with
     | core.ops.control_flow.ControlFlow.Continue val =>
       let (len, p) := val
-      let (r1, sink2) ← V1SinkInst.on_deleted sink1 len
-      let cf1 ← core.result.Result.Insts.CoreOpsTry.branch r1
-      match cf1 with
-      | core.ops.control_flow.ControlFlow.Continue _ =>
-        ok (core.result.Result.Ok (len, p, entries_acc), sink2)
-      | core.ops.control_flow.ControlFlow.Break residual =>
-        let r2 ←
-          core.result.Result.Insts.CoreOpsTry_traitFromResidualResult.from_residual
-            (Std.U64 × Std.Usize × Std.Usize) (core.convert.FromSame
-            CodecError) residual
-        ok (r2, sink2)
+      if len > 0#u64
+      then
+        let (r1, sink2) ← V1SinkInst.on_deleted sink1 len
+        let cf1 ← core.result.Result.Insts.CoreOpsTry.branch r1
+        match cf1 with
+        | core.ops.control_flow.ControlFlow.Continue _ =>
+          ok (core.result.Result.Ok (len, p, entries_acc), sink2)
+        | core.ops.control_flow.ControlFlow.Break residual =>
+          let r2 ←
+            core.result.Result.Insts.CoreOpsTry_traitFromResidualResult.from_residual
+              (Std.U64 × Std.Usize × Std.Usize) (core.convert.FromSame
+              CodecError) residual
+          ok (r2, sink2)
+      else ok (core.result.Result.Ok (len, p, entries_acc), sink1)
     | core.ops.control_flow.ControlFlow.Break residual =>
       let r1 ←
         core.result.Result.Insts.CoreOpsTry_traitFromResidualResult.from_residual
@@ -7420,23 +7433,30 @@ def decoder_v1.decode_item_content
           let cf ← core.result.Result.Insts.CoreOpsTry.branch r
           match cf with
           | core.ops.control_flow.ControlFlow.Continue val =>
-            let (r1, sink2) ← V1SinkInst.on_string sink1 val
-            let cf1 ← core.result.Result.Insts.CoreOpsTry.branch r1
-            match cf1 with
-            | core.ops.control_flow.ControlFlow.Continue _ =>
-              let s ←
-                core.slice.index.Slice.index
-                  (core.slice.index.SliceIndexRangeUsizeSlice Std.U8) input
-                  { start := val.start, «end» := val.end }
-              let i ← utf16.utf16_len s
-              let len ← lift (UScalar.cast .U64 i)
-              ok (core.result.Result.Ok (len, val.end, entries_acc), sink2)
-            | core.ops.control_flow.ControlFlow.Break residual =>
-              let r2 ←
-                core.result.Result.Insts.CoreOpsTry_traitFromResidualResult.from_residual
-                  (Std.U64 × Std.Usize × Std.Usize) (core.convert.FromSame
-                  CodecError) residual
-              ok (r2, sink2)
+            if val.start = val.end
+            then
+              ok (core.result.Result.Ok (0#u64, val.end, entries_acc), sink1)
+            else
+              let (r1, sink2) ← V1SinkInst.on_string sink1 val
+              let cf1 ← core.result.Result.Insts.CoreOpsTry.branch r1
+              match cf1 with
+              | core.ops.control_flow.ControlFlow.Continue _ =>
+                let s ←
+                  core.slice.index.Slice.index
+                    (core.slice.index.SliceIndexRangeUsizeSlice Std.U8) input
+                    { start := val.start, «end» := val.end }
+                let i ← utf16.utf16_len s
+                let len ← lift (UScalar.cast .U64 i)
+                if len = 0#u64
+                then ok (core.result.Result.Err CodecError.InvalidUtf8, sink2)
+                else
+                  ok (core.result.Result.Ok (len, val.end, entries_acc), sink2)
+              | core.ops.control_flow.ControlFlow.Break residual =>
+                let r2 ←
+                  core.result.Result.Insts.CoreOpsTry_traitFromResidualResult.from_residual
+                    (Std.U64 × Std.Usize × Std.Usize) (core.convert.FromSame
+                    CodecError) residual
+                ok (r2, sink2)
           | core.ops.control_flow.ControlFlow.Break residual =>
             let r1 ←
               core.result.Result.Insts.CoreOpsTry_traitFromResidualResult.from_residual
@@ -7749,15 +7769,2348 @@ def decoder_v1.decode_item_content
                     ok (core.result.Result.Err
                       (CodecError.UnknownContentTagByte tag), sink)
 
+/-- [y_octo_core::decoder_v1::seq_ranges_find]: loop body 0:
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 1177:4-1189:1 -/
+@[rust_loop_body]
+def decoder_v1.seq_ranges_find_loop.body
+  (ranges : Slice order_range.ClockRange) (clock : Std.U64) (low : Std.Usize)
+  (high : Std.Usize) :
+  Result (ControlFlow (Std.Usize × Std.Usize) (Option order_range.ClockRange))
+  := do
+  if low < high
+  then
+    let i ← high - low
+    let i1 ← i / 2#usize
+    let mid ← low + i1
+    let r ← Slice.index_usize ranges mid
+    if clock < r.start
+    then ok (cont (low, mid))
+    else
+      if clock >= r.end
+      then let low1 ← mid + 1#usize
+           ok (cont (low1, high))
+      else ok (done (some r))
+  else ok (done none)
+
+/-- [y_octo_core::decoder_v1::seq_ranges_find]: loop 0:
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 1177:4-1189:1 -/
+@[rust_loop]
+def decoder_v1.seq_ranges_find_loop
+  (ranges : Slice order_range.ClockRange) (clock : Std.U64) (low : Std.Usize)
+  (high : Std.Usize) :
+  Result (Option order_range.ClockRange)
+  := do
+  loop
+    (fun (low1, high1) => decoder_v1.seq_ranges_find_loop.body ranges clock
+      low1 high1)
+    (low, high)
+
+/-- [y_octo_core::decoder_v1::seq_ranges_find]:
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 1166:0-1189:1 -/
+def decoder_v1.seq_ranges_find
+  (ranges : Slice order_range.ClockRange) (clock : Std.U64) :
+  Result (Option order_range.ClockRange)
+  := do
+  let n := Slice.len ranges
+  if n = 0#usize
+  then ok none
+  else
+    let i ← n - 1#usize
+    let last ← Slice.index_usize ranges i
+    if clock >= last.start
+    then if clock < last.end
+         then ok (some last)
+         else ok none
+    else decoder_v1.seq_ranges_find_loop ranges clock 0#usize i
+
+/-- [y_octo_core::decoder_v1::seq_ranges_push]:
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 1192:0-1205:1 -/
+def decoder_v1.seq_ranges_push
+  (ranges : alloc.vec.Vec order_range.ClockRange) (start : Std.U64)
+  («end» : Std.U64) :
+  Result (alloc.vec.Vec order_range.ClockRange)
+  := do
+  let n := alloc.vec.Vec.len ranges
+  if n > 0#usize
+  then
+    let i ← n - 1#usize
+    let last ←
+      alloc.vec.Vec.index (core.slice.index.SliceIndexUsizeSlice
+        order_range.ClockRange) ranges i
+    if last.end = start
+    then
+      let (_, index_mut_back) ←
+        alloc.vec.Vec.index_mut (core.slice.index.SliceIndexUsizeSlice
+          order_range.ClockRange) ranges i
+      ok (index_mut_back { last with «end» })
+    else
+      if n < core.num.Usize.MAX
+      then
+        alloc.vec.Vec.push ranges ({ start, «end» } : order_range.ClockRange)
+      else ok ranges
+  else
+    if n < core.num.Usize.MAX
+    then
+      alloc.vec.Vec.push ranges ({ start, «end» } : order_range.ClockRange)
+    else ok ranges
+
+/-- [y_octo_core::decoder_v1::Y_TYPE_TEXT]
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 1207:0-1207:26 -/
+@[global_simps, irreducible] def decoder_v1.Y_TYPE_TEXT : Std.U8 := 2#u8
+
+/-- [y_octo_core::decoder_v1::is_ytext_content]:
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 1217:0-1219:1 -/
+def decoder_v1.is_ytext_content
+  (input : Slice Std.U8) (start : Std.Usize) («end» : Std.Usize)
+  (tag : Std.U8) :
+  Result Bool
+  := do
+  if tag = 7#u8
+  then
+    if start < «end»
+    then
+      let i := Slice.len input
+      if «end» <= i
+      then
+        let i1 ← Slice.index_usize input start
+        ok (i1 = decoder_v1.Y_TYPE_TEXT)
+      else ok false
+    else ok false
+  else ok false
+
+/-- [y_octo_core::decoder_v1::same_wire_id_opt]:
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 1222:0-1227:1 -/
+def decoder_v1.same_wire_id_opt
+  (a : Option decoder_v1.WireId) (b : Option decoder_v1.WireId) :
+  Result Bool
+  := do
+  match a with
+  | none => ok false
+  | some x =>
+    match b with
+    | none => ok false
+    | some y =>
+      if x.client = y.client
+      then ok (x.clock = y.clock)
+      else ok false
+
+/-- [y_octo_core::decoder_v1::lookup_ytext_parent]:
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 1230:0-1241:1 -/
+def decoder_v1.lookup_ytext_parent
+  (id : decoder_v1.WireId) (parent : decoder_v1.WireParentCore)
+  (ytext_types : Slice order_range.ClockRange) :
+  Result Bool
+  := do
+  match parent with
+  | decoder_v1.WireParentCore.Root _ => ok false
+  | decoder_v1.WireParentCore.Item p =>
+    if p.client = id.client
+    then
+      if p.clock < id.clock
+      then
+        let o ← decoder_v1.seq_ranges_find ytext_types p.clock
+        ok (core.option.Option.is_some o)
+      else ok false
+    else ok false
+  | decoder_v1.WireParentCore.Inherit => ok false
+
+/-- [y_octo_core::decoder_v1::lookup_proven_origin]:
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 1244:0-1255:1 -/
+def decoder_v1.lookup_proven_origin
+  (id : decoder_v1.WireId) (origin : Option decoder_v1.WireId)
+  (seq_ranges : Slice order_range.ClockRange) :
+  Result (Option order_range.ClockRange)
+  := do
+  match origin with
+  | none => ok none
+  | some o =>
+    if o.client = id.client
+    then
+      if o.clock < id.clock
+      then decoder_v1.seq_ranges_find seq_ranges o.clock
+      else ok none
+    else ok none
+
+/-- [y_octo_core::decoder_v1::origin_left_at_range_end]:
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 1258:0-1263:1 -/
+def decoder_v1.origin_left_at_range_end
+  (id : decoder_v1.WireId) (origin : Option decoder_v1.WireId)
+  (range : Option order_range.ClockRange) :
+  Result Bool
+  := do
+  match origin with
+  | none => ok false
+  | some o =>
+    match range with
+    | none => ok false
+    | some r =>
+      if o.clock < r.end
+      then
+        let i ← r.end - o.clock
+        if i = 1#u64
+        then ok (r.end = id.clock)
+        else ok false
+      else ok false
+
+/-- [y_octo_core::decoder_v1::should_skip_zero_len_item]:
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 1266:0-1268:1 -/
+def decoder_v1.should_skip_zero_len_item
+  (tag : Std.U8) (len : Std.U64) (has_parent_sub_bit : Bool) (or_none : Bool)
+  (ol_boundary : Bool) :
+  Result Bool
+  := do
+  if len = 0#u64
+  then
+    if has_parent_sub_bit
+    then ok false
+    else
+      if or_none
+      then
+        if ol_boundary
+        then if tag = 1#u8
+             then ok true
+             else ok (tag = 4#u8)
+        else ok false
+      else ok false
+  else ok false
+
+/-- [y_octo_core::decoder_v1::is_item_proven_seq]:
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 1271:0-1287:1 -/
+def decoder_v1.is_item_proven_seq
+  (has_parent_sub_bit : Bool) (ol_none : Bool) (or_none : Bool)
+  (ol_proven : Bool) (or_proven : Bool) (wire_parent_sub_none : Bool)
+  (parent_is_ytext : Bool) :
+  Result Bool
+  := do
+  if ol_none
+  then
+    if or_none
+    then if wire_parent_sub_none
+         then ok parent_is_ytext
+         else ok false
+    else
+      if ol_none
+      then if or_proven
+           then ok (¬ has_parent_sub_bit)
+           else ok false
+      else if ol_proven
+           then ok (¬ has_parent_sub_bit)
+           else ok false
+  else
+    if ol_none
+    then if or_proven
+         then ok (¬ has_parent_sub_bit)
+         else ok false
+    else if ol_proven
+         then ok (¬ has_parent_sub_bit)
+         else ok false
+
+/-- [y_octo_core::decoder_v1::classify_item_seq_provenance]:
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 1290:0-1319:1 -/
+def decoder_v1.classify_item_seq_provenance
+  (id : decoder_v1.WireId) (info : Std.U8) (tag : Std.U8) (len : Std.U64)
+  (hdr : decoder_v1.ItemHeader) (ytext_types : Slice order_range.ClockRange)
+  (seq_ranges : Slice order_range.ClockRange) :
+  Result (Bool × Bool)
+  := do
+  let i ← lift (info &&& decoder_v1.ITEM_HAS_PARENT_SUB)
+  let ol_range ←
+    decoder_v1.lookup_proven_origin id hdr.origin_left seq_ranges
+  let or_range ←
+    decoder_v1.lookup_proven_origin id hdr.origin_right seq_ranges
+  let ol_proven := core.option.Option.is_some ol_range
+  let or_proven := core.option.Option.is_some or_range
+  let ol_boundary ←
+    decoder_v1.origin_left_at_range_end id hdr.origin_left ol_range
+  let ol_none := core.option.Option.is_none hdr.origin_left
+  let or_none := core.option.Option.is_none hdr.origin_right
+  let parent_is_ytext ←
+    decoder_v1.lookup_ytext_parent id hdr.parent ytext_types
+  let skip_zero ←
+    decoder_v1.should_skip_zero_len_item tag len (i != 0#u8) or_none
+      ol_boundary
+  let b := core.option.Option.is_none hdr.parent_sub
+  let proven_seq ←
+    decoder_v1.is_item_proven_seq (i != 0#u8) ol_none or_none ol_proven
+      or_proven b parent_is_ytext
+  ok (skip_zero, proven_seq)
+
+/-- [y_octo_core::decoder_v1::push_wire_id]:
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 1322:0-1327:1 -/
+def decoder_v1.push_wire_id
+  (dst : alloc.vec.Vec decoder_v1.WireId) (id : decoder_v1.WireId) :
+  Result (alloc.vec.Vec decoder_v1.WireId)
+  := do
+  let i := alloc.vec.Vec.len dst
+  if i < core.num.Usize.MAX
+  then alloc.vec.Vec.push dst id
+  else ok dst
+
+/-- [y_octo_core::decoder_v1::extend_wire_ids]: loop body 0:
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 1332:4-1335:5 -/
+@[rust_loop_body]
+def decoder_v1.extend_wire_ids_loop.body
+  (src : Slice decoder_v1.WireId) (dst : alloc.vec.Vec decoder_v1.WireId)
+  (i : Std.Usize) :
+  Result (ControlFlow ((alloc.vec.Vec decoder_v1.WireId) × Std.Usize)
+    (alloc.vec.Vec decoder_v1.WireId))
+  := do
+  let i1 := Slice.len src
+  if i < i1
+  then
+    let wi ← Slice.index_usize src i
+    let dst1 ← decoder_v1.push_wire_id dst wi
+    let i2 ← i + 1#usize
+    ok (cont (dst1, i2))
+  else ok (done dst)
+
+/-- [y_octo_core::decoder_v1::extend_wire_ids]: loop 0:
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 1332:4-1335:5 -/
+@[rust_loop]
+def decoder_v1.extend_wire_ids_loop
+  (dst : alloc.vec.Vec decoder_v1.WireId) (src : Slice decoder_v1.WireId)
+  (i : Std.Usize) :
+  Result (alloc.vec.Vec decoder_v1.WireId)
+  := do
+  loop
+    (fun (dst1, i1) => decoder_v1.extend_wire_ids_loop.body src dst1 i1)
+    (dst, i)
+
+/-- [y_octo_core::decoder_v1::extend_wire_ids]:
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 1330:0-1336:1 -/
+@[reducible]
+def decoder_v1.extend_wire_ids
+  (dst : alloc.vec.Vec decoder_v1.WireId) (src : Slice decoder_v1.WireId) :
+  Result (alloc.vec.Vec decoder_v1.WireId)
+  := do
+  decoder_v1.extend_wire_ids_loop dst src 0#usize
+
+/-- [y_octo_core::decoder_v1::wire_id_lt]:
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 1339:0-1341:1 -/
+def decoder_v1.wire_id_lt
+  (a : decoder_v1.WireId) (b : decoder_v1.WireId) : Result Bool := do
+  if a.client < b.client
+  then ok true
+  else if a.client = b.client
+       then ok (a.clock < b.clock)
+       else ok false
+
+/-- [y_octo_core::decoder_v1::sift_down_wire_ids]: loop body 0:
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 1347:4-1367:5 -/
+@[rust_loop_body]
+def decoder_v1.sift_down_wire_ids_loop.body
+  («end» : Std.Usize) (half : Std.Usize) (items : Slice decoder_v1.WireId)
+  (root : Std.Usize) :
+  Result (ControlFlow ((Slice decoder_v1.WireId) × Std.Usize) (Slice
+    decoder_v1.WireId))
+  := do
+  if root < half
+  then
+    let i ← root * 2#usize
+    let left ← i + 1#usize
+    let wi ← Slice.index_usize items root
+    let wi1 ← Slice.index_usize items left
+    let b ← decoder_v1.wire_id_lt wi wi1
+    let swap_idx ← if b
+                     then ok left
+                     else ok root
+    let i1 ← left + 1#usize
+    let swap_idx1 ←
+      if i1 < «end»
+      then
+        do
+        let wi2 ← Slice.index_usize items swap_idx
+        let wi3 ← Slice.index_usize items i1
+        let b1 ← decoder_v1.wire_id_lt wi2 wi3
+        if b1
+        then ok i1
+        else ok swap_idx
+      else ok swap_idx
+    if swap_idx1 = root
+    then ok (cont (items, half))
+    else
+      let wi2 ← Slice.index_usize items swap_idx1
+      let items1 ← Slice.update items root wi2
+      let s ← Slice.update items1 swap_idx1 wi
+      ok (cont (s, swap_idx1))
+  else ok (done items)
+
+/-- [y_octo_core::decoder_v1::sift_down_wire_ids]: loop 0:
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 1347:4-1367:5 -/
+@[rust_loop]
+def decoder_v1.sift_down_wire_ids_loop
+  (items : Slice decoder_v1.WireId) («end» : Std.Usize) (half : Std.Usize)
+  (root : Std.Usize) :
+  Result (Slice decoder_v1.WireId)
+  := do
+  loop
+    (fun (items1, root1) => decoder_v1.sift_down_wire_ids_loop.body «end»
+      half items1 root1)
+    (items, root)
+
+/-- [y_octo_core::decoder_v1::sift_down_wire_ids]:
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 1344:0-1368:1 -/
+def decoder_v1.sift_down_wire_ids
+  (items : Slice decoder_v1.WireId) (start : Std.Usize) («end» : Std.Usize) :
+  Result (Slice decoder_v1.WireId)
+  := do
+  let half ← «end» / 2#usize
+  decoder_v1.sift_down_wire_ids_loop items «end» half start
+
+/-- [y_octo_core::decoder_v1::sort_wire_ids]: loop body 0:
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 1377:4-1380:5 -/
+@[rust_loop_body]
+def decoder_v1.sort_wire_ids_loop0.body
+  (n : Std.Usize) (items : Slice decoder_v1.WireId) (start : Std.Usize) :
+  Result (ControlFlow ((Slice decoder_v1.WireId) × Std.Usize) (Slice
+    decoder_v1.WireId))
+  := do
+  if start > 0#usize
+  then
+    let start1 ← start - 1#usize
+    let items1 ← decoder_v1.sift_down_wire_ids items start1 n
+    ok (cont (items1, start1))
+  else ok (done items)
+
+/-- [y_octo_core::decoder_v1::sort_wire_ids]: loop 0:
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 1377:4-1380:5 -/
+@[rust_loop]
+def decoder_v1.sort_wire_ids_loop0
+  (items : Slice decoder_v1.WireId) (n : Std.Usize) (start : Std.Usize) :
+  Result (Slice decoder_v1.WireId)
+  := do
+  loop
+    (fun (items1, start1) => decoder_v1.sort_wire_ids_loop0.body n items1
+      start1)
+    (items, start)
+
+/-- [y_octo_core::decoder_v1::sort_wire_ids]: loop body 1:
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 1382:4-1388:5 -/
+@[rust_loop_body]
+def decoder_v1.sort_wire_ids_loop1.body
+  (items : Slice decoder_v1.WireId) («end» : Std.Usize) :
+  Result (ControlFlow ((Slice decoder_v1.WireId) × Std.Usize) (Slice
+    decoder_v1.WireId))
+  := do
+  if «end» > 1#usize
+  then
+    let end1 ← «end» - 1#usize
+    let tmp ← Slice.index_usize items 0#usize
+    let wi ← Slice.index_usize items end1
+    let items1 ← Slice.update items 0#usize wi
+    let items2 ← Slice.update items1 end1 tmp
+    let items3 ← decoder_v1.sift_down_wire_ids items2 0#usize end1
+    ok (cont (items3, end1))
+  else ok (done items)
+
+/-- [y_octo_core::decoder_v1::sort_wire_ids]: loop 1:
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 1382:4-1388:5 -/
+@[rust_loop]
+def decoder_v1.sort_wire_ids_loop1
+  (items : Slice decoder_v1.WireId) («end» : Std.Usize) :
+  Result (Slice decoder_v1.WireId)
+  := do
+  loop
+    (fun (items1, end1) => decoder_v1.sort_wire_ids_loop1.body items1 end1)
+    (items, «end»)
+
+/-- [y_octo_core::decoder_v1::sort_wire_ids]:
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 1371:0-1389:1 -/
+def decoder_v1.sort_wire_ids
+  (items : Slice decoder_v1.WireId) : Result (Slice decoder_v1.WireId) := do
+  let n := Slice.len items
+  if n <= 1#usize
+  then ok items
+  else
+    let start ← n / 2#usize
+    let items1 ← decoder_v1.sort_wire_ids_loop0 items n start
+    decoder_v1.sort_wire_ids_loop1 items1 n
+
+/-- [y_octo_core::decoder_v1::find_wire_id_lower_bound]: loop body 0:
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 1394:4-1401:5 -/
+@[rust_loop_body]
+def decoder_v1.find_wire_id_lower_bound_loop.body
+  (items : Slice decoder_v1.WireId) (target : decoder_v1.WireId)
+  (low : Std.Usize) (high : Std.Usize) :
+  Result (ControlFlow (Std.Usize × Std.Usize) Std.Usize)
+  := do
+  if low < high
+  then
+    let i ← high - low
+    let i1 ← i / 2#usize
+    let mid ← low + i1
+    let wi ← Slice.index_usize items mid
+    let b ← decoder_v1.wire_id_lt wi target
+    if b
+    then let low1 ← mid + 1#usize
+         ok (cont (low1, high))
+    else ok (cont (low, mid))
+  else ok (done low)
+
+/-- [y_octo_core::decoder_v1::find_wire_id_lower_bound]: loop 0:
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 1394:4-1401:5 -/
+@[rust_loop]
+def decoder_v1.find_wire_id_lower_bound_loop
+  (items : Slice decoder_v1.WireId) (target : decoder_v1.WireId)
+  (low : Std.Usize) (high : Std.Usize) :
+  Result Std.Usize
+  := do
+  loop
+    (fun (low1, high1) => decoder_v1.find_wire_id_lower_bound_loop.body items
+      target low1 high1)
+    (low, high)
+
+/-- [y_octo_core::decoder_v1::find_wire_id_lower_bound]:
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 1391:0-1403:1 -/
+def decoder_v1.find_wire_id_lower_bound
+  (items : Slice decoder_v1.WireId) (target : decoder_v1.WireId) :
+  Result Std.Usize
+  := do
+  let high := Slice.len items
+  decoder_v1.find_wire_id_lower_bound_loop items target 0#usize high
+
+/-- [y_octo_core::decoder_v1::contains_wire_id_sorted]:
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 1406:0-1414:1 -/
+def decoder_v1.contains_wire_id_sorted
+  (items : Slice decoder_v1.WireId) (target : decoder_v1.WireId) :
+  Result Bool
+  := do
+  let idx ← decoder_v1.find_wire_id_lower_bound items target
+  let i := Slice.len items
+  if idx < i
+  then
+    let found ← Slice.index_usize items idx
+    if found.client = target.client
+    then ok (found.clock = target.clock)
+    else ok false
+  else ok false
+
+/-- [y_octo_core::decoder_v1::opt_wire_id_in_sorted]:
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 1417:0-1422:1 -/
+def decoder_v1.opt_wire_id_in_sorted
+  (items : Slice decoder_v1.WireId) (opt : Option decoder_v1.WireId) :
+  Result Bool
+  := do
+  match opt with
+  | none => ok false
+  | some w => decoder_v1.contains_wire_id_sorted items w
+
+/-- [y_octo_core::decoder_v1::parent_item_in_sorted]:
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 1425:0-1430:1 -/
+def decoder_v1.parent_item_in_sorted
+  (items : Slice decoder_v1.WireId) (parent : decoder_v1.WireParentCore) :
+  Result Bool
+  := do
+  match parent with
+  | decoder_v1.WireParentCore.Root _ => ok false
+  | decoder_v1.WireParentCore.Item w =>
+    decoder_v1.contains_wire_id_sorted items w
+  | decoder_v1.WireParentCore.Inherit => ok false
+
+/-- [y_octo_core::decoder_v1::alloc_zero_max_hi]: loop body 0:
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 1435:4-1438:5 -/
+@[rust_loop_body]
+def decoder_v1.alloc_zero_max_hi_loop.body
+  (len : Std.Usize) (out : alloc.vec.Vec Std.Usize) (i : Std.Usize) :
+  Result (ControlFlow ((alloc.vec.Vec Std.Usize) × Std.Usize) (alloc.vec.Vec
+    Std.Usize))
+  := do
+  if i < len
+  then
+    let i1 := alloc.vec.Vec.len out
+    if i1 < core.num.Usize.MAX
+    then
+      let out1 ← alloc.vec.Vec.push out 0#usize
+      let i2 ← i + 1#usize
+      ok (cont (out1, i2))
+    else ok (done out)
+  else ok (done out)
+
+/-- [y_octo_core::decoder_v1::alloc_zero_max_hi]: loop 0:
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 1435:4-1438:5 -/
+@[rust_loop]
+def decoder_v1.alloc_zero_max_hi_loop
+  (len : Std.Usize) (out : alloc.vec.Vec Std.Usize) (i : Std.Usize) :
+  Result (alloc.vec.Vec Std.Usize)
+  := do
+  loop
+    (fun (out1, i1) => decoder_v1.alloc_zero_max_hi_loop.body len out1 i1)
+    (out, i)
+
+/-- [y_octo_core::decoder_v1::alloc_zero_max_hi]:
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 1432:0-1440:1 -/
+@[reducible]
+def decoder_v1.alloc_zero_max_hi
+  (len : Std.Usize) : Result (alloc.vec.Vec Std.Usize) := do
+  decoder_v1.alloc_zero_max_hi_loop len (alloc.vec.Vec.new Std.Usize) 0#usize
+
+/-- [y_octo_core::decoder_v1::mark_zero_strings_covered]:
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 1442:0-1460:1 -/
+def decoder_v1.mark_zero_strings_covered
+  (pending : Slice decoder_v1.WireId) (max_hi : Slice Std.Usize)
+  (client : Std.U64) (start : Std.U64) («end» : Std.U64) :
+  Result (Slice Std.Usize)
+  := do
+  if «end» <= start
+  then ok max_hi
+  else
+    let i ← «end» - start
+    if i < 2#u64
+    then ok max_hi
+    else
+      let i1 ← start + 1#u64
+      let lo ←
+        decoder_v1.find_wire_id_lower_bound pending { client, clock := i1 }
+      let hi ←
+        decoder_v1.find_wire_id_lower_bound pending
+          { client, clock := «end» }
+      if lo < hi
+      then
+        let i2 := Slice.len max_hi
+        if lo < i2
+        then
+          let i3 ← Slice.index_usize max_hi lo
+          if hi > i3
+          then Slice.update max_hi lo hi
+          else ok max_hi
+        else ok max_hi
+      else ok max_hi
+
+/-- [y_octo_core::decoder_v1::mark_point_ids_covered]:
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 1462:0-1473:1 -/
+def decoder_v1.mark_point_ids_covered
+  (pending : Slice decoder_v1.WireId) (max_hi : Slice Std.Usize)
+  (client : Std.U64) (start : Std.U64) («end» : Std.U64) :
+  Result (Slice Std.Usize)
+  := do
+  if «end» <= start
+  then ok max_hi
+  else
+    let lo ←
+      decoder_v1.find_wire_id_lower_bound pending { client, clock := start }
+    let hi ←
+      decoder_v1.find_wire_id_lower_bound pending { client, clock := «end» }
+    if lo < hi
+    then
+      let i := Slice.len max_hi
+      if lo < i
+      then
+        let i1 ← Slice.index_usize max_hi lo
+        if hi > i1
+        then Slice.update max_hi lo hi
+        else ok max_hi
+      else ok max_hi
+    else ok max_hi
+
+/-- [y_octo_core::decoder_v1::all_zero_strings_covered]: loop body 0:
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 1478:4-1488:1 -/
+@[rust_loop_body]
+def decoder_v1.all_zero_strings_covered_loop.body
+  (max_hi : Slice Std.Usize) (reach : Std.Usize) (i : Std.Usize) :
+  Result (ControlFlow (Std.Usize × Std.Usize) Bool)
+  := do
+  let i1 := Slice.len max_hi
+  if i < i1
+  then
+    let i2 ← Slice.index_usize max_hi i
+    let reach1 ← if i2 > reach
+                   then ok i2
+                   else ok reach
+    if reach1 <= i
+    then ok (done false)
+    else let i3 ← i + 1#usize
+         ok (cont (reach1, i3))
+  else ok (done true)
+
+/-- [y_octo_core::decoder_v1::all_zero_strings_covered]: loop 0:
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 1478:4-1488:1 -/
+@[rust_loop]
+def decoder_v1.all_zero_strings_covered_loop
+  (max_hi : Slice Std.Usize) (reach : Std.Usize) (i : Std.Usize) :
+  Result Bool
+  := do
+  loop
+    (fun (reach1, i1) => decoder_v1.all_zero_strings_covered_loop.body max_hi
+      reach1 i1)
+    (reach, i)
+
+/-- [y_octo_core::decoder_v1::all_zero_strings_covered]:
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 1475:0-1488:1 -/
+@[reducible]
+def decoder_v1.all_zero_strings_covered
+  (max_hi : Slice Std.Usize) : Result Bool := do
+  decoder_v1.all_zero_strings_covered_loop max_hi 0#usize 0#usize
+
+/-- [y_octo_core::decoder_v1::{impl y_octo_core::decoder_v1::V1Sink for y_octo_core::decoder_v1::NoopSink}::on_delete_range]:
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 1680:4-1682:5
+    Visibility: public -/
+def decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.on_delete_range
+  (self : decoder_v1.NoopSink) (_client : Std.U64) (_start : Std.U64)
+  (_end : Std.U64) :
+  Result ((core.result.Result Unit CodecError) × decoder_v1.NoopSink)
+  := do
+  ok (core.result.Result.Ok (), self)
+
+/-- [y_octo_core::decoder_v1::{impl y_octo_core::decoder_v1::V1Sink for y_octo_core::decoder_v1::NoopSink}::begin_delete_client]:
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 1675:4-1677:5
+    Visibility: public -/
+def decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.begin_delete_client
+  (self : decoder_v1.NoopSink) (_client : Std.U64) (_count : Std.Usize) :
+  Result ((core.result.Result Unit CodecError) × decoder_v1.NoopSink)
+  := do
+  ok (core.result.Result.Ok (), self)
+
+/-- [y_octo_core::decoder_v1::{impl y_octo_core::decoder_v1::V1Sink for y_octo_core::decoder_v1::NoopSink}::on_any_finish]:
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 1670:4-1672:5
+    Visibility: public -/
+def decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.on_any_finish
+  (self : decoder_v1.NoopSink) (_range : decoder_v1.Span) :
+  Result ((core.result.Result Unit CodecError) × decoder_v1.NoopSink)
+  := do
+  ok (core.result.Result.Ok (), self)
+
+/-- [y_octo_core::decoder_v1::{impl y_octo_core::decoder_v1::V1Sink for y_octo_core::decoder_v1::NoopSink}::on_any_end_container]:
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 1665:4-1667:5
+    Visibility: public -/
+def decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.on_any_end_container
+  (self : decoder_v1.NoopSink) :
+  Result ((core.result.Result Unit CodecError) × decoder_v1.NoopSink)
+  := do
+  ok (core.result.Result.Ok (), self)
+
+/-- [y_octo_core::decoder_v1::{impl y_octo_core::decoder_v1::V1Sink for y_octo_core::decoder_v1::NoopSink}::on_any_begin_array]:
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 1660:4-1662:5
+    Visibility: public -/
+def decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.on_any_begin_array
+  (self : decoder_v1.NoopSink) (_count : Std.Usize) :
+  Result ((core.result.Result Unit CodecError) × decoder_v1.NoopSink)
+  := do
+  ok (core.result.Result.Ok (), self)
+
+/-- [y_octo_core::decoder_v1::{impl y_octo_core::decoder_v1::V1Sink for y_octo_core::decoder_v1::NoopSink}::on_any_object_key]:
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 1655:4-1657:5
+    Visibility: public -/
+def decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.on_any_object_key
+  (self : decoder_v1.NoopSink) (_key : decoder_v1.Span) :
+  Result ((core.result.Result Unit CodecError) × decoder_v1.NoopSink)
+  := do
+  ok (core.result.Result.Ok (), self)
+
+/-- [y_octo_core::decoder_v1::{impl y_octo_core::decoder_v1::V1Sink for y_octo_core::decoder_v1::NoopSink}::on_any_begin_object]:
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 1650:4-1652:5
+    Visibility: public -/
+def decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.on_any_begin_object
+  (self : decoder_v1.NoopSink) (_count : Std.Usize) :
+  Result ((core.result.Result Unit CodecError) × decoder_v1.NoopSink)
+  := do
+  ok (core.result.Result.Ok (), self)
+
+/-- [y_octo_core::decoder_v1::{impl y_octo_core::decoder_v1::V1Sink for y_octo_core::decoder_v1::NoopSink}::on_any_bytes]:
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 1645:4-1647:5
+    Visibility: public -/
+def decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.on_any_bytes
+  (self : decoder_v1.NoopSink) (_value : decoder_v1.Span) :
+  Result ((core.result.Result Unit CodecError) × decoder_v1.NoopSink)
+  := do
+  ok (core.result.Result.Ok (), self)
+
+/-- [y_octo_core::decoder_v1::{impl y_octo_core::decoder_v1::V1Sink for y_octo_core::decoder_v1::NoopSink}::on_any_str]:
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 1640:4-1642:5
+    Visibility: public -/
+def decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.on_any_str
+  (self : decoder_v1.NoopSink) (_value : decoder_v1.Span) :
+  Result ((core.result.Result Unit CodecError) × decoder_v1.NoopSink)
+  := do
+  ok (core.result.Result.Ok (), self)
+
+/-- [y_octo_core::decoder_v1::{impl y_octo_core::decoder_v1::V1Sink for y_octo_core::decoder_v1::NoopSink}::on_any_bool]:
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 1635:4-1637:5
+    Visibility: public -/
+def decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.on_any_bool
+  (self : decoder_v1.NoopSink) (_value : Bool) :
+  Result ((core.result.Result Unit CodecError) × decoder_v1.NoopSink)
+  := do
+  ok (core.result.Result.Ok (), self)
+
+/-- [y_octo_core::decoder_v1::{impl y_octo_core::decoder_v1::V1Sink for y_octo_core::decoder_v1::NoopSink}::on_any_i64_bits]:
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 1630:4-1632:5
+    Visibility: public -/
+def decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.on_any_i64_bits
+  (self : decoder_v1.NoopSink) (_bits : Std.U64) :
+  Result ((core.result.Result Unit CodecError) × decoder_v1.NoopSink)
+  := do
+  ok (core.result.Result.Ok (), self)
+
+/-- [y_octo_core::decoder_v1::{impl y_octo_core::decoder_v1::V1Sink for y_octo_core::decoder_v1::NoopSink}::on_any_f64_bits]:
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 1625:4-1627:5
+    Visibility: public -/
+def decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.on_any_f64_bits
+  (self : decoder_v1.NoopSink) (_bits : Std.U64) :
+  Result ((core.result.Result Unit CodecError) × decoder_v1.NoopSink)
+  := do
+  ok (core.result.Result.Ok (), self)
+
+/-- [y_octo_core::decoder_v1::{impl y_octo_core::decoder_v1::V1Sink for y_octo_core::decoder_v1::NoopSink}::on_any_f32_bits]:
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 1620:4-1622:5
+    Visibility: public -/
+def decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.on_any_f32_bits
+  (self : decoder_v1.NoopSink) (_bits : Std.U32) :
+  Result ((core.result.Result Unit CodecError) × decoder_v1.NoopSink)
+  := do
+  ok (core.result.Result.Ok (), self)
+
+/-- [y_octo_core::decoder_v1::{impl y_octo_core::decoder_v1::V1Sink for y_octo_core::decoder_v1::NoopSink}::on_any_i32]:
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 1615:4-1617:5
+    Visibility: public -/
+def decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.on_any_i32
+  (self : decoder_v1.NoopSink) (_value : Std.I32) :
+  Result ((core.result.Result Unit CodecError) × decoder_v1.NoopSink)
+  := do
+  ok (core.result.Result.Ok (), self)
+
+/-- [y_octo_core::decoder_v1::{impl y_octo_core::decoder_v1::V1Sink for y_octo_core::decoder_v1::NoopSink}::on_any_null]:
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 1610:4-1612:5
+    Visibility: public -/
+def decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.on_any_null
+  (self : decoder_v1.NoopSink) :
+  Result ((core.result.Result Unit CodecError) × decoder_v1.NoopSink)
+  := do
+  ok (core.result.Result.Ok (), self)
+
+/-- [y_octo_core::decoder_v1::{impl y_octo_core::decoder_v1::V1Sink for y_octo_core::decoder_v1::NoopSink}::on_any_undefined]:
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 1605:4-1607:5
+    Visibility: public -/
+def decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.on_any_undefined
+  (self : decoder_v1.NoopSink) :
+  Result ((core.result.Result Unit CodecError) × decoder_v1.NoopSink)
+  := do
+  ok (core.result.Result.Ok (), self)
+
+/-- [y_octo_core::decoder_v1::{impl y_octo_core::decoder_v1::V1Sink for y_octo_core::decoder_v1::NoopSink}::on_any_start]:
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 1600:4-1602:5
+    Visibility: public -/
+def decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.on_any_start
+  (self : decoder_v1.NoopSink) :
+  Result ((core.result.Result Unit CodecError) × decoder_v1.NoopSink)
+  := do
+  ok (core.result.Result.Ok (), self)
+
+/-- [y_octo_core::decoder_v1::{impl y_octo_core::decoder_v1::V1Sink for y_octo_core::decoder_v1::NoopSink}::on_doc]:
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 1595:4-1597:5
+    Visibility: public -/
+def decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.on_doc
+  (self : decoder_v1.NoopSink) (_guid : decoder_v1.Span) :
+  Result ((core.result.Result Unit CodecError) × decoder_v1.NoopSink)
+  := do
+  ok (core.result.Result.Ok (), self)
+
+/-- [y_octo_core::decoder_v1::{impl y_octo_core::decoder_v1::V1Sink for y_octo_core::decoder_v1::NoopSink}::on_any_content_finish]:
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 1590:4-1592:5
+    Visibility: public -/
+def decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.on_any_content_finish
+  (self : decoder_v1.NoopSink) :
+  Result ((core.result.Result Unit CodecError) × decoder_v1.NoopSink)
+  := do
+  ok (core.result.Result.Ok (), self)
+
+/-- [y_octo_core::decoder_v1::{impl y_octo_core::decoder_v1::V1Sink for y_octo_core::decoder_v1::NoopSink}::on_any_content_value]:
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 1585:4-1587:5
+    Visibility: public -/
+def decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.on_any_content_value
+  (self : decoder_v1.NoopSink) :
+  Result ((core.result.Result Unit CodecError) × decoder_v1.NoopSink)
+  := do
+  ok (core.result.Result.Ok (), self)
+
+/-- [y_octo_core::decoder_v1::{impl y_octo_core::decoder_v1::V1Sink for y_octo_core::decoder_v1::NoopSink}::on_any_content_start]:
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 1580:4-1582:5
+    Visibility: public -/
+def decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.on_any_content_start
+  (self : decoder_v1.NoopSink) (_count : Std.Usize) :
+  Result ((core.result.Result Unit CodecError) × decoder_v1.NoopSink)
+  := do
+  ok (core.result.Result.Ok (), self)
+
+/-- [y_octo_core::decoder_v1::{impl y_octo_core::decoder_v1::V1Sink for y_octo_core::decoder_v1::NoopSink}::on_type]:
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 1575:4-1577:5
+    Visibility: public -/
+def decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.on_type
+  (self : decoder_v1.NoopSink) (_kind : Std.U64)
+  (_tag : Option decoder_v1.Span) :
+  Result ((core.result.Result Unit CodecError) × decoder_v1.NoopSink)
+  := do
+  ok (core.result.Result.Ok (), self)
+
+/-- [y_octo_core::decoder_v1::{impl y_octo_core::decoder_v1::V1Sink for y_octo_core::decoder_v1::NoopSink}::on_format]:
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 1570:4-1572:5
+    Visibility: public -/
+def decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.on_format
+  (self : decoder_v1.NoopSink) (_key : decoder_v1.Span)
+  (_value : decoder_v1.Span) :
+  Result ((core.result.Result Unit CodecError) × decoder_v1.NoopSink)
+  := do
+  ok (core.result.Result.Ok (), self)
+
+/-- [y_octo_core::decoder_v1::{impl y_octo_core::decoder_v1::V1Sink for y_octo_core::decoder_v1::NoopSink}::on_embed]:
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 1565:4-1567:5
+    Visibility: public -/
+def decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.on_embed
+  (self : decoder_v1.NoopSink) (_value : decoder_v1.Span) :
+  Result ((core.result.Result Unit CodecError) × decoder_v1.NoopSink)
+  := do
+  ok (core.result.Result.Ok (), self)
+
+/-- [y_octo_core::decoder_v1::{impl y_octo_core::decoder_v1::V1Sink for y_octo_core::decoder_v1::NoopSink}::on_string]:
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 1560:4-1562:5
+    Visibility: public -/
+def decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.on_string
+  (self : decoder_v1.NoopSink) (_value : decoder_v1.Span) :
+  Result ((core.result.Result Unit CodecError) × decoder_v1.NoopSink)
+  := do
+  ok (core.result.Result.Ok (), self)
+
+/-- [y_octo_core::decoder_v1::{impl y_octo_core::decoder_v1::V1Sink for y_octo_core::decoder_v1::NoopSink}::on_binary]:
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 1555:4-1557:5
+    Visibility: public -/
+def decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.on_binary
+  (self : decoder_v1.NoopSink) (_value : decoder_v1.Span) :
+  Result ((core.result.Result Unit CodecError) × decoder_v1.NoopSink)
+  := do
+  ok (core.result.Result.Ok (), self)
+
+/-- [y_octo_core::decoder_v1::{impl y_octo_core::decoder_v1::V1Sink for y_octo_core::decoder_v1::NoopSink}::on_json_finish]:
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 1550:4-1552:5
+    Visibility: public -/
+def decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.on_json_finish
+  (self : decoder_v1.NoopSink) :
+  Result ((core.result.Result Unit CodecError) × decoder_v1.NoopSink)
+  := do
+  ok (core.result.Result.Ok (), self)
+
+/-- [y_octo_core::decoder_v1::{impl y_octo_core::decoder_v1::V1Sink for y_octo_core::decoder_v1::NoopSink}::on_json_value]:
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 1545:4-1547:5
+    Visibility: public -/
+def decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.on_json_value
+  (self : decoder_v1.NoopSink) (_value : decoder_v1.Span) :
+  Result ((core.result.Result Unit CodecError) × decoder_v1.NoopSink)
+  := do
+  ok (core.result.Result.Ok (), self)
+
+/-- [y_octo_core::decoder_v1::{impl y_octo_core::decoder_v1::V1Sink for y_octo_core::decoder_v1::NoopSink}::on_json_start]:
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 1540:4-1542:5
+    Visibility: public -/
+def decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.on_json_start
+  (self : decoder_v1.NoopSink) (_count : Std.Usize) :
+  Result ((core.result.Result Unit CodecError) × decoder_v1.NoopSink)
+  := do
+  ok (core.result.Result.Ok (), self)
+
+/-- [y_octo_core::decoder_v1::{impl y_octo_core::decoder_v1::V1Sink for y_octo_core::decoder_v1::NoopSink}::on_deleted]:
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 1535:4-1537:5
+    Visibility: public -/
+def decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.on_deleted
+  (self : decoder_v1.NoopSink) (_len : Std.U64) :
+  Result ((core.result.Result Unit CodecError) × decoder_v1.NoopSink)
+  := do
+  ok (core.result.Result.Ok (), self)
+
+/-- [y_octo_core::decoder_v1::{impl y_octo_core::decoder_v1::V1Sink for y_octo_core::decoder_v1::NoopSink}::on_item]:
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 1530:4-1532:5
+    Visibility: public -/
+def decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.on_item
+  (self : decoder_v1.NoopSink) (_id : decoder_v1.WireId) (_len : Std.U64)
+  (_meta : decoder_v1.ItemMetaCore) :
+  Result ((core.result.Result Unit CodecError) × decoder_v1.NoopSink)
+  := do
+  ok (core.result.Result.Ok (), self)
+
+/-- [y_octo_core::decoder_v1::{impl y_octo_core::decoder_v1::V1Sink for y_octo_core::decoder_v1::NoopSink}::on_skip]:
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 1525:4-1527:5
+    Visibility: public -/
+def decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.on_skip
+  (self : decoder_v1.NoopSink) (_id : decoder_v1.WireId) (_len : Std.U64) :
+  Result ((core.result.Result Unit CodecError) × decoder_v1.NoopSink)
+  := do
+  ok (core.result.Result.Ok (), self)
+
+/-- [y_octo_core::decoder_v1::{impl y_octo_core::decoder_v1::V1Sink for y_octo_core::decoder_v1::NoopSink}::on_gc]:
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 1520:4-1522:5
+    Visibility: public -/
+def decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.on_gc
+  (self : decoder_v1.NoopSink) (_id : decoder_v1.WireId) (_len : Std.U64) :
+  Result ((core.result.Result Unit CodecError) × decoder_v1.NoopSink)
+  := do
+  ok (core.result.Result.Ok (), self)
+
+/-- [y_octo_core::decoder_v1::{impl y_octo_core::decoder_v1::V1Sink for y_octo_core::decoder_v1::NoopSink}::begin_client]:
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 1515:4-1517:5
+    Visibility: public -/
+def decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.begin_client
+  (self : decoder_v1.NoopSink) (_client : Std.U64) (_count : Std.Usize) :
+  Result ((core.result.Result Unit CodecError) × decoder_v1.NoopSink)
+  := do
+  ok (core.result.Result.Ok (), self)
+
+/-- [y_octo_core::decoder_v1::{impl y_octo_core::decoder_v1::V1Sink for y_octo_core::decoder_v1::NoopSink}::record_client]:
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 1510:4-1512:5
+    Visibility: public -/
+def decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.record_client
+  (self : decoder_v1.NoopSink) (_client : Std.U64) :
+  Result ((core.result.Result Bool CodecError) × decoder_v1.NoopSink)
+  := do
+  ok (core.result.Result.Ok true, self)
+
+/-- [y_octo_core::decoder_v1::{impl y_octo_core::decoder_v1::V1Sink for y_octo_core::decoder_v1::NoopSink}::on_skipped_zero_origin]:
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 1507:4-1507:65
+    Visibility: public -/
+def
+  decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.on_skipped_zero_origin
+  (self : decoder_v1.NoopSink) (_origin_left : decoder_v1.WireId) :
+  Result decoder_v1.NoopSink
+  := do
+  ok self
+
+/-- [y_octo_core::decoder_v1::{impl y_octo_core::decoder_v1::V1Sink for y_octo_core::decoder_v1::NoopSink}::on_decode_error]:
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 1504:4-1504:74
+    Visibility: public -/
+def decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.on_decode_error
+  (self : decoder_v1.NoopSink) (_err : CodecError) (_a : Std.Usize)
+  (_b : Std.U64) :
+  Result decoder_v1.NoopSink
+  := do
+  ok self
+
+/-- [y_octo_core::decoder_v1::{impl y_octo_core::decoder_v1::V1Sink for y_octo_core::decoder_v1::NoopSink}::validate_utf8_early]:
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 1499:4-1501:5
+    Visibility: public -/
+def decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.validate_utf8_early
+  (self : decoder_v1.NoopSink) (_slot : Std.U8) (_value : decoder_v1.Span) :
+  Result ((core.result.Result Unit CodecError) × decoder_v1.NoopSink)
+  := do
+  ok (core.result.Result.Ok (), self)
+
+/-- [y_octo_core::decoder_v1::{impl y_octo_core::decoder_v1::V1Sink for y_octo_core::decoder_v1::NoopSink}::core_validates_utf8]:
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 1494:4-1496:5
+    Visibility: public -/
+def decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.core_validates_utf8
+  (self : decoder_v1.NoopSink) : Result Bool := do
+  ok false
+
+/-- Trait implementation: [y_octo_core::decoder_v1::{impl y_octo_core::decoder_v1::V1Sink for y_octo_core::decoder_v1::NoopSink}]
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 1492:0-1683:1 -/
+@[reducible]
+def decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink : decoder_v1.V1Sink
+  decoder_v1.NoopSink := {
+  core_validates_utf8 :=
+    decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.core_validates_utf8
+  validate_utf8_early :=
+    decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.validate_utf8_early
+  on_decode_error :=
+    decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.on_decode_error
+  record_client :=
+    decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.record_client
+  begin_client :=
+    decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.begin_client
+  on_gc := decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.on_gc
+  on_skip := decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.on_skip
+  on_item := decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.on_item
+  on_skipped_zero_origin :=
+    decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.on_skipped_zero_origin
+  on_deleted :=
+    decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.on_deleted
+  on_json_start :=
+    decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.on_json_start
+  on_json_value :=
+    decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.on_json_value
+  on_json_finish :=
+    decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.on_json_finish
+  on_binary := decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.on_binary
+  on_string := decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.on_string
+  on_embed := decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.on_embed
+  on_format := decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.on_format
+  on_type := decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.on_type
+  on_any_content_start :=
+    decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.on_any_content_start
+  on_any_content_value :=
+    decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.on_any_content_value
+  on_any_content_finish :=
+    decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.on_any_content_finish
+  on_doc := decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.on_doc
+  on_any_start :=
+    decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.on_any_start
+  on_any_undefined :=
+    decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.on_any_undefined
+  on_any_null :=
+    decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.on_any_null
+  on_any_i32 :=
+    decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.on_any_i32
+  on_any_f32_bits :=
+    decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.on_any_f32_bits
+  on_any_f64_bits :=
+    decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.on_any_f64_bits
+  on_any_i64_bits :=
+    decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.on_any_i64_bits
+  on_any_bool :=
+    decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.on_any_bool
+  on_any_str :=
+    decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.on_any_str
+  on_any_bytes :=
+    decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.on_any_bytes
+  on_any_begin_object :=
+    decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.on_any_begin_object
+  on_any_object_key :=
+    decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.on_any_object_key
+  on_any_begin_array :=
+    decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.on_any_begin_array
+  on_any_end_container :=
+    decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.on_any_end_container
+  on_any_finish :=
+    decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.on_any_finish
+  begin_delete_client :=
+    decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.begin_delete_client
+  on_delete_range :=
+    decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.on_delete_range
+}
+
+/-- [y_octo_core::decoder_v1::replay_client_seq_state]: loop body 0:
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 1699:4-1755:5 -/
+@[rust_loop_body]
+def decoder_v1.replay_client_seq_state_loop.body
+  (input : Slice Std.U8) (i : Std.U64) (target_idx : Std.Usize)
+  (limits : decoder_v1.DecodeLimitsCore) (state : decoder_v1.ClientSeqState)
+  (noop : decoder_v1.NoopSink) (cur : Std.Usize) (clock : Std.U64)
+  (idx : Std.Usize) (err : Option CodecError) :
+  Result (ControlFlow (decoder_v1.ClientSeqState × decoder_v1.NoopSink ×
+    Std.Usize × Std.U64 × Std.Usize × (Option CodecError))
+    (decoder_v1.ClientSeqState × (Option CodecError)))
+  := do
+  if idx < target_idx
+  then
+    let b := core.option.Option.is_none err
+    if b
+    then
+      let r ← decoder_v1.read_u8_at input cur
+      match r with
+      | core.result.Result.Ok p =>
+        let (info, after_info) := p
+        let tag ← lift (info &&& 31#u8)
+        if tag = 0#u8
+        then
+          let (r1, noop1) ←
+            decoder_v1.read_var_u64_sink
+              decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink input
+              after_info noop
+          match r1 with
+          | core.result.Result.Ok p1 =>
+            let (len, next_cur) := p1
+            let (r2, noop2) ←
+              decoder_v1.advance_clock_sink
+                decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink clock len
+                noop1
+            match r2 with
+            | core.result.Result.Ok next_clock =>
+              let idx1 ← idx + 1#usize
+              ok (cont (state, noop2, next_cur, next_clock, idx1, err))
+            | core.result.Result.Err e =>
+              ok (cont (state, noop2, cur, clock, idx, some e))
+          | core.result.Result.Err e =>
+            ok (cont (state, noop1, cur, clock, idx, some e))
+        else
+          if tag = 10#u8
+          then
+            let (r1, noop1) ←
+              decoder_v1.read_var_u64_sink
+                decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink input
+                after_info noop
+            match r1 with
+            | core.result.Result.Ok p1 =>
+              let (len, next_cur) := p1
+              let (r2, noop2) ←
+                decoder_v1.advance_clock_sink
+                  decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink clock
+                  len noop1
+              match r2 with
+              | core.result.Result.Ok next_clock =>
+                let idx1 ← idx + 1#usize
+                ok (cont (state, noop2, next_cur, next_clock, idx1, err))
+              | core.result.Result.Err e =>
+                ok (cont (state, noop2, cur, clock, idx, some e))
+            | core.result.Result.Err e =>
+              ok (cont (state, noop1, cur, clock, idx, some e))
+          else
+            let (r1, noop1) ←
+              decoder_v1.decode_item_header
+                decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink input
+                after_info info noop
+            match r1 with
+            | core.result.Result.Ok p1 =>
+              let (hdr, content_start) := p1
+              let (r2, noop2) ←
+                decoder_v1.decode_item_content
+                  decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink input
+                  content_start tag limits 0#usize noop1
+              match r2 with
+              | core.result.Result.Ok t =>
+                let (len, content_end, _) := t
+                let (r3, noop3) ←
+                  decoder_v1.advance_clock_sink
+                    decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink clock
+                    len noop2
+                match r3 with
+                | core.result.Result.Ok next_clock =>
+                  let s := alloc.vec.Vec.deref state.ytext_types
+                  let s1 := alloc.vec.Vec.deref state.seq_ranges
+                  let (_, is_proven_seq) ←
+                    decoder_v1.classify_item_seq_provenance
+                      { client := i, clock } info tag len hdr s s1
+                  let b1 ←
+                    decoder_v1.is_ytext_content input content_start content_end
+                      tag
+                  let v ←
+                    if b1
+                    then
+                      decoder_v1.seq_ranges_push state.ytext_types clock
+                        next_clock
+                    else ok state.ytext_types
+                  let v1 ←
+                    if is_proven_seq
+                    then
+                      decoder_v1.seq_ranges_push state.seq_ranges clock
+                        next_clock
+                    else ok state.seq_ranges
+                  let idx1 ← idx + 1#usize
+                  ok (cont ({ state with ytext_types := v, seq_ranges := v1 },
+                    noop3, content_end, next_clock, idx1, err))
+                | core.result.Result.Err e =>
+                  ok (cont (state, noop3, cur, clock, idx, some e))
+              | core.result.Result.Err e =>
+                ok (cont (state, noop2, cur, clock, idx, some e))
+            | core.result.Result.Err e =>
+              ok (cont (state, noop1, cur, clock, idx, some e))
+      | core.result.Result.Err e =>
+        ok (cont (state, noop, cur, clock, idx, some e))
+    else ok (done (state, err))
+  else ok (done (state, err))
+
+/-- [y_octo_core::decoder_v1::replay_client_seq_state]: loop 0:
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 1699:4-1755:5 -/
+@[rust_loop]
+def decoder_v1.replay_client_seq_state_loop
+  (input : Slice Std.U8) (i : Std.U64) (target_idx : Std.Usize)
+  (limits : decoder_v1.DecodeLimitsCore) (state : decoder_v1.ClientSeqState)
+  (noop : decoder_v1.NoopSink) (cur : Std.Usize) (clock : Std.U64)
+  (idx : Std.Usize) (err : Option CodecError) :
+  Result (decoder_v1.ClientSeqState × (Option CodecError))
+  := do
+  loop
+    (fun (state1, noop1, cur1, clock1, idx1, err1) =>
+      decoder_v1.replay_client_seq_state_loop.body input i target_idx limits
+      state1 noop1 cur1 clock1 idx1 err1)
+    (state, noop, cur, clock, idx, err)
+
+/-- [y_octo_core::decoder_v1::replay_client_seq_state]:
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 1686:0-1762:1 -/
+def decoder_v1.replay_client_seq_state
+  (input : Slice Std.U8) (start_pos : Std.Usize) (start_id : decoder_v1.WireId)
+  (target_idx : Std.Usize) (limits : decoder_v1.DecodeLimitsCore)
+  (state : decoder_v1.ClientSeqState) :
+  Result ((core.result.Result Unit CodecError) × decoder_v1.ClientSeqState)
+  := do
+  let (state1, err) ←
+    decoder_v1.replay_client_seq_state_loop input start_id.client target_idx
+      limits state () start_pos start_id.clock 0#usize none
+  match err with
+  | none => ok (core.result.Result.Ok (), { state1 with active := true })
+  | some e => ok (core.result.Result.Err e, state1)
+
+/-- [y_octo_core::decoder_v1::emit_tracked_item]:
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 1766:0-1818:1 -/
+def decoder_v1.emit_tracked_item
+  {S : Type _} (V1SinkInst : decoder_v1.V1Sink S) (input : Slice Std.U8)
+  (pos : Std.Usize) (id : decoder_v1.WireId) (tag : Std.U8)
+  (hdr : decoder_v1.ItemHeader) (content_start : Std.Usize) (len : Std.U64)
+  (content_end : Std.Usize) (entries : Std.Usize) (content_bytes : Std.Usize)
+  (acc : decoder_v1.DecodeAcc) (is_proven_seq : Bool)
+  (state : decoder_v1.ClientSeqState) (sink : S) :
+  Result ((core.result.Result (Std.U64 × Std.Usize × decoder_v1.DecodeAcc ×
+    (Option decoder_v1.WireId) × Bool) CodecError) ×
+    decoder_v1.ClientSeqState × S)
+  := do
+  let b ← decoder_v1.same_wire_id_opt state.just_skipped_ol hdr.origin_left
+  if b
+  then
+    let (ce, sink1) ←
+      decoder_v1.fail_with V1SinkInst sink CodecError.ZeroLengthStruct 0#usize
+        0#u64
+    ok (core.result.Result.Err ce, state, sink1)
+  else
+    let (r, sink1) ←
+      decoder_v1.advance_clock_sink V1SinkInst id.clock len sink
+    let cf ← core.result.Result.Insts.CoreOpsTry.branch r
+    match cf with
+    | core.ops.control_flow.ControlFlow.Continue val =>
+      let (r1, sink2) ←
+        V1SinkInst.on_item sink1 id len
+          {
+            origin_left := hdr.origin_left,
+            origin_right := hdr.origin_right,
+            parent := hdr.parent,
+            parent_sub := hdr.parent_sub,
+            raw_range := { start := pos, «end» := content_end }
+          }
+      let cf1 ← core.result.Result.Insts.CoreOpsTry.branch r1
+      match cf1 with
+      | core.ops.control_flow.ControlFlow.Continue _ =>
+        let b1 ←
+          decoder_v1.is_ytext_content input content_start content_end tag
+        let v ←
+          if b1
+          then decoder_v1.seq_ranges_push state.ytext_types id.clock val
+          else ok state.ytext_types
+        if is_proven_seq
+        then
+          let v1 ← decoder_v1.seq_ranges_push state.seq_ranges id.clock val
+          ok (core.result.Result.Ok (val, content_end,
+            { acc with entries, content_bytes }, none, false),
+            {
+              state
+                with
+                ytext_types := v, seq_ranges := v1, just_skipped_ol := none
+            }, sink2)
+        else
+          ok (core.result.Result.Ok (val, content_end,
+            { acc with entries, content_bytes }, none, false),
+            { state with ytext_types := v, just_skipped_ol := none }, sink2)
+      | core.ops.control_flow.ControlFlow.Break residual =>
+        let r2 ←
+          core.result.Result.Insts.CoreOpsTry_traitFromResidualResult.from_residual
+            (Std.U64 × Std.Usize × decoder_v1.DecodeAcc × (Option
+            decoder_v1.WireId) × Bool) (core.convert.FromSame CodecError)
+            residual
+        ok (r2, state, sink2)
+    | core.ops.control_flow.ControlFlow.Break residual =>
+      let r1 ←
+        core.result.Result.Insts.CoreOpsTry_traitFromResidualResult.from_residual
+          (Std.U64 × Std.Usize × decoder_v1.DecodeAcc × (Option
+          decoder_v1.WireId) × Bool) (core.convert.FromSame CodecError)
+          residual
+      ok (r1, state, sink1)
+
+/-- [y_octo_core::decoder_v1::decode_struct_frame_tracked]:
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 1822:0-1888:1 -/
+def decoder_v1.decode_struct_frame_tracked
+  {S : Type _} (V1SinkInst : decoder_v1.V1Sink S) (input : Slice Std.U8)
+  (pos : Std.Usize) (id : decoder_v1.WireId) (info : Std.U8) (tag : Std.U8)
+  (hdr : decoder_v1.ItemHeader) (content_start : Std.Usize) (len : Std.U64)
+  (content_end : Std.Usize) (entries : Std.Usize) (content_bytes : Std.Usize)
+  (acc : decoder_v1.DecodeAcc) (state : decoder_v1.ClientSeqState) (sink : S) :
+  Result ((core.result.Result (Std.U64 × Std.Usize × decoder_v1.DecodeAcc ×
+    (Option decoder_v1.WireId) × Bool) CodecError) ×
+    decoder_v1.ClientSeqState × S)
+  := do
+  let s := alloc.vec.Vec.deref state.ytext_types
+  let s1 := alloc.vec.Vec.deref state.seq_ranges
+  let (skip_zero, is_proven_seq) ←
+    decoder_v1.classify_item_seq_provenance id info tag len hdr s s1
+  if skip_zero
+  then
+    let b := core.option.Option.is_none state.just_skipped_ol
+    if b
+    then
+      ok (core.result.Result.Ok (id.clock, content_end,
+        { acc with entries, content_bytes }, hdr.origin_left, tag = 4#u8),
+        { state with just_skipped_ol := hdr.origin_left }, sink)
+    else
+      decoder_v1.emit_tracked_item V1SinkInst input pos id tag hdr
+        content_start len content_end entries content_bytes acc is_proven_seq
+        state sink
+  else
+    decoder_v1.emit_tracked_item V1SinkInst input pos id tag hdr content_start
+      len content_end entries content_bytes acc is_proven_seq state sink
+
+/-- [y_octo_core::decoder_v1::decode_struct_frame_slow]:
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 1892:0-1941:1 -/
+def decoder_v1.decode_struct_frame_slow
+  {S : Type _} (V1SinkInst : decoder_v1.V1Sink S) (input : Slice Std.U8)
+  (pos : Std.Usize) (client_start_pos : Std.Usize)
+  (client_start_clock : Std.U64) (s_idx : Std.Usize) (id : decoder_v1.WireId)
+  (info : Std.U8) (tag : Std.U8) (hdr : decoder_v1.ItemHeader)
+  (content_start : Std.Usize) (len : Std.U64) (content_end : Std.Usize)
+  (entries : Std.Usize) (content_bytes : Std.Usize)
+  (limits : decoder_v1.DecodeLimitsCore) (acc : decoder_v1.DecodeAcc)
+  (state : decoder_v1.ClientSeqState) (sink : S) :
+  Result ((core.result.Result (Std.U64 × Std.Usize × decoder_v1.DecodeAcc ×
+    (Option decoder_v1.WireId) × Bool) CodecError) ×
+    decoder_v1.ClientSeqState × S)
+  := do
+  if state.active
+  then
+    decoder_v1.decode_struct_frame_tracked V1SinkInst input pos id info tag hdr
+      content_start len content_end entries content_bytes acc state sink
+  else
+    let (r, state1) ←
+      decoder_v1.replay_client_seq_state input client_start_pos
+        { id with clock := client_start_clock } s_idx limits state
+    let cf ← core.result.Result.Insts.CoreOpsTry.branch r
+    match cf with
+    | core.ops.control_flow.ControlFlow.Continue _ =>
+      decoder_v1.decode_struct_frame_tracked V1SinkInst input pos id info tag
+        hdr content_start len content_end entries content_bytes acc state1 sink
+    | core.ops.control_flow.ControlFlow.Break residual =>
+      let r1 ←
+        core.result.Result.Insts.CoreOpsTry_traitFromResidualResult.from_residual
+          (Std.U64 × Std.Usize × decoder_v1.DecodeAcc × (Option
+          decoder_v1.WireId) × Bool) (core.convert.FromSame CodecError)
+          residual
+      ok (r1, state1, sink)
+
+/-- [y_octo_core::decoder_v1::collect_colliding_in_client]: loop body 0:
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 1960:4-2018:5 -/
+@[rust_loop_body]
+def decoder_v1.collect_colliding_in_client_loop.body
+  (input : Slice Std.U8) (i : Std.U64) (count : Std.Usize)
+  (limits : decoder_v1.DecodeLimitsCore)
+  (skipped_ols : Slice decoder_v1.WireId)
+  (colliding_ids : alloc.vec.Vec decoder_v1.WireId)
+  (pending_colliding : alloc.vec.Vec decoder_v1.WireId)
+  (noop : decoder_v1.NoopSink) (cur : Std.Usize) (clock : Std.U64)
+  (s_idx : Std.Usize) (err : Option CodecError) :
+  Result (ControlFlow ((alloc.vec.Vec decoder_v1.WireId) × (alloc.vec.Vec
+    decoder_v1.WireId) × decoder_v1.NoopSink × Std.Usize × Std.U64 ×
+    Std.Usize × (Option CodecError)) ((alloc.vec.Vec decoder_v1.WireId) ×
+    (alloc.vec.Vec decoder_v1.WireId) × Std.Usize × (Option CodecError)))
+  := do
+  if s_idx < count
+  then
+    let b := core.option.Option.is_none err
+    if b
+    then
+      let r ← decoder_v1.read_u8_at input cur
+      match r with
+      | core.result.Result.Ok p =>
+        let (info, after_info) := p
+        let tag ← lift (info &&& 31#u8)
+        if tag = 0#u8
+        then
+          let (r1, noop1) ←
+            decoder_v1.read_var_u64_sink
+              decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink input
+              after_info noop
+          match r1 with
+          | core.result.Result.Ok p1 =>
+            let (len, next_cur) := p1
+            let (r2, noop2) ←
+              decoder_v1.advance_clock_sink
+                decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink clock len
+                noop1
+            match r2 with
+            | core.result.Result.Ok next_clock =>
+              let s_idx1 ← s_idx + 1#usize
+              ok (cont (colliding_ids, pending_colliding, noop2, next_cur,
+                next_clock, s_idx1, err))
+            | core.result.Result.Err e =>
+              ok (cont (colliding_ids, pending_colliding, noop2, cur, clock,
+                s_idx, some e))
+          | core.result.Result.Err e =>
+            ok (cont (colliding_ids, pending_colliding, noop1, cur, clock,
+              s_idx, some e))
+        else
+          if tag = 10#u8
+          then
+            let (r1, noop1) ←
+              decoder_v1.read_var_u64_sink
+                decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink input
+                after_info noop
+            match r1 with
+            | core.result.Result.Ok p1 =>
+              let (len, next_cur) := p1
+              let (r2, noop2) ←
+                decoder_v1.advance_clock_sink
+                  decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink clock
+                  len noop1
+              match r2 with
+              | core.result.Result.Ok next_clock =>
+                let s_idx1 ← s_idx + 1#usize
+                ok (cont (colliding_ids, pending_colliding, noop2, next_cur,
+                  next_clock, s_idx1, err))
+              | core.result.Result.Err e =>
+                ok (cont (colliding_ids, pending_colliding, noop2, cur, clock,
+                  s_idx, some e))
+            | core.result.Result.Err e =>
+              ok (cont (colliding_ids, pending_colliding, noop1, cur, clock,
+                s_idx, some e))
+          else
+            let (r1, noop1) ←
+              decoder_v1.decode_item_header
+                decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink input
+                after_info info noop
+            match r1 with
+            | core.result.Result.Ok p1 =>
+              let (hdr, content_start) := p1
+              let (r2, noop2) ←
+                decoder_v1.decode_item_content
+                  decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink input
+                  content_start tag limits 0#usize noop1
+              match r2 with
+              | core.result.Result.Ok t =>
+                let (len, content_end, _) := t
+                if len = 0#u64
+                then
+                  let s_idx1 ← s_idx + 1#usize
+                  ok (cont (colliding_ids, pending_colliding, noop2,
+                    content_end, clock, s_idx1, err))
+                else
+                  let (r3, noop3) ←
+                    decoder_v1.advance_clock_sink
+                      decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink
+                      clock len noop2
+                  match r3 with
+                  | core.result.Result.Ok next_clock =>
+                    let b1 ←
+                      decoder_v1.opt_wire_id_in_sorted skipped_ols
+                        hdr.origin_left
+                    let (colliding_ids1, pending_colliding1, err1, noop4) ←
+                      if b1
+                      then
+                        if len != 1#u64
+                        then
+                          ok (colliding_ids, pending_colliding, some
+                            CodecError.ZeroLengthStruct, noop3)
+                        else
+                          do
+                          let colliding_ids2 ←
+                            decoder_v1.push_wire_id colliding_ids
+                              { client := i, clock }
+                          let v ←
+                            if tag != 1#u8
+                            then
+                              decoder_v1.push_wire_id pending_colliding
+                                { client := i, clock }
+                            else ok pending_colliding
+                          ok (colliding_ids2, v, err, noop3)
+                      else ok (colliding_ids, pending_colliding, err, noop3)
+                    let s_idx1 ← s_idx + 1#usize
+                    ok (cont (colliding_ids1, pending_colliding1, noop4,
+                      content_end, next_clock, s_idx1, err1))
+                  | core.result.Result.Err e =>
+                    ok (cont (colliding_ids, pending_colliding, noop3, cur,
+                      clock, s_idx, some e))
+              | core.result.Result.Err e =>
+                ok (cont (colliding_ids, pending_colliding, noop2, cur, clock,
+                  s_idx, some e))
+            | core.result.Result.Err e =>
+              ok (cont (colliding_ids, pending_colliding, noop1, cur, clock,
+                s_idx, some e))
+      | core.result.Result.Err e =>
+        ok (cont (colliding_ids, pending_colliding, noop, cur, clock, s_idx,
+          some e))
+    else ok (done (colliding_ids, pending_colliding, cur, err))
+  else ok (done (colliding_ids, pending_colliding, cur, err))
+
+/-- [y_octo_core::decoder_v1::collect_colliding_in_client]: loop 0:
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 1960:4-2018:5 -/
+@[rust_loop]
+def decoder_v1.collect_colliding_in_client_loop
+  (input : Slice Std.U8) (i : Std.U64) (count : Std.Usize)
+  (limits : decoder_v1.DecodeLimitsCore)
+  (skipped_ols : Slice decoder_v1.WireId)
+  (colliding_ids : alloc.vec.Vec decoder_v1.WireId)
+  (pending_colliding : alloc.vec.Vec decoder_v1.WireId)
+  (noop : decoder_v1.NoopSink) (cur : Std.Usize) (clock : Std.U64)
+  (s_idx : Std.Usize) (err : Option CodecError) :
+  Result ((alloc.vec.Vec decoder_v1.WireId) × (alloc.vec.Vec
+    decoder_v1.WireId) × Std.Usize × (Option CodecError))
+  := do
+  loop
+    (fun (colliding_ids1, pending_colliding1, noop1, cur1, clock1, s_idx1,
+      err1) => decoder_v1.collect_colliding_in_client_loop.body input i count
+      limits skipped_ols colliding_ids1 pending_colliding1 noop1 cur1 clock1
+      s_idx1 err1)
+    (colliding_ids, pending_colliding, noop, cur, clock, s_idx, err)
+
+/-- [y_octo_core::decoder_v1::collect_colliding_in_client]:
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 1945:0-2020:1 -/
+def decoder_v1.collect_colliding_in_client
+  (input : Slice Std.U8) (start_pos : Std.Usize) (start_id : decoder_v1.WireId)
+  (count : Std.Usize) (limits : decoder_v1.DecodeLimitsCore)
+  (skipped_ols : Slice decoder_v1.WireId)
+  (colliding_ids : alloc.vec.Vec decoder_v1.WireId)
+  (pending_colliding : alloc.vec.Vec decoder_v1.WireId) :
+  Result ((core.result.Result Std.Usize CodecError) × (alloc.vec.Vec
+    decoder_v1.WireId) × (alloc.vec.Vec decoder_v1.WireId))
+  := do
+  let (colliding_ids1, pending_colliding1, cur, err) ←
+    decoder_v1.collect_colliding_in_client_loop input start_id.client count
+      limits skipped_ols colliding_ids pending_colliding () start_pos
+      start_id.clock 0#usize none
+  match err with
+  | none => ok (core.result.Result.Ok cur, colliding_ids1, pending_colliding1)
+  | some e => ok (core.result.Result.Err e, colliding_ids1, pending_colliding1)
+
+/-- [y_octo_core::decoder_v1::collect_colliding_origin_items]: loop body 0:
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 2036:4-2065:5 -/
+@[rust_loop_body]
+def decoder_v1.collect_colliding_origin_items_loop.body
+  (input : Slice Std.U8) (clients : Std.Usize)
+  (limits : decoder_v1.DecodeLimitsCore)
+  (skipped_ols : Slice decoder_v1.WireId) (noop : decoder_v1.NoopSink)
+  (cur : Std.Usize) (colliding_ids : alloc.vec.Vec decoder_v1.WireId)
+  (pending_colliding : alloc.vec.Vec decoder_v1.WireId) (c_idx : Std.Usize)
+  (err : Option CodecError) :
+  Result (ControlFlow (decoder_v1.NoopSink × Std.Usize × (alloc.vec.Vec
+    decoder_v1.WireId) × (alloc.vec.Vec decoder_v1.WireId) × Std.Usize ×
+    (Option CodecError)) ((alloc.vec.Vec decoder_v1.WireId) × (alloc.vec.Vec
+    decoder_v1.WireId) × (Option CodecError)))
+  := do
+  if c_idx < clients
+  then
+    let b := core.option.Option.is_none err
+    if b
+    then
+      let (r, noop1) ←
+        decoder_v1.read_var_u64_sink
+          decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink input cur noop
+      match r with
+      | core.result.Result.Ok p =>
+        let (count_u64, p1) := p
+        let r1 ← decoder_v1.checked_usize_limit count_u64 LimitKind.Structs
+        match r1 with
+        | core.result.Result.Ok count =>
+          let (r2, noop2) ←
+            decoder_v1.read_var_u64_sink
+              decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink input p1
+              noop1
+          match r2 with
+          | core.result.Result.Ok p2 =>
+            let (client, p21) := p2
+            let (r3, noop3) ←
+              decoder_v1.read_var_u64_sink
+                decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink input p21
+                noop2
+            match r3 with
+            | core.result.Result.Ok p3 =>
+              let (clock, p31) := p3
+              let (r4, colliding_ids1, pending_colliding1) ←
+                decoder_v1.collect_colliding_in_client input p31
+                  { client, clock } count limits skipped_ols colliding_ids
+                  pending_colliding
+              match r4 with
+              | core.result.Result.Ok next_cur =>
+                let c_idx1 ← c_idx + 1#usize
+                ok (cont (noop3, next_cur, colliding_ids1, pending_colliding1,
+                  c_idx1, err))
+              | core.result.Result.Err e =>
+                ok (cont (noop3, cur, colliding_ids1, pending_colliding1,
+                  c_idx, some e))
+            | core.result.Result.Err e =>
+              ok (cont (noop3, cur, colliding_ids, pending_colliding, c_idx,
+                some e))
+          | core.result.Result.Err e =>
+            ok (cont (noop2, cur, colliding_ids, pending_colliding, c_idx, some
+              e))
+        | core.result.Result.Err e =>
+          ok (cont (noop1, cur, colliding_ids, pending_colliding, c_idx, some
+            e))
+      | core.result.Result.Err e =>
+        ok (cont (noop1, cur, colliding_ids, pending_colliding, c_idx, some e))
+    else ok (done (colliding_ids, pending_colliding, err))
+  else ok (done (colliding_ids, pending_colliding, err))
+
+/-- [y_octo_core::decoder_v1::collect_colliding_origin_items]: loop 0:
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 2036:4-2065:5 -/
+@[rust_loop]
+def decoder_v1.collect_colliding_origin_items_loop
+  (input : Slice Std.U8) (clients : Std.Usize)
+  (limits : decoder_v1.DecodeLimitsCore)
+  (skipped_ols : Slice decoder_v1.WireId) (noop : decoder_v1.NoopSink)
+  (cur : Std.Usize) (colliding_ids : alloc.vec.Vec decoder_v1.WireId)
+  (pending_colliding : alloc.vec.Vec decoder_v1.WireId) (c_idx : Std.Usize)
+  (err : Option CodecError) :
+  Result ((alloc.vec.Vec decoder_v1.WireId) × (alloc.vec.Vec
+    decoder_v1.WireId) × (Option CodecError))
+  := do
+  loop
+    (fun (noop1, cur1, colliding_ids1, pending_colliding1, c_idx1, err1) =>
+      decoder_v1.collect_colliding_origin_items_loop.body input clients limits
+      skipped_ols noop1 cur1 colliding_ids1 pending_colliding1 c_idx1 err1)
+    (noop, cur, colliding_ids, pending_colliding, c_idx, err)
+
+/-- [y_octo_core::decoder_v1::collect_colliding_origin_items]:
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 2023:0-2071:1 -/
+def decoder_v1.collect_colliding_origin_items
+  (input : Slice Std.U8) (clients_start : Std.Usize) (clients : Std.Usize)
+  (limits : decoder_v1.DecodeLimitsCore)
+  (skipped_ols : Slice decoder_v1.WireId) :
+  Result (core.result.Result ((alloc.vec.Vec decoder_v1.WireId) ×
+    (alloc.vec.Vec decoder_v1.WireId)) CodecError)
+  := do
+  let (colliding_ids, pending_colliding, err) ←
+    decoder_v1.collect_colliding_origin_items_loop input clients limits
+      skipped_ols () clients_start (alloc.vec.Vec.new decoder_v1.WireId)
+      (alloc.vec.Vec.new decoder_v1.WireId) 0#usize none
+  match err with
+  | none => ok (core.result.Result.Ok (colliding_ids, pending_colliding))
+  | some e => ok (core.result.Result.Err e)
+
+/-- [y_octo_core::decoder_v1::client_has_origin_in]: loop body 0:
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 2086:4-2122:5 -/
+@[rust_loop_body]
+def decoder_v1.client_has_origin_in_loop.body
+  (input : Slice Std.U8) (count : Std.Usize)
+  (limits : decoder_v1.DecodeLimitsCore) (target_ids : Slice decoder_v1.WireId)
+  (noop : decoder_v1.NoopSink) (cur : Std.Usize) (s_idx : Std.Usize)
+  (found : Bool) (err : Option CodecError) :
+  Result (ControlFlow (decoder_v1.NoopSink × Std.Usize × Std.Usize × Bool ×
+    (Option CodecError)) (Std.Usize × Bool × (Option CodecError)))
+  := do
+  if s_idx < count
+  then
+    if found
+    then ok (done (cur, found, err))
+    else
+      let b := core.option.Option.is_none err
+      if b
+      then
+        let r ← decoder_v1.read_u8_at input cur
+        match r with
+        | core.result.Result.Ok p =>
+          let (info, after_info) := p
+          let tag ← lift (info &&& 31#u8)
+          if tag = 0#u8
+          then
+            let (r1, noop1) ←
+              decoder_v1.read_var_u64_sink
+                decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink input
+                after_info noop
+            match r1 with
+            | core.result.Result.Ok p1 =>
+              let (_, next_cur) := p1
+              let s_idx1 ← s_idx + 1#usize
+              ok (cont (noop1, next_cur, s_idx1, found, err))
+            | core.result.Result.Err e =>
+              ok (cont (noop1, cur, s_idx, found, some e))
+          else
+            if tag = 10#u8
+            then
+              let (r1, noop1) ←
+                decoder_v1.read_var_u64_sink
+                  decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink input
+                  after_info noop
+              match r1 with
+              | core.result.Result.Ok p1 =>
+                let (_, next_cur) := p1
+                let s_idx1 ← s_idx + 1#usize
+                ok (cont (noop1, next_cur, s_idx1, found, err))
+              | core.result.Result.Err e =>
+                ok (cont (noop1, cur, s_idx, found, some e))
+            else
+              let (r1, noop1) ←
+                decoder_v1.decode_item_header
+                  decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink input
+                  after_info info noop
+              match r1 with
+              | core.result.Result.Ok p1 =>
+                let (hdr, content_start) := p1
+                let b1 ←
+                  decoder_v1.opt_wire_id_in_sorted target_ids hdr.origin_left
+                if b1
+                then ok (cont (noop1, cur, s_idx, true, err))
+                else
+                  let b2 ←
+                    decoder_v1.opt_wire_id_in_sorted target_ids
+                      hdr.origin_right
+                  if b2
+                  then ok (cont (noop1, cur, s_idx, true, err))
+                  else
+                    let b3 ←
+                      decoder_v1.parent_item_in_sorted target_ids hdr.parent
+                    if b3
+                    then ok (cont (noop1, cur, s_idx, true, err))
+                    else
+                      let (r2, noop2) ←
+                        decoder_v1.decode_item_content
+                          decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink
+                          input content_start tag limits 0#usize noop1
+                      match r2 with
+                      | core.result.Result.Ok t =>
+                        let (_, content_end, _) := t
+                        let s_idx1 ← s_idx + 1#usize
+                        ok (cont (noop2, content_end, s_idx1, found, err))
+                      | core.result.Result.Err e =>
+                        ok (cont (noop2, cur, s_idx, found, some e))
+              | core.result.Result.Err e =>
+                ok (cont (noop1, cur, s_idx, found, some e))
+        | core.result.Result.Err e =>
+          ok (cont (noop, cur, s_idx, found, some e))
+      else ok (done (cur, found, err))
+  else ok (done (cur, found, err))
+
+/-- [y_octo_core::decoder_v1::client_has_origin_in]: loop 0:
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 2086:4-2122:5 -/
+@[rust_loop]
+def decoder_v1.client_has_origin_in_loop
+  (input : Slice Std.U8) (count : Std.Usize)
+  (limits : decoder_v1.DecodeLimitsCore) (target_ids : Slice decoder_v1.WireId)
+  (noop : decoder_v1.NoopSink) (cur : Std.Usize) (s_idx : Std.Usize)
+  (found : Bool) (err : Option CodecError) :
+  Result (Std.Usize × Bool × (Option CodecError))
+  := do
+  loop
+    (fun (noop1, cur1, s_idx1, found1, err1) =>
+      decoder_v1.client_has_origin_in_loop.body input count limits target_ids
+      noop1 cur1 s_idx1 found1 err1)
+    (noop, cur, s_idx, found, err)
+
+/-- [y_octo_core::decoder_v1::client_has_origin_in]:
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 2074:0-2124:1 -/
+def decoder_v1.client_has_origin_in
+  (input : Slice Std.U8) (start_pos : Std.Usize) (count : Std.Usize)
+  (limits : decoder_v1.DecodeLimitsCore) (target_ids : Slice decoder_v1.WireId)
+  :
+  Result (core.result.Result (Std.Usize × Bool) CodecError)
+  := do
+  let (cur, found, err) ←
+    decoder_v1.client_has_origin_in_loop input count limits target_ids ()
+      start_pos 0#usize false none
+  match err with
+  | none => ok (core.result.Result.Ok (cur, found))
+  | some e => ok (core.result.Result.Err e)
+
+/-- [y_octo_core::decoder_v1::has_origin_referencing]: loop body 0:
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 2139:4-2160:5 -/
+@[rust_loop_body]
+def decoder_v1.has_origin_referencing_loop.body
+  (input : Slice Std.U8) (clients : Std.Usize)
+  (limits : decoder_v1.DecodeLimitsCore) (target_ids : Slice decoder_v1.WireId)
+  (noop : decoder_v1.NoopSink) (cur : Std.Usize) (c_idx : Std.Usize)
+  (found : Bool) (err : Option CodecError) :
+  Result (ControlFlow (decoder_v1.NoopSink × Std.Usize × Std.Usize × Bool ×
+    (Option CodecError)) (Bool × (Option CodecError)))
+  := do
+  if c_idx < clients
+  then
+    if found
+    then ok (done (found, err))
+    else
+      let b := core.option.Option.is_none err
+      if b
+      then
+        let (r, noop1) ←
+          decoder_v1.read_var_u64_sink
+            decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink input cur
+            noop
+        match r with
+        | core.result.Result.Ok p =>
+          let (count_u64, p1) := p
+          let r1 ← decoder_v1.checked_usize_limit count_u64 LimitKind.Structs
+          match r1 with
+          | core.result.Result.Ok count =>
+            let (r2, noop2) ←
+              decoder_v1.read_var_u64_sink
+                decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink input p1
+                noop1
+            match r2 with
+            | core.result.Result.Ok p2 =>
+              let (_, p21) := p2
+              let (r3, noop3) ←
+                decoder_v1.read_var_u64_sink
+                  decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink input
+                  p21 noop2
+              match r3 with
+              | core.result.Result.Ok p3 =>
+                let (_, p31) := p3
+                let r4 ←
+                  decoder_v1.client_has_origin_in input p31 count limits
+                    target_ids
+                match r4 with
+                | core.result.Result.Ok p4 =>
+                  let (next_cur, hit) := p4
+                  let c_idx1 ← c_idx + 1#usize
+                  ok (cont (noop3, next_cur, c_idx1, hit, err))
+                | core.result.Result.Err e =>
+                  ok (cont (noop3, cur, c_idx, found, some e))
+              | core.result.Result.Err e =>
+                ok (cont (noop3, cur, c_idx, found, some e))
+            | core.result.Result.Err e =>
+              ok (cont (noop2, cur, c_idx, found, some e))
+          | core.result.Result.Err e =>
+            ok (cont (noop1, cur, c_idx, found, some e))
+        | core.result.Result.Err e =>
+          ok (cont (noop1, cur, c_idx, found, some e))
+      else ok (done (found, err))
+  else ok (done (found, err))
+
+/-- [y_octo_core::decoder_v1::has_origin_referencing]: loop 0:
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 2139:4-2160:5 -/
+@[rust_loop]
+def decoder_v1.has_origin_referencing_loop
+  (input : Slice Std.U8) (clients : Std.Usize)
+  (limits : decoder_v1.DecodeLimitsCore) (target_ids : Slice decoder_v1.WireId)
+  (noop : decoder_v1.NoopSink) (cur : Std.Usize) (c_idx : Std.Usize)
+  (found : Bool) (err : Option CodecError) :
+  Result (Bool × (Option CodecError))
+  := do
+  loop
+    (fun (noop1, cur1, c_idx1, found1, err1) =>
+      decoder_v1.has_origin_referencing_loop.body input clients limits
+      target_ids noop1 cur1 c_idx1 found1 err1)
+    (noop, cur, c_idx, found, err)
+
+/-- [y_octo_core::decoder_v1::has_origin_referencing]:
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 2127:0-2162:1 -/
+def decoder_v1.has_origin_referencing
+  (input : Slice Std.U8) (clients_start : Std.Usize) (clients : Std.Usize)
+  (limits : decoder_v1.DecodeLimitsCore) (target_ids : Slice decoder_v1.WireId)
+  :
+  Result (core.result.Result Bool CodecError)
+  := do
+  let (found, err) ←
+    decoder_v1.has_origin_referencing_loop input clients limits target_ids ()
+      clients_start 0#usize false none
+  match err with
+  | none => ok (core.result.Result.Ok found)
+  | some e => ok (core.result.Result.Err e)
+
+/-- [y_octo_core::decoder_v1::scan_delete_ranges_coverage]: loop body 0:
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 2180:4-2196:5 -/
+@[rust_loop_body]
+def decoder_v1.scan_delete_ranges_coverage_loop.body
+  (input : Slice Std.U8) (client : Std.U64) (range_count : Std.Usize)
+  (pending_zeros : Slice decoder_v1.WireId)
+  (pending_colliding : Slice decoder_v1.WireId) (zero_max_hi : Slice Std.Usize)
+  (coll_max_hi : Slice Std.Usize) (noop : decoder_v1.NoopSink)
+  (cur : Std.Usize) (r_idx : Std.Usize) (err : Option CodecError) :
+  Result (ControlFlow ((Slice Std.Usize) × (Slice Std.Usize) ×
+    decoder_v1.NoopSink × Std.Usize × Std.Usize × (Option CodecError))
+    ((Slice Std.Usize) × (Slice Std.Usize) × Std.Usize × (Option
+    CodecError)))
+  := do
+  if r_idx < range_count
+  then
+    let b := core.option.Option.is_none err
+    if b
+    then
+      let (r, noop1) ←
+        decoder_v1.read_one_delete_range_sink
+          decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink input cur noop
+      match r with
+      | core.result.Result.Ok t =>
+        let (start, «end», q2) := t
+        let (zero_max_hi1, coll_max_hi1, noop2) ←
+          if start != «end»
+          then
+            do
+            let b1 ← core.slice.Slice.is_empty pending_zeros
+            let zero_max_hi2 ←
+              if b1
+              then ok zero_max_hi
+              else
+                decoder_v1.mark_zero_strings_covered pending_zeros zero_max_hi
+                  client start «end»
+            let b2 ← core.slice.Slice.is_empty pending_colliding
+            let s ←
+              if b2
+              then ok coll_max_hi
+              else
+                decoder_v1.mark_point_ids_covered pending_colliding coll_max_hi
+                  client start «end»
+            ok (zero_max_hi2, s, noop1)
+          else ok (zero_max_hi, coll_max_hi, noop1)
+        let r_idx1 ← r_idx + 1#usize
+        ok (cont (zero_max_hi1, coll_max_hi1, noop2, q2, r_idx1, err))
+      | core.result.Result.Err e =>
+        ok (cont (zero_max_hi, coll_max_hi, noop1, cur, r_idx, some e))
+    else ok (done (zero_max_hi, coll_max_hi, cur, err))
+  else ok (done (zero_max_hi, coll_max_hi, cur, err))
+
+/-- [y_octo_core::decoder_v1::scan_delete_ranges_coverage]: loop 0:
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 2180:4-2196:5 -/
+@[rust_loop]
+def decoder_v1.scan_delete_ranges_coverage_loop
+  (input : Slice Std.U8) (client : Std.U64) (range_count : Std.Usize)
+  (pending_zeros : Slice decoder_v1.WireId) (zero_max_hi : Slice Std.Usize)
+  (pending_colliding : Slice decoder_v1.WireId) (coll_max_hi : Slice Std.Usize)
+  (noop : decoder_v1.NoopSink) (cur : Std.Usize) (r_idx : Std.Usize)
+  (err : Option CodecError) :
+  Result ((Slice Std.Usize) × (Slice Std.Usize) × Std.Usize × (Option
+    CodecError))
+  := do
+  loop
+    (fun (zero_max_hi1, coll_max_hi1, noop1, cur1, r_idx1, err1) =>
+      decoder_v1.scan_delete_ranges_coverage_loop.body input client range_count
+      pending_zeros pending_colliding zero_max_hi1 coll_max_hi1 noop1 cur1
+      r_idx1 err1)
+    (zero_max_hi, coll_max_hi, noop, cur, r_idx, err)
+
+/-- [y_octo_core::decoder_v1::scan_delete_ranges_coverage]:
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 2166:0-2198:1 -/
+def decoder_v1.scan_delete_ranges_coverage
+  (input : Slice Std.U8) (start_pos : Std.Usize) (client : Std.U64)
+  (range_count : Std.Usize) (pending_zeros : Slice decoder_v1.WireId)
+  (zero_max_hi : Slice Std.Usize) (pending_colliding : Slice decoder_v1.WireId)
+  (coll_max_hi : Slice Std.Usize) :
+  Result ((core.result.Result Std.Usize CodecError) × (Slice Std.Usize) ×
+    (Slice Std.Usize))
+  := do
+  let (zero_max_hi1, coll_max_hi1, cur, err) ←
+    decoder_v1.scan_delete_ranges_coverage_loop input client range_count
+      pending_zeros zero_max_hi pending_colliding coll_max_hi () start_pos
+      0#usize none
+  match err with
+  | none => ok (core.result.Result.Ok cur, zero_max_hi1, coll_max_hi1)
+  | some e => ok (core.result.Result.Err e, zero_max_hi1, coll_max_hi1)
+
+/-- [y_octo_core::decoder_v1::scan_delete_set_coverage]: loop body 0:
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 2215:4-2241:5 -/
+@[rust_loop_body]
+def decoder_v1.scan_delete_set_coverage_loop.body
+  (input : Slice Std.U8) (pending_zeros : Slice decoder_v1.WireId)
+  (pending_colliding : Slice decoder_v1.WireId) (delete_clients : Std.Usize)
+  (zero_max_hi : Slice Std.Usize) (coll_max_hi : Slice Std.Usize)
+  (noop : decoder_v1.NoopSink) (cur : Std.Usize) (c_idx : Std.Usize)
+  (err : Option CodecError) :
+  Result (ControlFlow ((Slice Std.Usize) × (Slice Std.Usize) ×
+    decoder_v1.NoopSink × Std.Usize × Std.Usize × (Option CodecError))
+    ((Slice Std.Usize) × (Slice Std.Usize) × (Option CodecError)))
+  := do
+  if c_idx < delete_clients
+  then
+    let b := core.option.Option.is_none err
+    if b
+    then
+      let (r, noop1) ←
+        decoder_v1.read_var_u64_sink
+          decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink input cur noop
+      match r with
+      | core.result.Result.Ok p =>
+        let (client, p1) := p
+        let (r1, noop2) ←
+          decoder_v1.read_var_u64_sink
+            decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink input p1
+            noop1
+        match r1 with
+        | core.result.Result.Ok p2 =>
+          let (ranges_u64, p21) := p2
+          let r2 ←
+            decoder_v1.checked_usize_limit ranges_u64 LimitKind.DeleteRanges
+          match r2 with
+          | core.result.Result.Ok range_count =>
+            let (r3, zero_max_hi1, coll_max_hi1) ←
+              decoder_v1.scan_delete_ranges_coverage input p21 client
+                range_count pending_zeros zero_max_hi pending_colliding
+                coll_max_hi
+            match r3 with
+            | core.result.Result.Ok next_cur =>
+              let c_idx1 ← c_idx + 1#usize
+              ok (cont (zero_max_hi1, coll_max_hi1, noop2, next_cur, c_idx1,
+                err))
+            | core.result.Result.Err e =>
+              ok (cont (zero_max_hi1, coll_max_hi1, noop2, cur, c_idx, some e))
+          | core.result.Result.Err e =>
+            ok (cont (zero_max_hi, coll_max_hi, noop2, cur, c_idx, some e))
+        | core.result.Result.Err e =>
+          ok (cont (zero_max_hi, coll_max_hi, noop2, cur, c_idx, some e))
+      | core.result.Result.Err e =>
+        ok (cont (zero_max_hi, coll_max_hi, noop1, cur, c_idx, some e))
+    else ok (done (zero_max_hi, coll_max_hi, err))
+  else ok (done (zero_max_hi, coll_max_hi, err))
+
+/-- [y_octo_core::decoder_v1::scan_delete_set_coverage]: loop 0:
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 2215:4-2241:5 -/
+@[rust_loop]
+def decoder_v1.scan_delete_set_coverage_loop
+  (input : Slice Std.U8) (pending_zeros : Slice decoder_v1.WireId)
+  (zero_max_hi : Slice Std.Usize) (pending_colliding : Slice decoder_v1.WireId)
+  (coll_max_hi : Slice Std.Usize) (noop : decoder_v1.NoopSink)
+  (cur : Std.Usize) (delete_clients : Std.Usize) (c_idx : Std.Usize)
+  (err : Option CodecError) :
+  Result ((Slice Std.Usize) × (Slice Std.Usize) × (Option CodecError))
+  := do
+  loop
+    (fun (zero_max_hi1, coll_max_hi1, noop1, cur1, c_idx1, err1) =>
+      decoder_v1.scan_delete_set_coverage_loop.body input pending_zeros
+      pending_colliding delete_clients zero_max_hi1 coll_max_hi1 noop1 cur1
+      c_idx1 err1)
+    (zero_max_hi, coll_max_hi, noop, cur, c_idx, err)
+
+/-- [y_octo_core::decoder_v1::scan_delete_set_coverage]:
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 2202:0-2243:1 -/
+def decoder_v1.scan_delete_set_coverage
+  (input : Slice Std.U8) (ds_start : Std.Usize)
+  (pending_zeros : Slice decoder_v1.WireId) (zero_max_hi : Slice Std.Usize)
+  (pending_colliding : Slice decoder_v1.WireId) (coll_max_hi : Slice Std.Usize)
+  :
+  Result ((core.result.Result Unit CodecError) × (Slice Std.Usize) × (Slice
+    Std.Usize))
+  := do
+  let (r, noop) ←
+    decoder_v1.read_var_u64_sink
+      decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink input ds_start ()
+  let cf ← core.result.Result.Insts.CoreOpsTry.branch r
+  match cf with
+  | core.ops.control_flow.ControlFlow.Continue val =>
+    let (clients_u64, cur) := val
+    let r1 ←
+      decoder_v1.checked_usize_limit clients_u64 LimitKind.DeleteClients
+    let cf1 ← core.result.Result.Insts.CoreOpsTry.branch r1
+    match cf1 with
+    | core.ops.control_flow.ControlFlow.Continue val1 =>
+      let (zero_max_hi1, coll_max_hi1, err) ←
+        decoder_v1.scan_delete_set_coverage_loop input pending_zeros
+          zero_max_hi pending_colliding coll_max_hi noop cur val1 0#usize none
+      match err with
+      | none => ok (core.result.Result.Ok (), zero_max_hi1, coll_max_hi1)
+      | some e => ok (core.result.Result.Err e, zero_max_hi1, coll_max_hi1)
+    | core.ops.control_flow.ControlFlow.Break residual =>
+      let r2 ←
+        core.result.Result.Insts.CoreOpsTry_traitFromResidualResult.from_residual
+          Unit (core.convert.FromSame CodecError) residual
+      ok (r2, zero_max_hi, coll_max_hi)
+  | core.ops.control_flow.ControlFlow.Break residual =>
+    let r1 ←
+      core.result.Result.Insts.CoreOpsTry_traitFromResidualResult.from_residual
+        Unit (core.convert.FromSame CodecError) residual
+    ok (r1, zero_max_hi, coll_max_hi)
+
+/-- [y_octo_core::decoder_v1::verify_delete_set_coverage]:
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 2246:0-2282:1 -/
+def decoder_v1.verify_delete_set_coverage
+  (input : Slice Std.U8) (ds_start : Std.Usize)
+  (pending_zero_strings : Slice decoder_v1.WireId)
+  (pending_colliding : Slice decoder_v1.WireId) :
+  Result ((core.result.Result Unit CodecError) × (Slice decoder_v1.WireId) ×
+    (Slice decoder_v1.WireId))
+  := do
+  let b ← core.slice.Slice.is_empty pending_zero_strings
+  if b
+  then
+    let b1 ← core.slice.Slice.is_empty pending_colliding
+    if b1
+    then ok (core.result.Result.Ok (), pending_zero_strings, pending_colliding)
+    else
+      let (pending_zero_strings1, zero_max_hi) ←
+        if b
+        then ok (pending_zero_strings, alloc.vec.Vec.new Std.Usize)
+        else
+          do
+          let pending_zero_strings2 ←
+            decoder_v1.sort_wire_ids pending_zero_strings
+          let i := Slice.len pending_zero_strings2
+          let zero_max_hi1 ← decoder_v1.alloc_zero_max_hi i
+          ok (pending_zero_strings2, zero_max_hi1)
+      let (pending_colliding1, coll_max_hi) ←
+        if b1
+        then ok (pending_colliding, alloc.vec.Vec.new Std.Usize)
+        else
+          do
+          let pending_colliding2 ← decoder_v1.sort_wire_ids pending_colliding
+          let i := Slice.len pending_colliding2
+          let coll_max_hi1 ← decoder_v1.alloc_zero_max_hi i
+          ok (pending_colliding2, coll_max_hi1)
+      let (s, deref_mut_back) ← lift (alloc.vec.Vec.deref_mut zero_max_hi)
+      let (s1, deref_mut_back1) ← lift (alloc.vec.Vec.deref_mut coll_max_hi)
+      let (r, s2, s3) ←
+        decoder_v1.scan_delete_set_coverage input ds_start
+          pending_zero_strings1 s pending_colliding1 s1
+      let cf ← core.result.Result.Insts.CoreOpsTry.branch r
+      match cf with
+      | core.ops.control_flow.ControlFlow.Continue _ =>
+        let b2 ← core.slice.Slice.is_empty pending_zero_strings1
+        if b2
+        then
+          let b3 ← core.slice.Slice.is_empty pending_colliding1
+          if b3
+          then
+            ok (core.result.Result.Ok (), pending_zero_strings1,
+              pending_colliding1)
+          else
+            let coll_max_hi1 := deref_mut_back1 s3
+            let s4 := alloc.vec.Vec.deref coll_max_hi1
+            let b4 ← decoder_v1.all_zero_strings_covered s4
+            if b4
+            then
+              ok (core.result.Result.Ok (), pending_zero_strings1,
+                pending_colliding1)
+            else
+              ok (core.result.Result.Err CodecError.ZeroLengthStruct,
+                pending_zero_strings1, pending_colliding1)
+        else
+          let zero_max_hi1 := deref_mut_back s2
+          let s4 := alloc.vec.Vec.deref zero_max_hi1
+          let b3 ← decoder_v1.all_zero_strings_covered s4
+          if b3
+          then
+            let b4 ← core.slice.Slice.is_empty pending_colliding1
+            if b4
+            then
+              ok (core.result.Result.Ok (), pending_zero_strings1,
+                pending_colliding1)
+            else
+              let coll_max_hi1 := deref_mut_back1 s3
+              let s5 := alloc.vec.Vec.deref coll_max_hi1
+              let b5 ← decoder_v1.all_zero_strings_covered s5
+              if b5
+              then
+                ok (core.result.Result.Ok (), pending_zero_strings1,
+                  pending_colliding1)
+              else
+                ok (core.result.Result.Err CodecError.ZeroLengthStruct,
+                  pending_zero_strings1, pending_colliding1)
+          else
+            ok (core.result.Result.Err CodecError.ZeroLengthStruct,
+              pending_zero_strings1, pending_colliding1)
+      | core.ops.control_flow.ControlFlow.Break residual =>
+        let r1 ←
+          core.result.Result.Insts.CoreOpsTry_traitFromResidualResult.from_residual
+            Unit (core.convert.FromSame CodecError) residual
+        ok (r1, pending_zero_strings1, pending_colliding1)
+  else
+    let (pending_zero_strings1, zero_max_hi) ←
+      if b
+      then ok (pending_zero_strings, alloc.vec.Vec.new Std.Usize)
+      else
+        do
+        let pending_zero_strings2 ←
+          decoder_v1.sort_wire_ids pending_zero_strings
+        let i := Slice.len pending_zero_strings2
+        let zero_max_hi1 ← decoder_v1.alloc_zero_max_hi i
+        ok (pending_zero_strings2, zero_max_hi1)
+    let b1 ← core.slice.Slice.is_empty pending_colliding
+    let (pending_colliding1, coll_max_hi) ←
+      if b1
+      then ok (pending_colliding, alloc.vec.Vec.new Std.Usize)
+      else
+        do
+        let pending_colliding2 ← decoder_v1.sort_wire_ids pending_colliding
+        let i := Slice.len pending_colliding2
+        let coll_max_hi1 ← decoder_v1.alloc_zero_max_hi i
+        ok (pending_colliding2, coll_max_hi1)
+    let (s, deref_mut_back) ← lift (alloc.vec.Vec.deref_mut zero_max_hi)
+    let (s1, deref_mut_back1) ← lift (alloc.vec.Vec.deref_mut coll_max_hi)
+    let (r, s2, s3) ←
+      decoder_v1.scan_delete_set_coverage input ds_start pending_zero_strings1
+        s pending_colliding1 s1
+    let cf ← core.result.Result.Insts.CoreOpsTry.branch r
+    match cf with
+    | core.ops.control_flow.ControlFlow.Continue _ =>
+      let b2 ← core.slice.Slice.is_empty pending_zero_strings1
+      if b2
+      then
+        let b3 ← core.slice.Slice.is_empty pending_colliding1
+        if b3
+        then
+          ok (core.result.Result.Ok (), pending_zero_strings1,
+            pending_colliding1)
+        else
+          let coll_max_hi1 := deref_mut_back1 s3
+          let s4 := alloc.vec.Vec.deref coll_max_hi1
+          let b4 ← decoder_v1.all_zero_strings_covered s4
+          if b4
+          then
+            ok (core.result.Result.Ok (), pending_zero_strings1,
+              pending_colliding1)
+          else
+            ok (core.result.Result.Err CodecError.ZeroLengthStruct,
+              pending_zero_strings1, pending_colliding1)
+      else
+        let zero_max_hi1 := deref_mut_back s2
+        let s4 := alloc.vec.Vec.deref zero_max_hi1
+        let b3 ← decoder_v1.all_zero_strings_covered s4
+        if b3
+        then
+          let b4 ← core.slice.Slice.is_empty pending_colliding1
+          if b4
+          then
+            ok (core.result.Result.Ok (), pending_zero_strings1,
+              pending_colliding1)
+          else
+            let coll_max_hi1 := deref_mut_back1 s3
+            let s5 := alloc.vec.Vec.deref coll_max_hi1
+            let b5 ← decoder_v1.all_zero_strings_covered s5
+            if b5
+            then
+              ok (core.result.Result.Ok (), pending_zero_strings1,
+                pending_colliding1)
+            else
+              ok (core.result.Result.Err CodecError.ZeroLengthStruct,
+                pending_zero_strings1, pending_colliding1)
+        else
+          ok (core.result.Result.Err CodecError.ZeroLengthStruct,
+            pending_zero_strings1, pending_colliding1)
+    | core.ops.control_flow.ControlFlow.Break residual =>
+      let r1 ←
+        core.result.Result.Insts.CoreOpsTry_traitFromResidualResult.from_residual
+          Unit (core.convert.FromSame CodecError) residual
+      ok (r1, pending_zero_strings1, pending_colliding1)
+
+/-- [y_octo_core::decoder_v1::verify_skipped_zero_items]:
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 2286:0-2305:1 -/
+def decoder_v1.verify_skipped_zero_items
+  (input : Slice Std.U8) (clients_start : Std.Usize) (clients : Std.Usize)
+  (ds_start : Std.Usize) (limits : decoder_v1.DecodeLimitsCore)
+  (skipped_ols : Slice decoder_v1.WireId)
+  (pending_zero_strings : Slice decoder_v1.WireId) :
+  Result ((core.result.Result Unit CodecError) × (Slice decoder_v1.WireId) ×
+    (Slice decoder_v1.WireId))
+  := do
+  let skipped_ols1 ← decoder_v1.sort_wire_ids skipped_ols
+  let r ←
+    decoder_v1.collect_colliding_origin_items input clients_start clients
+      limits skipped_ols1
+  let cf ← core.result.Result.Insts.CoreOpsTry.branch r
+  match cf with
+  | core.ops.control_flow.ControlFlow.Continue val =>
+    let (colliding_ids, pending_colliding) := val
+    let b ← alloc.vec.Vec.is_empty colliding_ids
+    if b
+    then
+      let (s, _) ← lift (alloc.vec.Vec.deref_mut pending_colliding)
+      let (r1, pending_zero_strings1, _) ←
+        decoder_v1.verify_delete_set_coverage input ds_start
+          pending_zero_strings s
+      ok (r1, skipped_ols1, pending_zero_strings1)
+    else
+      let (s, deref_mut_back) ← lift (alloc.vec.Vec.deref_mut colliding_ids)
+      let s1 ← decoder_v1.sort_wire_ids s
+      let colliding_ids1 := deref_mut_back s1
+      let s2 := alloc.vec.Vec.deref colliding_ids1
+      let r1 ←
+        decoder_v1.has_origin_referencing input clients_start clients limits s2
+      let cf1 ← core.result.Result.Insts.CoreOpsTry.branch r1
+      match cf1 with
+      | core.ops.control_flow.ControlFlow.Continue val1 =>
+        if val1
+        then
+          ok (core.result.Result.Err CodecError.ZeroLengthStruct, skipped_ols1,
+            pending_zero_strings)
+        else
+          let (s3, _) ← lift (alloc.vec.Vec.deref_mut pending_colliding)
+          let (r2, pending_zero_strings1, _) ←
+            decoder_v1.verify_delete_set_coverage input ds_start
+              pending_zero_strings s3
+          ok (r2, skipped_ols1, pending_zero_strings1)
+      | core.ops.control_flow.ControlFlow.Break residual =>
+        let r2 ←
+          core.result.Result.Insts.CoreOpsTry_traitFromResidualResult.from_residual
+            Unit (core.convert.FromSame CodecError) residual
+        ok (r2, skipped_ols1, pending_zero_strings)
+  | core.ops.control_flow.ControlFlow.Break residual =>
+    let r1 ←
+      core.result.Result.Insts.CoreOpsTry_traitFromResidualResult.from_residual
+        Unit (core.convert.FromSame CodecError) residual
+    ok (r1, skipped_ols1, pending_zero_strings)
+
 /-- [y_octo_core::decoder_v1::decode_struct_frame]:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 1156:0-1214:1 -/
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 2309:0-2401:1 -/
 def decoder_v1.decode_struct_frame
   {S : Type _} (V1SinkInst : decoder_v1.V1Sink S) (input : Slice Std.U8)
-  (pos : Std.Usize) (id : decoder_v1.WireId)
+  (pos : Std.Usize) (client_start_pos : Std.Usize)
+  (client_start_clock : Std.U64) (s_idx : Std.Usize) (id : decoder_v1.WireId)
   (limits : decoder_v1.DecodeLimitsCore) (acc : decoder_v1.DecodeAcc)
-  (sink : S) :
-  Result ((core.result.Result (Std.U64 × Std.Usize × decoder_v1.DecodeAcc)
-    CodecError) × S)
+  (state : decoder_v1.ClientSeqState) (sink : S) :
+  Result ((core.result.Result (Std.U64 × Std.Usize × decoder_v1.DecodeAcc ×
+    (Option decoder_v1.WireId) × Bool) CodecError) ×
+    decoder_v1.ClientSeqState × S)
   := do
   let r ← decoder_v1.read_u8_at input pos
   let cf ← core.result.Result.Insts.CoreOpsTry.branch r
@@ -7782,25 +10135,34 @@ def decoder_v1.decode_struct_frame
           let cf3 ← core.result.Result.Insts.CoreOpsTry.branch r3
           match cf3 with
           | core.ops.control_flow.ControlFlow.Continue _ =>
-            ok (core.result.Result.Ok (val2, p, acc), sink3)
+            if state.active
+            then
+              ok (core.result.Result.Ok (val2, p, acc, none, false),
+                { state with just_skipped_ol := none }, sink3)
+            else
+              ok (core.result.Result.Ok (val2, p, acc, none, false), state,
+                sink3)
           | core.ops.control_flow.ControlFlow.Break residual =>
             let r4 ←
               core.result.Result.Insts.CoreOpsTry_traitFromResidualResult.from_residual
-                (Std.U64 × Std.Usize × decoder_v1.DecodeAcc)
-                (core.convert.FromSame CodecError) residual
-            ok (r4, sink3)
+                (Std.U64 × Std.Usize × decoder_v1.DecodeAcc × (Option
+                decoder_v1.WireId) × Bool) (core.convert.FromSame CodecError)
+                residual
+            ok (r4, state, sink3)
         | core.ops.control_flow.ControlFlow.Break residual =>
           let r3 ←
             core.result.Result.Insts.CoreOpsTry_traitFromResidualResult.from_residual
-              (Std.U64 × Std.Usize × decoder_v1.DecodeAcc)
-              (core.convert.FromSame CodecError) residual
-          ok (r3, sink2)
+              (Std.U64 × Std.Usize × decoder_v1.DecodeAcc × (Option
+              decoder_v1.WireId) × Bool) (core.convert.FromSame CodecError)
+              residual
+          ok (r3, state, sink2)
       | core.ops.control_flow.ControlFlow.Break residual =>
         let r2 ←
           core.result.Result.Insts.CoreOpsTry_traitFromResidualResult.from_residual
-            (Std.U64 × Std.Usize × decoder_v1.DecodeAcc)
-            (core.convert.FromSame CodecError) residual
-        ok (r2, sink1)
+            (Std.U64 × Std.Usize × decoder_v1.DecodeAcc × (Option
+            decoder_v1.WireId) × Bool) (core.convert.FromSame CodecError)
+            residual
+        ok (r2, state, sink1)
     else
       if tag = 10#u8
       then
@@ -7819,25 +10181,34 @@ def decoder_v1.decode_struct_frame
             let cf3 ← core.result.Result.Insts.CoreOpsTry.branch r3
             match cf3 with
             | core.ops.control_flow.ControlFlow.Continue _ =>
-              ok (core.result.Result.Ok (val2, p, acc), sink3)
+              if state.active
+              then
+                ok (core.result.Result.Ok (val2, p, acc, none, false),
+                  { state with just_skipped_ol := none }, sink3)
+              else
+                ok (core.result.Result.Ok (val2, p, acc, none, false), state,
+                  sink3)
             | core.ops.control_flow.ControlFlow.Break residual =>
               let r4 ←
                 core.result.Result.Insts.CoreOpsTry_traitFromResidualResult.from_residual
-                  (Std.U64 × Std.Usize × decoder_v1.DecodeAcc)
-                  (core.convert.FromSame CodecError) residual
-              ok (r4, sink3)
+                  (Std.U64 × Std.Usize × decoder_v1.DecodeAcc × (Option
+                  decoder_v1.WireId) × Bool) (core.convert.FromSame
+                  CodecError) residual
+              ok (r4, state, sink3)
           | core.ops.control_flow.ControlFlow.Break residual =>
             let r3 ←
               core.result.Result.Insts.CoreOpsTry_traitFromResidualResult.from_residual
-                (Std.U64 × Std.Usize × decoder_v1.DecodeAcc)
-                (core.convert.FromSame CodecError) residual
-            ok (r3, sink2)
+                (Std.U64 × Std.Usize × decoder_v1.DecodeAcc × (Option
+                decoder_v1.WireId) × Bool) (core.convert.FromSame CodecError)
+                residual
+            ok (r3, state, sink2)
         | core.ops.control_flow.ControlFlow.Break residual =>
           let r2 ←
             core.result.Result.Insts.CoreOpsTry_traitFromResidualResult.from_residual
-              (Std.U64 × Std.Usize × decoder_v1.DecodeAcc)
-              (core.convert.FromSame CodecError) residual
-          ok (r2, sink1)
+              (Std.U64 × Std.Usize × decoder_v1.DecodeAcc × (Option
+              decoder_v1.WireId) × Bool) (core.convert.FromSame CodecError)
+              residual
+          ok (r2, state, sink1)
       else
         let (r1, sink1) ←
           decoder_v1.decode_item_header V1SinkInst input cur info sink
@@ -7865,135 +10236,201 @@ def decoder_v1.decode_struct_frame
               if val3 > limits.max_content_bytes
               then
                 ok (core.result.Result.Err (CodecError.ResourceLimit
-                  LimitKind.ContentBytes), sink2)
+                  LimitKind.ContentBytes), state, sink2)
               else
-                let (r4, sink3) ←
-                  decoder_v1.advance_clock_sink V1SinkInst id.clock len sink2
-                let cf4 ← core.result.Result.Insts.CoreOpsTry.branch r4
-                match cf4 with
-                | core.ops.control_flow.ControlFlow.Continue val4 =>
-                  let (r5, sink4) ←
-                    V1SinkInst.on_item sink3 id len
-                      {
-                        origin_left := hdr.origin_left,
-                        origin_right := hdr.origin_right,
-                        parent := hdr.parent,
-                        parent_sub := hdr.parent_sub,
-                        raw_range := { start := pos, «end» := content_end }
-                      }
-                  let cf5 ← core.result.Result.Insts.CoreOpsTry.branch r5
-                  match cf5 with
-                  | core.ops.control_flow.ControlFlow.Continue _ =>
-                    ok (core.result.Result.Ok (val4, content_end,
-                      { acc with entries, content_bytes := val3 }), sink4)
-                  | core.ops.control_flow.ControlFlow.Break residual =>
-                    let r6 ←
-                      core.result.Result.Insts.CoreOpsTry_traitFromResidualResult.from_residual
-                        (Std.U64 × Std.Usize × decoder_v1.DecodeAcc)
-                        (core.convert.FromSame CodecError) residual
-                    ok (r6, sink4)
-                | core.ops.control_flow.ControlFlow.Break residual =>
-                  let r5 ←
-                    core.result.Result.Insts.CoreOpsTry_traitFromResidualResult.from_residual
-                      (Std.U64 × Std.Usize × decoder_v1.DecodeAcc)
-                      (core.convert.FromSame CodecError) residual
-                  ok (r5, sink3)
+                if len = 0#u64
+                then
+                  decoder_v1.decode_struct_frame_slow V1SinkInst input pos
+                    client_start_pos client_start_clock s_idx id info tag hdr
+                    content_start len content_end entries val3 limits acc state
+                    sink2
+                else
+                  if state.active
+                  then
+                    decoder_v1.decode_struct_frame_slow V1SinkInst input pos
+                      client_start_pos client_start_clock s_idx id info tag hdr
+                      content_start len content_end entries val3 limits acc
+                      state sink2
+                  else
+                    let (r4, sink3) ←
+                      decoder_v1.advance_clock_sink V1SinkInst id.clock len
+                        sink2
+                    let cf4 ← core.result.Result.Insts.CoreOpsTry.branch r4
+                    match cf4 with
+                    | core.ops.control_flow.ControlFlow.Continue val4 =>
+                      let (r5, sink4) ←
+                        V1SinkInst.on_item sink3 id len
+                          {
+                            origin_left := hdr.origin_left,
+                            origin_right := hdr.origin_right,
+                            parent := hdr.parent,
+                            parent_sub := hdr.parent_sub,
+                            raw_range :=
+                              { start := pos, «end» := content_end }
+                          }
+                      let cf5 ← core.result.Result.Insts.CoreOpsTry.branch r5
+                      match cf5 with
+                      | core.ops.control_flow.ControlFlow.Continue _ =>
+                        ok (core.result.Result.Ok (val4, content_end,
+                          { acc with entries, content_bytes := val3 }, none,
+                          false), state, sink4)
+                      | core.ops.control_flow.ControlFlow.Break residual =>
+                        let r6 ←
+                          core.result.Result.Insts.CoreOpsTry_traitFromResidualResult.from_residual
+                            (Std.U64 × Std.Usize × decoder_v1.DecodeAcc ×
+                            (Option decoder_v1.WireId) × Bool)
+                            (core.convert.FromSame CodecError) residual
+                        ok (r6, state, sink4)
+                    | core.ops.control_flow.ControlFlow.Break residual =>
+                      let r5 ←
+                        core.result.Result.Insts.CoreOpsTry_traitFromResidualResult.from_residual
+                          (Std.U64 × Std.Usize × decoder_v1.DecodeAcc ×
+                          (Option decoder_v1.WireId) × Bool)
+                          (core.convert.FromSame CodecError) residual
+                      ok (r5, state, sink3)
             | core.ops.control_flow.ControlFlow.Break residual =>
               let r4 ←
                 core.result.Result.Insts.CoreOpsTry_traitFromResidualResult.from_residual
-                  (Std.U64 × Std.Usize × decoder_v1.DecodeAcc)
-                  (core.convert.FromSame CodecError) residual
-              ok (r4, sink2)
+                  (Std.U64 × Std.Usize × decoder_v1.DecodeAcc × (Option
+                  decoder_v1.WireId) × Bool) (core.convert.FromSame
+                  CodecError) residual
+              ok (r4, state, sink2)
           | core.ops.control_flow.ControlFlow.Break residual =>
             let r3 ←
               core.result.Result.Insts.CoreOpsTry_traitFromResidualResult.from_residual
-                (Std.U64 × Std.Usize × decoder_v1.DecodeAcc)
-                (core.convert.FromSame CodecError) residual
-            ok (r3, sink2)
+                (Std.U64 × Std.Usize × decoder_v1.DecodeAcc × (Option
+                decoder_v1.WireId) × Bool) (core.convert.FromSame CodecError)
+                residual
+            ok (r3, state, sink2)
         | core.ops.control_flow.ControlFlow.Break residual =>
           let r2 ←
             core.result.Result.Insts.CoreOpsTry_traitFromResidualResult.from_residual
-              (Std.U64 × Std.Usize × decoder_v1.DecodeAcc)
-              (core.convert.FromSame CodecError) residual
-          ok (r2, sink1)
+              (Std.U64 × Std.Usize × decoder_v1.DecodeAcc × (Option
+              decoder_v1.WireId) × Bool) (core.convert.FromSame CodecError)
+              residual
+          ok (r2, state, sink1)
   | core.ops.control_flow.ControlFlow.Break residual =>
     let r1 ←
       core.result.Result.Insts.CoreOpsTry_traitFromResidualResult.from_residual
-        (Std.U64 × Std.Usize × decoder_v1.DecodeAcc) (core.convert.FromSame
-        CodecError) residual
-    ok (r1, sink)
+        (Std.U64 × Std.Usize × decoder_v1.DecodeAcc × (Option
+        decoder_v1.WireId) × Bool) (core.convert.FromSame CodecError) residual
+    ok (r1, state, sink)
 
 /-- [y_octo_core::decoder_v1::decode_client_structs]: loop body 0:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 1231:4-1245:5 -/
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 2426:4-2458:5 -/
 @[rust_loop_body]
 def decoder_v1.decode_client_structs_loop.body
   {S : Type _} (V1SinkInst : decoder_v1.V1Sink S) (input : Slice Std.U8)
-  (i : Std.U64) (count : Std.Usize) (limits : decoder_v1.DecodeLimitsCore)
-  (sink : S) (cur : Std.Usize) (clock : Std.U64) (acc : decoder_v1.DecodeAcc)
-  (s_idx : Std.Usize) (err : Option CodecError) :
+  (start_pos : Std.Usize) (i : Std.U64) (clock : Std.U64) (count : Std.Usize)
+  (limits : decoder_v1.DecodeLimitsCore) (sink : S) (cur : Std.Usize)
+  (clock1 : Std.U64) (acc : decoder_v1.DecodeAcc)
+  (state : decoder_v1.ClientSeqState)
+  (skipped_ols : alloc.vec.Vec decoder_v1.WireId)
+  (pending_zero_strings : alloc.vec.Vec decoder_v1.WireId) (s_idx : Std.Usize)
+  (err : Option CodecError) :
   Result (ControlFlow (S × Std.Usize × Std.U64 × decoder_v1.DecodeAcc ×
-    Std.Usize × (Option CodecError)) (S × Std.Usize × decoder_v1.DecodeAcc
-    × (Option CodecError)))
+    decoder_v1.ClientSeqState × (alloc.vec.Vec decoder_v1.WireId) ×
+    (alloc.vec.Vec decoder_v1.WireId) × Std.Usize × (Option CodecError)) (S
+    × Std.Usize × decoder_v1.DecodeAcc × (alloc.vec.Vec decoder_v1.WireId)
+    × (alloc.vec.Vec decoder_v1.WireId) × (Option CodecError)))
   := do
   if s_idx < count
   then
     let b := core.option.Option.is_none err
     if b
     then
-      let (r, sink1) ←
-        decoder_v1.decode_struct_frame V1SinkInst input cur
-          { client := i, clock } limits acc sink
+      let (r, state1, sink1) ←
+        decoder_v1.decode_struct_frame V1SinkInst input cur start_pos clock
+          s_idx { client := i, clock := clock1 } limits acc state sink
       match r with
       | core.result.Result.Ok t =>
-        let (next_clock, next_cur, next_acc) := t
+        let (next_clock, next_cur, next_acc, skipped_ol, needs_delete_check) :=
+          t
+        let (sink2, skipped_ols1) ←
+          match skipped_ol with
+          | none => ok (sink1, skipped_ols)
+          | some ol =>
+            do
+            let sink3 ← V1SinkInst.on_skipped_zero_origin sink1 ol
+            let skipped_ols2 ← decoder_v1.push_wire_id skipped_ols ol
+            ok (sink3, skipped_ols2)
+        let pending_zero_strings1 ←
+          if needs_delete_check
+          then
+            decoder_v1.push_wire_id pending_zero_strings
+              { client := i, clock := clock1 }
+          else ok pending_zero_strings
         let s_idx1 ← s_idx + 1#usize
-        ok (cont (sink1, next_cur, next_clock, next_acc, s_idx1, err))
+        ok (cont (sink2, next_cur, next_clock, next_acc, state1, skipped_ols1,
+          pending_zero_strings1, s_idx1, err))
       | core.result.Result.Err e =>
-        ok (cont (sink1, cur, clock, acc, s_idx, some e))
-    else ok (done (sink, cur, acc, err))
-  else ok (done (sink, cur, acc, err))
+        ok (cont (sink1, cur, clock1, acc, state1, skipped_ols,
+          pending_zero_strings, s_idx, some e))
+    else ok (done (sink, cur, acc, skipped_ols, pending_zero_strings, err))
+  else ok (done (sink, cur, acc, skipped_ols, pending_zero_strings, err))
 
 /-- [y_octo_core::decoder_v1::decode_client_structs]: loop 0:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 1231:4-1245:5 -/
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 2426:4-2458:5 -/
 @[rust_loop]
 def decoder_v1.decode_client_structs_loop
   {S : Type _} (V1SinkInst : decoder_v1.V1Sink S) (input : Slice Std.U8)
-  (i : Std.U64) (count : Std.Usize) (limits : decoder_v1.DecodeLimitsCore)
-  (sink : S) (cur : Std.Usize) (clock : Std.U64) (acc : decoder_v1.DecodeAcc)
-  (s_idx : Std.Usize) (err : Option CodecError) :
-  Result (S × Std.Usize × decoder_v1.DecodeAcc × (Option CodecError))
+  (start_pos : Std.Usize) (i : Std.U64) (clock : Std.U64) (count : Std.Usize)
+  (limits : decoder_v1.DecodeLimitsCore) (sink : S) (cur : Std.Usize)
+  (clock1 : Std.U64) (acc : decoder_v1.DecodeAcc)
+  (state : decoder_v1.ClientSeqState)
+  (skipped_ols : alloc.vec.Vec decoder_v1.WireId)
+  (pending_zero_strings : alloc.vec.Vec decoder_v1.WireId) (s_idx : Std.Usize)
+  (err : Option CodecError) :
+  Result (S × Std.Usize × decoder_v1.DecodeAcc × (alloc.vec.Vec
+    decoder_v1.WireId) × (alloc.vec.Vec decoder_v1.WireId) × (Option
+    CodecError))
   := do
   loop
-    (fun (sink1, cur1, clock1, acc1, s_idx1, err1) =>
-      decoder_v1.decode_client_structs_loop.body V1SinkInst input i count
-      limits sink1 cur1 clock1 acc1 s_idx1 err1)
-    (sink, cur, clock, acc, s_idx, err)
+    (fun (sink1, cur1, clock2, acc1, state1, skipped_ols1,
+      pending_zero_strings1, s_idx1, err1) =>
+      decoder_v1.decode_client_structs_loop.body V1SinkInst input start_pos i
+      clock count limits sink1 cur1 clock2 acc1 state1 skipped_ols1
+      pending_zero_strings1 s_idx1 err1)
+    (sink, cur, clock1, acc, state, skipped_ols, pending_zero_strings, s_idx,
+      err)
 
 /-- [y_octo_core::decoder_v1::decode_client_structs]:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 1217:0-1247:1 -/
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 2404:0-2464:1 -/
 def decoder_v1.decode_client_structs
   {S : Type _} (V1SinkInst : decoder_v1.V1Sink S) (input : Slice Std.U8)
   (start_pos : Std.Usize) (start_id : decoder_v1.WireId) (count : Std.Usize)
   (limits : decoder_v1.DecodeLimitsCore) (start_acc : decoder_v1.DecodeAcc)
   (sink : S) :
-  Result ((core.result.Result (Std.Usize × decoder_v1.DecodeAcc) CodecError)
-    × S)
+  Result ((core.result.Result (Std.Usize × decoder_v1.DecodeAcc ×
+    (alloc.vec.Vec decoder_v1.WireId) × (alloc.vec.Vec decoder_v1.WireId))
+    CodecError) × S)
   := do
-  let (sink1, cur, acc, err) ←
-    decoder_v1.decode_client_structs_loop V1SinkInst input start_id.client
-      count limits sink start_pos start_id.clock start_acc 0#usize none
+  let (sink1, cur, acc, skipped_ols, pending_zero_strings, err) ←
+    decoder_v1.decode_client_structs_loop V1SinkInst input start_pos
+      start_id.client start_id.clock count limits sink start_pos start_id.clock
+      start_acc
+      {
+        active := false,
+        ytext_types := (alloc.vec.Vec.new order_range.ClockRange),
+        seq_ranges := (alloc.vec.Vec.new order_range.ClockRange),
+        just_skipped_ol := none
+      } (alloc.vec.Vec.new decoder_v1.WireId) (alloc.vec.Vec.new
+      decoder_v1.WireId) 0#usize none
   match err with
-  | none => ok (core.result.Result.Ok (cur, acc), sink1)
+  | none =>
+    ok (core.result.Result.Ok (cur, acc, skipped_ols, pending_zero_strings),
+      sink1)
   | some e => ok (core.result.Result.Err e, sink1)
 
 /-- [y_octo_core::decoder_v1::decode_one_client_block]:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 1250:0-1281:1 -/
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 2467:0-2498:1 -/
 def decoder_v1.decode_one_client_block
   {S : Type _} (V1SinkInst : decoder_v1.V1Sink S) (input : Slice Std.U8)
   (cur : Std.Usize) (limits : decoder_v1.DecodeLimitsCore)
   (acc : decoder_v1.DecodeAcc) (sink : S) :
-  Result ((core.result.Result (Std.Usize × decoder_v1.DecodeAcc) CodecError)
-    × S)
+  Result ((core.result.Result (Std.Usize × decoder_v1.DecodeAcc ×
+    (alloc.vec.Vec decoder_v1.WireId) × (alloc.vec.Vec decoder_v1.WireId))
+    CodecError) × S)
   := do
   let (r, sink1) ← decoder_v1.read_var_u64_sink V1SinkInst input cur sink
   let cf ← core.result.Result.Insts.CoreOpsTry.branch r
@@ -8063,14 +10500,18 @@ def decoder_v1.decode_one_client_block
                         | core.ops.control_flow.ControlFlow.Break residual =>
                           let r9 ←
                             core.result.Result.Insts.CoreOpsTry_traitFromResidualResult.from_residual
-                              (Std.Usize × decoder_v1.DecodeAcc)
+                              (Std.Usize × decoder_v1.DecodeAcc ×
+                              (alloc.vec.Vec decoder_v1.WireId) ×
+                              (alloc.vec.Vec decoder_v1.WireId))
                               (core.convert.FromSame CodecError) residual
                           ok (r9, sink6)
                       | core.ops.control_flow.ControlFlow.Break residual =>
                         let r8 ←
                           core.result.Result.Insts.CoreOpsTry_traitFromResidualResult.from_residual
-                            (Std.Usize × decoder_v1.DecodeAcc)
-                            (core.convert.FromSame CodecError) residual
+                            (Std.Usize × decoder_v1.DecodeAcc ×
+                            (alloc.vec.Vec decoder_v1.WireId) × (alloc.vec.Vec
+                            decoder_v1.WireId)) (core.convert.FromSame
+                            CodecError) residual
                         ok (r8, sink5)
                     else
                       ok (core.result.Result.Err CodecError.DuplicateClient,
@@ -8078,58 +10519,70 @@ def decoder_v1.decode_one_client_block
                   | core.ops.control_flow.ControlFlow.Break residual =>
                     let r7 ←
                       core.result.Result.Insts.CoreOpsTry_traitFromResidualResult.from_residual
-                        (Std.Usize × decoder_v1.DecodeAcc)
-                        (core.convert.FromSame CodecError) residual
+                        (Std.Usize × decoder_v1.DecodeAcc × (alloc.vec.Vec
+                        decoder_v1.WireId) × (alloc.vec.Vec
+                        decoder_v1.WireId)) (core.convert.FromSame CodecError)
+                        residual
                     ok (r7, sink4)
                 | core.ops.control_flow.ControlFlow.Break residual =>
                   let r6 ←
                     core.result.Result.Insts.CoreOpsTry_traitFromResidualResult.from_residual
-                      (Std.Usize × decoder_v1.DecodeAcc)
+                      (Std.Usize × decoder_v1.DecodeAcc × (alloc.vec.Vec
+                      decoder_v1.WireId) × (alloc.vec.Vec decoder_v1.WireId))
                       (core.convert.FromSame CodecError) residual
                   ok (r6, sink3)
               | core.ops.control_flow.ControlFlow.Break residual =>
                 let r5 ←
                   core.result.Result.Insts.CoreOpsTry_traitFromResidualResult.from_residual
-                    (Std.Usize × decoder_v1.DecodeAcc) (core.convert.FromSame
-                    CodecError) residual
+                    (Std.Usize × decoder_v1.DecodeAcc × (alloc.vec.Vec
+                    decoder_v1.WireId) × (alloc.vec.Vec decoder_v1.WireId))
+                    (core.convert.FromSame CodecError) residual
                 ok (r5, sink2)
           | core.ops.control_flow.ControlFlow.Break residual =>
             let r4 ←
               core.result.Result.Insts.CoreOpsTry_traitFromResidualResult.from_residual
-                (Std.Usize × decoder_v1.DecodeAcc) (core.convert.FromSame
-                CodecError) residual
+                (Std.Usize × decoder_v1.DecodeAcc × (alloc.vec.Vec
+                decoder_v1.WireId) × (alloc.vec.Vec decoder_v1.WireId))
+                (core.convert.FromSame CodecError) residual
             ok (r4, sink1)
       | core.ops.control_flow.ControlFlow.Break residual =>
         let r3 ←
           core.result.Result.Insts.CoreOpsTry_traitFromResidualResult.from_residual
-            (Std.Usize × decoder_v1.DecodeAcc) (core.convert.FromSame
-            CodecError) residual
+            (Std.Usize × decoder_v1.DecodeAcc × (alloc.vec.Vec
+            decoder_v1.WireId) × (alloc.vec.Vec decoder_v1.WireId))
+            (core.convert.FromSame CodecError) residual
         ok (r3, sink1)
     | core.ops.control_flow.ControlFlow.Break residual =>
       let r2 ←
         core.result.Result.Insts.CoreOpsTry_traitFromResidualResult.from_residual
-          (Std.Usize × decoder_v1.DecodeAcc) (core.convert.FromSame
-          CodecError) residual
+          (Std.Usize × decoder_v1.DecodeAcc × (alloc.vec.Vec
+          decoder_v1.WireId) × (alloc.vec.Vec decoder_v1.WireId))
+          (core.convert.FromSame CodecError) residual
       ok (r2, sink1)
   | core.ops.control_flow.ControlFlow.Break residual =>
     let r1 ←
       core.result.Result.Insts.CoreOpsTry_traitFromResidualResult.from_residual
-        (Std.Usize × decoder_v1.DecodeAcc) (core.convert.FromSame CodecError)
-        residual
+        (Std.Usize × decoder_v1.DecodeAcc × (alloc.vec.Vec decoder_v1.WireId)
+        × (alloc.vec.Vec decoder_v1.WireId)) (core.convert.FromSame
+        CodecError) residual
     ok (r1, sink1)
 
 /-- [y_octo_core::decoder_v1::decode_update_v1]: loop body 0:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 1309:4-1318:5
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 2556:4-2571:5
     Visibility: public -/
 @[rust_loop_body]
 def decoder_v1.decode_update_v1_loop.body
   {S : Type _} (V1SinkInst : decoder_v1.V1Sink S) (input : Slice Std.U8)
   (i : Std.Usize) (i1 : Std.Usize) (i2 : Std.Usize) (i3 : Std.Usize)
   (i4 : Std.Usize) (clients : Std.Usize) (sink : S) (cur : Std.Usize)
-  (acc : decoder_v1.DecodeAcc) (c_idx : Std.Usize) (err : Option CodecError) :
-  Result (ControlFlow (S × Std.Usize × decoder_v1.DecodeAcc × Std.Usize ×
-    (Option CodecError)) (S × Std.Usize × decoder_v1.DecodeAcc × (Option
-    CodecError)))
+  (acc : decoder_v1.DecodeAcc) (skipped_ols : alloc.vec.Vec decoder_v1.WireId)
+  (pending_zero_strings : alloc.vec.Vec decoder_v1.WireId) (c_idx : Std.Usize)
+  (err : Option CodecError) :
+  Result (ControlFlow (S × Std.Usize × decoder_v1.DecodeAcc × (alloc.vec.Vec
+    decoder_v1.WireId) × (alloc.vec.Vec decoder_v1.WireId) × Std.Usize ×
+    (Option CodecError)) (S × Std.Usize × decoder_v1.DecodeAcc ×
+    (alloc.vec.Vec decoder_v1.WireId) × (alloc.vec.Vec decoder_v1.WireId) ×
+    (Option CodecError)))
   := do
   if c_idx < clients
   then
@@ -8146,33 +10599,54 @@ def decoder_v1.decode_update_v1_loop.body
             max_content_bytes := i4
           } acc sink
       match r with
-      | core.result.Result.Ok p =>
-        let (next_cur, next_acc) := p
+      | core.result.Result.Ok t =>
+        let (next_cur, next_acc, client_ols, client_zeros) := t
+        let b1 ← alloc.vec.Vec.is_empty client_ols
+        let skipped_ols1 ←
+          if b1
+          then ok skipped_ols
+          else
+            let s := alloc.vec.Vec.deref client_ols
+            decoder_v1.extend_wire_ids skipped_ols s
+        let b2 ← alloc.vec.Vec.is_empty client_zeros
+        let pending_zero_strings1 ←
+          if b2
+          then ok pending_zero_strings
+          else
+            let s := alloc.vec.Vec.deref client_zeros
+            decoder_v1.extend_wire_ids pending_zero_strings s
         let c_idx1 ← c_idx + 1#usize
-        ok (cont (sink1, next_cur, next_acc, c_idx1, err))
-      | core.result.Result.Err e => ok (cont (sink1, cur, acc, c_idx, some e))
-    else ok (done (sink, cur, acc, err))
-  else ok (done (sink, cur, acc, err))
+        ok (cont (sink1, next_cur, next_acc, skipped_ols1,
+          pending_zero_strings1, c_idx1, err))
+      | core.result.Result.Err e =>
+        ok (cont (sink1, cur, acc, skipped_ols, pending_zero_strings, c_idx,
+          some e))
+    else ok (done (sink, cur, acc, skipped_ols, pending_zero_strings, err))
+  else ok (done (sink, cur, acc, skipped_ols, pending_zero_strings, err))
 
 /-- [y_octo_core::decoder_v1::decode_update_v1]: loop 0:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 1309:4-1318:5
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 2556:4-2571:5
     Visibility: public -/
 @[rust_loop]
 def decoder_v1.decode_update_v1_loop
   {S : Type _} (V1SinkInst : decoder_v1.V1Sink S) (input : Slice Std.U8)
   (sink : S) (i : Std.Usize) (i1 : Std.Usize) (i2 : Std.Usize) (i3 : Std.Usize)
   (i4 : Std.Usize) (cur : Std.Usize) (clients : Std.Usize)
-  (acc : decoder_v1.DecodeAcc) (c_idx : Std.Usize) (err : Option CodecError) :
-  Result (S × Std.Usize × decoder_v1.DecodeAcc × (Option CodecError))
+  (acc : decoder_v1.DecodeAcc) (skipped_ols : alloc.vec.Vec decoder_v1.WireId)
+  (pending_zero_strings : alloc.vec.Vec decoder_v1.WireId) (c_idx : Std.Usize)
+  (err : Option CodecError) :
+  Result (S × Std.Usize × decoder_v1.DecodeAcc × (alloc.vec.Vec
+    decoder_v1.WireId) × (alloc.vec.Vec decoder_v1.WireId) × (Option
+    CodecError))
   := do
   loop
-    (fun (sink1, cur1, acc1, c_idx1, err1) =>
-      decoder_v1.decode_update_v1_loop.body V1SinkInst input i i1 i2 i3 i4
-      clients sink1 cur1 acc1 c_idx1 err1)
-    (sink, cur, acc, c_idx, err)
+    (fun (sink1, cur1, acc1, skipped_ols1, pending_zero_strings1, c_idx1, err1)
+      => decoder_v1.decode_update_v1_loop.body V1SinkInst input i i1 i2 i3 i4
+      clients sink1 cur1 acc1 skipped_ols1 pending_zero_strings1 c_idx1 err1)
+    (sink, cur, acc, skipped_ols, pending_zero_strings, c_idx, err)
 
 /-- [y_octo_core::decoder_v1::decode_update_v1]:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 1293:0-1328:1
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 2537:0-2596:1
     Visibility: public -/
 def decoder_v1.decode_update_v1
   {S : Type _} (V1SinkInst : decoder_v1.V1Sink S) (input : Slice Std.U8)
@@ -8183,7 +10657,7 @@ def decoder_v1.decode_update_v1
   let cf ← core.result.Result.Insts.CoreOpsTry.branch r
   match cf with
   | core.ops.control_flow.ControlFlow.Continue val =>
-    let (clients_u64, cur) := val
+    let (clients_u64, clients_start) := val
     let r1 ← decoder_v1.checked_usize_limit clients_u64 LimitKind.Clients
     let cf1 ← core.result.Result.Insts.CoreOpsTry.branch r1
     match cf1 with
@@ -8194,27 +10668,29 @@ def decoder_v1.decode_update_v1
           LimitKind.Clients), sink1)
       else
         let i := Slice.len input
-        let i1 ← i - cur
+        let i1 ← i - clients_start
         let (r2, sink2) ←
           decoder_v1.check_fits_kind_sink V1SinkInst i1 val1
             decoder_v1.MIN_CLIENT_BYTES LimitKind.Clients sink1
         let cf2 ← core.result.Result.Insts.CoreOpsTry.branch r2
         match cf2 with
         | core.ops.control_flow.ControlFlow.Continue _ =>
-          let (sink3, cur1, acc, err) ←
+          let (sink3, ds_start, acc, skipped_ols, pending_zero_strings, err)
+            ←
             decoder_v1.decode_update_v1_loop V1SinkInst input sink2
               limits.max_structs limits.max_clients
               limits.max_collection_entries limits.max_any_depth
-              limits.max_content_bytes cur val1
+              limits.max_content_bytes clients_start val1
               {
                 structs := 0#usize,
                 entries := 0#usize,
                 content_bytes := 0#usize
-              } 0#usize none
+              } (alloc.vec.Vec.new decoder_v1.WireId) (alloc.vec.Vec.new
+              decoder_v1.WireId) 0#usize none
           match err with
           | none =>
             let (r3, sink4) ←
-              decoder_v1.decode_delete_set_v1 V1SinkInst input cur1 limits
+              decoder_v1.decode_delete_set_v1 V1SinkInst input ds_start limits
                 acc.entries sink3
             let cf3 ← core.result.Result.Insts.CoreOpsTry.branch r3
             match cf3 with
@@ -8228,7 +10704,24 @@ def decoder_v1.decode_update_v1
                   decoder_v1.fail_with V1SinkInst sink4
                     CodecError.TrailingBytes i4 0#u64
                 ok (core.result.Result.Err ce, sink5)
-              else ok (core.result.Result.Ok (), sink4)
+              else
+                let b ← alloc.vec.Vec.is_empty skipped_ols
+                if b
+                then ok (core.result.Result.Ok (), sink4)
+                else
+                  let (s, _) ← lift (alloc.vec.Vec.deref_mut skipped_ols)
+                  let (s1, _) ←
+                    lift (alloc.vec.Vec.deref_mut pending_zero_strings)
+                  let (r4, _, _) ←
+                    decoder_v1.verify_skipped_zero_items input clients_start
+                      val1 ds_start limits s s1
+                  match r4 with
+                  | core.result.Result.Ok _ =>
+                    ok (core.result.Result.Ok (), sink4)
+                  | core.result.Result.Err e =>
+                    let (ce, sink5) ←
+                      decoder_v1.fail_with V1SinkInst sink4 e 0#usize 0#u64
+                    ok (core.result.Result.Err ce, sink5)
             | core.ops.control_flow.ControlFlow.Break residual =>
               let r4 ←
                 core.result.Result.Insts.CoreOpsTry_traitFromResidualResult.from_residual
@@ -8252,7 +10745,7 @@ def decoder_v1.decode_update_v1
     ok (r1, sink1)
 
 /-- [y_octo_core::decoder_v1::find_u64_index]: loop body 0:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 1333:4-1345:1 -/
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 2601:4-2613:1 -/
 @[rust_loop_body]
 def decoder_v1.find_u64_index_loop.body
   (items : Slice Std.U64) (target : Std.U64) (low : Std.Usize)
@@ -8275,7 +10768,7 @@ def decoder_v1.find_u64_index_loop.body
   else ok (done (false, low))
 
 /-- [y_octo_core::decoder_v1::find_u64_index]: loop 0:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 1333:4-1345:1 -/
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 2601:4-2613:1 -/
 @[rust_loop]
 def decoder_v1.find_u64_index_loop
   (items : Slice Std.U64) (target : Std.U64) (low : Std.Usize)
@@ -8288,14 +10781,14 @@ def decoder_v1.find_u64_index_loop
     (low, high)
 
 /-- [y_octo_core::decoder_v1::find_u64_index]:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 1330:0-1345:1 -/
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 2598:0-2613:1 -/
 def decoder_v1.find_u64_index
   (items : Slice Std.U64) (target : Std.U64) : Result (Bool × Std.Usize) := do
   let high := Slice.len items
   decoder_v1.find_u64_index_loop items target 0#usize high
 
 /-- [y_octo_core::decoder_v1::insert_u64_sorted]:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 1347:0-1359:1 -/
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 2615:0-2627:1 -/
 def decoder_v1.insert_u64_sorted
   (items : alloc.vec.Vec Std.U64) (target : Std.U64) :
   Result (Bool × (alloc.vec.Vec Std.U64))
@@ -8313,7 +10806,7 @@ def decoder_v1.insert_u64_sorted
          ok (true, items1)
 
 /-- [y_octo_core::decoder_v1::{y_octo_core::decoder_v1::SummarySink}::new]:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 1367:4-1377:5 -/
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 2635:4-2645:5 -/
 def decoder_v1.SummarySink.new : Result decoder_v1.SummarySink := do
   ok
     {
@@ -8328,7 +10821,7 @@ def decoder_v1.SummarySink.new : Result decoder_v1.SummarySink := do
     }
 
 /-- [y_octo_core::decoder_v1::{impl y_octo_core::decoder_v1::V1Sink for y_octo_core::decoder_v1::SummarySink}::on_delete_range]:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 1589:4-1591:5
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 2860:4-2862:5
     Visibility: public -/
 def decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.on_delete_range
   (self : decoder_v1.SummarySink) (_client : Std.U64) (_start : Std.U64)
@@ -8338,7 +10831,7 @@ def decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.on_delete_range
   ok (core.result.Result.Ok (), self)
 
 /-- [y_octo_core::decoder_v1::{impl y_octo_core::decoder_v1::V1Sink for y_octo_core::decoder_v1::SummarySink}::begin_delete_client]:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 1579:4-1586:5
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 2850:4-2857:5
     Visibility: public -/
 def
   decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.begin_delete_client
@@ -8368,7 +10861,7 @@ def
         { self with summary := { self.summary with delete_clients := i } })
 
 /-- [y_octo_core::decoder_v1::{impl y_octo_core::decoder_v1::V1Sink for y_octo_core::decoder_v1::SummarySink}::on_any_finish]:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 1574:4-1576:5
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 2845:4-2847:5
     Visibility: public -/
 def decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.on_any_finish
   (self : decoder_v1.SummarySink) (_range : decoder_v1.Span) :
@@ -8377,7 +10870,7 @@ def decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.on_any_finish
   ok (core.result.Result.Ok (), self)
 
 /-- [y_octo_core::decoder_v1::{impl y_octo_core::decoder_v1::V1Sink for y_octo_core::decoder_v1::SummarySink}::on_any_end_container]:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 1569:4-1571:5
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 2840:4-2842:5
     Visibility: public -/
 def
   decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.on_any_end_container
@@ -8387,7 +10880,7 @@ def
   ok (core.result.Result.Ok (), self)
 
 /-- [y_octo_core::decoder_v1::{impl y_octo_core::decoder_v1::V1Sink for y_octo_core::decoder_v1::SummarySink}::on_any_begin_array]:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 1564:4-1566:5
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 2835:4-2837:5
     Visibility: public -/
 def decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.on_any_begin_array
   (self : decoder_v1.SummarySink) (_count : Std.Usize) :
@@ -8396,7 +10889,7 @@ def decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.on_any_begin_array
   ok (core.result.Result.Ok (), self)
 
 /-- [y_octo_core::decoder_v1::{impl y_octo_core::decoder_v1::V1Sink for y_octo_core::decoder_v1::SummarySink}::on_any_object_key]:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 1559:4-1561:5
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 2830:4-2832:5
     Visibility: public -/
 def decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.on_any_object_key
   (self : decoder_v1.SummarySink) (_key : decoder_v1.Span) :
@@ -8405,7 +10898,7 @@ def decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.on_any_object_key
   ok (core.result.Result.Ok (), self)
 
 /-- [y_octo_core::decoder_v1::{impl y_octo_core::decoder_v1::V1Sink for y_octo_core::decoder_v1::SummarySink}::on_any_begin_object]:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 1554:4-1556:5
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 2825:4-2827:5
     Visibility: public -/
 def
   decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.on_any_begin_object
@@ -8415,7 +10908,7 @@ def
   ok (core.result.Result.Ok (), self)
 
 /-- [y_octo_core::decoder_v1::{impl y_octo_core::decoder_v1::V1Sink for y_octo_core::decoder_v1::SummarySink}::on_any_bytes]:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 1549:4-1551:5
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 2820:4-2822:5
     Visibility: public -/
 def decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.on_any_bytes
   (self : decoder_v1.SummarySink) (_value : decoder_v1.Span) :
@@ -8424,7 +10917,7 @@ def decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.on_any_bytes
   ok (core.result.Result.Ok (), self)
 
 /-- [y_octo_core::decoder_v1::{impl y_octo_core::decoder_v1::V1Sink for y_octo_core::decoder_v1::SummarySink}::on_any_str]:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 1544:4-1546:5
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 2815:4-2817:5
     Visibility: public -/
 def decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.on_any_str
   (self : decoder_v1.SummarySink) (_value : decoder_v1.Span) :
@@ -8433,7 +10926,7 @@ def decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.on_any_str
   ok (core.result.Result.Ok (), self)
 
 /-- [y_octo_core::decoder_v1::{impl y_octo_core::decoder_v1::V1Sink for y_octo_core::decoder_v1::SummarySink}::on_any_bool]:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 1539:4-1541:5
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 2810:4-2812:5
     Visibility: public -/
 def decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.on_any_bool
   (self : decoder_v1.SummarySink) (_value : Bool) :
@@ -8442,7 +10935,7 @@ def decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.on_any_bool
   ok (core.result.Result.Ok (), self)
 
 /-- [y_octo_core::decoder_v1::{impl y_octo_core::decoder_v1::V1Sink for y_octo_core::decoder_v1::SummarySink}::on_any_i64_bits]:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 1534:4-1536:5
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 2805:4-2807:5
     Visibility: public -/
 def decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.on_any_i64_bits
   (self : decoder_v1.SummarySink) (_bits : Std.U64) :
@@ -8451,7 +10944,7 @@ def decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.on_any_i64_bits
   ok (core.result.Result.Ok (), self)
 
 /-- [y_octo_core::decoder_v1::{impl y_octo_core::decoder_v1::V1Sink for y_octo_core::decoder_v1::SummarySink}::on_any_f64_bits]:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 1529:4-1531:5
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 2800:4-2802:5
     Visibility: public -/
 def decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.on_any_f64_bits
   (self : decoder_v1.SummarySink) (_bits : Std.U64) :
@@ -8460,7 +10953,7 @@ def decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.on_any_f64_bits
   ok (core.result.Result.Ok (), self)
 
 /-- [y_octo_core::decoder_v1::{impl y_octo_core::decoder_v1::V1Sink for y_octo_core::decoder_v1::SummarySink}::on_any_f32_bits]:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 1524:4-1526:5
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 2795:4-2797:5
     Visibility: public -/
 def decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.on_any_f32_bits
   (self : decoder_v1.SummarySink) (_bits : Std.U32) :
@@ -8469,7 +10962,7 @@ def decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.on_any_f32_bits
   ok (core.result.Result.Ok (), self)
 
 /-- [y_octo_core::decoder_v1::{impl y_octo_core::decoder_v1::V1Sink for y_octo_core::decoder_v1::SummarySink}::on_any_i32]:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 1519:4-1521:5
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 2790:4-2792:5
     Visibility: public -/
 def decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.on_any_i32
   (self : decoder_v1.SummarySink) (_value : Std.I32) :
@@ -8478,7 +10971,7 @@ def decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.on_any_i32
   ok (core.result.Result.Ok (), self)
 
 /-- [y_octo_core::decoder_v1::{impl y_octo_core::decoder_v1::V1Sink for y_octo_core::decoder_v1::SummarySink}::on_any_null]:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 1514:4-1516:5
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 2785:4-2787:5
     Visibility: public -/
 def decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.on_any_null
   (self : decoder_v1.SummarySink) :
@@ -8487,7 +10980,7 @@ def decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.on_any_null
   ok (core.result.Result.Ok (), self)
 
 /-- [y_octo_core::decoder_v1::{impl y_octo_core::decoder_v1::V1Sink for y_octo_core::decoder_v1::SummarySink}::on_any_undefined]:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 1509:4-1511:5
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 2780:4-2782:5
     Visibility: public -/
 def decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.on_any_undefined
   (self : decoder_v1.SummarySink) :
@@ -8496,7 +10989,7 @@ def decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.on_any_undefined
   ok (core.result.Result.Ok (), self)
 
 /-- [y_octo_core::decoder_v1::{impl y_octo_core::decoder_v1::V1Sink for y_octo_core::decoder_v1::SummarySink}::on_any_start]:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 1504:4-1506:5
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 2775:4-2777:5
     Visibility: public -/
 def decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.on_any_start
   (self : decoder_v1.SummarySink) :
@@ -8505,7 +10998,7 @@ def decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.on_any_start
   ok (core.result.Result.Ok (), self)
 
 /-- [y_octo_core::decoder_v1::{impl y_octo_core::decoder_v1::V1Sink for y_octo_core::decoder_v1::SummarySink}::on_doc]:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 1499:4-1501:5
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 2770:4-2772:5
     Visibility: public -/
 def decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.on_doc
   (self : decoder_v1.SummarySink) (_guid : decoder_v1.Span) :
@@ -8514,7 +11007,7 @@ def decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.on_doc
   ok (core.result.Result.Ok (), self)
 
 /-- [y_octo_core::decoder_v1::{impl y_octo_core::decoder_v1::V1Sink for y_octo_core::decoder_v1::SummarySink}::on_any_content_finish]:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 1494:4-1496:5
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 2765:4-2767:5
     Visibility: public -/
 def
   decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.on_any_content_finish
@@ -8524,7 +11017,7 @@ def
   ok (core.result.Result.Ok (), self)
 
 /-- [y_octo_core::decoder_v1::{impl y_octo_core::decoder_v1::V1Sink for y_octo_core::decoder_v1::SummarySink}::on_any_content_value]:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 1489:4-1491:5
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 2760:4-2762:5
     Visibility: public -/
 def
   decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.on_any_content_value
@@ -8534,7 +11027,7 @@ def
   ok (core.result.Result.Ok (), self)
 
 /-- [y_octo_core::decoder_v1::{impl y_octo_core::decoder_v1::V1Sink for y_octo_core::decoder_v1::SummarySink}::on_any_content_start]:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 1484:4-1486:5
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 2755:4-2757:5
     Visibility: public -/
 def
   decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.on_any_content_start
@@ -8544,7 +11037,7 @@ def
   ok (core.result.Result.Ok (), self)
 
 /-- [y_octo_core::decoder_v1::{impl y_octo_core::decoder_v1::V1Sink for y_octo_core::decoder_v1::SummarySink}::on_type]:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 1479:4-1481:5
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 2750:4-2752:5
     Visibility: public -/
 def decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.on_type
   (self : decoder_v1.SummarySink) (_kind : Std.U64)
@@ -8554,7 +11047,7 @@ def decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.on_type
   ok (core.result.Result.Ok (), self)
 
 /-- [y_octo_core::decoder_v1::{impl y_octo_core::decoder_v1::V1Sink for y_octo_core::decoder_v1::SummarySink}::on_format]:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 1474:4-1476:5
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 2745:4-2747:5
     Visibility: public -/
 def decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.on_format
   (self : decoder_v1.SummarySink) (_key : decoder_v1.Span)
@@ -8564,7 +11057,7 @@ def decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.on_format
   ok (core.result.Result.Ok (), self)
 
 /-- [y_octo_core::decoder_v1::{impl y_octo_core::decoder_v1::V1Sink for y_octo_core::decoder_v1::SummarySink}::on_embed]:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 1469:4-1471:5
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 2740:4-2742:5
     Visibility: public -/
 def decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.on_embed
   (self : decoder_v1.SummarySink) (_value : decoder_v1.Span) :
@@ -8573,7 +11066,7 @@ def decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.on_embed
   ok (core.result.Result.Ok (), self)
 
 /-- [y_octo_core::decoder_v1::{impl y_octo_core::decoder_v1::V1Sink for y_octo_core::decoder_v1::SummarySink}::on_string]:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 1464:4-1466:5
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 2735:4-2737:5
     Visibility: public -/
 def decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.on_string
   (self : decoder_v1.SummarySink) (_value : decoder_v1.Span) :
@@ -8582,7 +11075,7 @@ def decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.on_string
   ok (core.result.Result.Ok (), self)
 
 /-- [y_octo_core::decoder_v1::{impl y_octo_core::decoder_v1::V1Sink for y_octo_core::decoder_v1::SummarySink}::on_binary]:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 1459:4-1461:5
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 2730:4-2732:5
     Visibility: public -/
 def decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.on_binary
   (self : decoder_v1.SummarySink) (_value : decoder_v1.Span) :
@@ -8591,7 +11084,7 @@ def decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.on_binary
   ok (core.result.Result.Ok (), self)
 
 /-- [y_octo_core::decoder_v1::{impl y_octo_core::decoder_v1::V1Sink for y_octo_core::decoder_v1::SummarySink}::on_json_finish]:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 1454:4-1456:5
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 2725:4-2727:5
     Visibility: public -/
 def decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.on_json_finish
   (self : decoder_v1.SummarySink) :
@@ -8600,7 +11093,7 @@ def decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.on_json_finish
   ok (core.result.Result.Ok (), self)
 
 /-- [y_octo_core::decoder_v1::{impl y_octo_core::decoder_v1::V1Sink for y_octo_core::decoder_v1::SummarySink}::on_json_value]:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 1449:4-1451:5
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 2720:4-2722:5
     Visibility: public -/
 def decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.on_json_value
   (self : decoder_v1.SummarySink) (_value : decoder_v1.Span) :
@@ -8609,7 +11102,7 @@ def decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.on_json_value
   ok (core.result.Result.Ok (), self)
 
 /-- [y_octo_core::decoder_v1::{impl y_octo_core::decoder_v1::V1Sink for y_octo_core::decoder_v1::SummarySink}::on_json_start]:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 1444:4-1446:5
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 2715:4-2717:5
     Visibility: public -/
 def decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.on_json_start
   (self : decoder_v1.SummarySink) (_count : Std.Usize) :
@@ -8618,7 +11111,7 @@ def decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.on_json_start
   ok (core.result.Result.Ok (), self)
 
 /-- [y_octo_core::decoder_v1::{impl y_octo_core::decoder_v1::V1Sink for y_octo_core::decoder_v1::SummarySink}::on_deleted]:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 1439:4-1441:5
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 2710:4-2712:5
     Visibility: public -/
 def decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.on_deleted
   (self : decoder_v1.SummarySink) (_len : Std.U64) :
@@ -8627,7 +11120,7 @@ def decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.on_deleted
   ok (core.result.Result.Ok (), self)
 
 /-- [y_octo_core::decoder_v1::{impl y_octo_core::decoder_v1::V1Sink for y_octo_core::decoder_v1::SummarySink}::on_item]:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 1430:4-1436:5
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 2701:4-2707:5
     Visibility: public -/
 def decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.on_item
   (self : decoder_v1.SummarySink) (_id : decoder_v1.WireId) (_len : Std.U64)
@@ -8642,7 +11135,7 @@ def decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.on_item
       { self with summary := { self.summary with structs := i } })
 
 /-- [y_octo_core::decoder_v1::{impl y_octo_core::decoder_v1::V1Sink for y_octo_core::decoder_v1::SummarySink}::on_skip]:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 1421:4-1427:5
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 2692:4-2698:5
     Visibility: public -/
 def decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.on_skip
   (self : decoder_v1.SummarySink) (_id : decoder_v1.WireId) (_len : Std.U64) :
@@ -8656,7 +11149,7 @@ def decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.on_skip
       { self with summary := { self.summary with structs := i } })
 
 /-- [y_octo_core::decoder_v1::{impl y_octo_core::decoder_v1::V1Sink for y_octo_core::decoder_v1::SummarySink}::on_gc]:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 1412:4-1418:5
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 2683:4-2689:5
     Visibility: public -/
 def decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.on_gc
   (self : decoder_v1.SummarySink) (_id : decoder_v1.WireId) (_len : Std.U64) :
@@ -8670,7 +11163,7 @@ def decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.on_gc
       { self with summary := { self.summary with structs := i } })
 
 /-- [y_octo_core::decoder_v1::{impl y_octo_core::decoder_v1::V1Sink for y_octo_core::decoder_v1::SummarySink}::begin_client]:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 1403:4-1409:5
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 2674:4-2680:5
     Visibility: public -/
 def decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.begin_client
   (self : decoder_v1.SummarySink) (_client : Std.U64) (_count : Std.Usize) :
@@ -8684,7 +11177,7 @@ def decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.begin_client
       { self with summary := { self.summary with clients := i } })
 
 /-- [y_octo_core::decoder_v1::{impl y_octo_core::decoder_v1::V1Sink for y_octo_core::decoder_v1::SummarySink}::record_client]:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 1395:4-1400:5
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 2666:4-2671:5
     Visibility: public -/
 def decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.record_client
   (self : decoder_v1.SummarySink) (client : Std.U64) :
@@ -8697,8 +11190,18 @@ def decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.record_client
     let (b, v) ← decoder_v1.insert_u64_sorted self.seen_clients client
     ok (core.result.Result.Ok b, { self with seen_clients := v })
 
+/-- [y_octo_core::decoder_v1::{impl y_octo_core::decoder_v1::V1Sink for y_octo_core::decoder_v1::SummarySink}::on_skipped_zero_origin]:
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 2663:4-2663:65
+    Visibility: public -/
+def
+  decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.on_skipped_zero_origin
+  (self : decoder_v1.SummarySink) (_origin_left : decoder_v1.WireId) :
+  Result decoder_v1.SummarySink
+  := do
+  ok self
+
 /-- [y_octo_core::decoder_v1::{impl y_octo_core::decoder_v1::V1Sink for y_octo_core::decoder_v1::SummarySink}::on_decode_error]:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 1392:4-1392:74
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 2660:4-2660:74
     Visibility: public -/
 def decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.on_decode_error
   (self : decoder_v1.SummarySink) (_err : CodecError) (_a : Std.Usize)
@@ -8708,7 +11211,7 @@ def decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.on_decode_error
   ok self
 
 /-- [y_octo_core::decoder_v1::{impl y_octo_core::decoder_v1::V1Sink for y_octo_core::decoder_v1::SummarySink}::validate_utf8_early]:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 1387:4-1389:5
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 2655:4-2657:5
     Visibility: public -/
 def
   decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.validate_utf8_early
@@ -8718,7 +11221,7 @@ def
   ok (core.result.Result.Ok (), self)
 
 /-- [y_octo_core::decoder_v1::{impl y_octo_core::decoder_v1::V1Sink for y_octo_core::decoder_v1::SummarySink}::core_validates_utf8]:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 1382:4-1384:5
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 2650:4-2652:5
     Visibility: public -/
 def
   decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.core_validates_utf8
@@ -8726,7 +11229,7 @@ def
   ok true
 
 /-- Trait implementation: [y_octo_core::decoder_v1::{impl y_octo_core::decoder_v1::V1Sink for y_octo_core::decoder_v1::SummarySink}]
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 1380:0-1592:1 -/
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 2648:0-2863:1 -/
 @[reducible]
 def decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink :
   decoder_v1.V1Sink decoder_v1.SummarySink := {
@@ -8743,6 +11246,8 @@ def decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink :
   on_gc := decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.on_gc
   on_skip := decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.on_skip
   on_item := decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.on_item
+  on_skipped_zero_origin :=
+    decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.on_skipped_zero_origin
   on_deleted :=
     decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.on_deleted
   on_json_start :=
@@ -8803,7 +11308,7 @@ def decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink :
 }
 
 /-- [y_octo_core::decoder_v1::decode_update_v1_frame]:
-    Source: 'y-octo-core/src/decoder_v1.rs', lines 1596:0-1600:1
+    Source: 'y-octo-core/src/decoder_v1.rs', lines 2867:0-2871:1
     Visibility: public -/
 def decoder_v1.decode_update_v1_frame
   (input : Slice Std.U8) (limits : decoder_v1.DecodeLimitsCore) :
