@@ -41,7 +41,7 @@ The default decoder accepts `Any` nesting up to 128 levels. For trusted inputs, 
 
 ## Performance
 
-| Tasks | automerge v0.12.0 (2026-09-16) | loro v1.19.1 (2026-11-24) | diamond-types v1.0.0 (2022-08-25) | y-octo v0.4.1 (`b6ec39b`) | yrs v0.28.2 (2026-11-19) | crdt(pion) v0.2.0 (`f66e02f`) |
+| Tasks | automerge v0.12.0 (2026-09-16) | loro v1.19.1 (2026-11-24) | diamond-types v1.0.0 (2022-08-25) | y-octo v0.4.1 | yrs v0.28.2 (2026-11-19) | crdt(pion) v0.2.0 (`f66e02f`) |
 | :---- | :---- | :---- | :---- | :---- | :---- | :---- |
 | automerge - apply | 2087.10 ± 1.91 ms | 48.92 ± 0.21 ms | 9.57 ± 0.04 ms | 98.39 ± 0.16 ms | 2438.34 ± 24.32 ms | 556.21 ± 2.54 ms |
 | automerge - decode time | 201.84 ± 1.86 ms | 90.64 ± 0.46 us | 1.53 ± 0.01 ms | 2.64 ± 0.00 ms | 2.42 ± 0.02 ms | 3.44 ± 0.04 ms |
@@ -54,7 +54,7 @@ The default decoder accepts `Any` nesting up to 128 levels. For trusted inputs, 
 | text - random edits 20k | 250.50 ± 0.35 ms | 6.13 ± 0.08 ms | 1.63 ± 0.01 ms | 14.54 ± 0.11 ms | 421.82 ± 2.64 ms | 30.05 ± 0.20 ms |
 | text - tombstone 50k | 320.08 ± 0.35 ms | 152.87 ± 0.87 ms | 3.33 ± 0.01 ms | 31.39 ± 0.08 ms | 2120.27 ± 30.28 ms | 1768.38 ± 132.89 ms |
 
-Measured on Apple M5 Max (macOS arm64) with rustc 1.96.0, pionc 0.1.0 (ABI pionc-v0.22), and `crdt-bench-native` revision `29c7c67`. Values show mean elapsed time ± standard error across 10 samples. The Rust adapters use Criterion. The Pion adapter uses a monotonic clock. y-octo and Pion use Update V1, with `large_refs` enabled for y-octo. Yrs uses Update V2.
+Measured on Apple M5 Max (macOS arm64) with rustc 1.96.0, pionc 0.1.0 (ABI pionc-v0.22), and `crdt-bench-native` revision `29c7c67`. Values show mean elapsed time ± standard error across 10 samples. The Rust adapters use Criterion. The Pion adapter uses a monotonic clock. y-octo and Pion use Update V1. Yrs uses Update V2.
 
 The parallel workload applies the full Automerge trace to two replicas in random batches of 1–1000 local edits, synchronizes after each pair of batches, and verifies replica convergence. The four `text - *` workloads run deterministic pure-ASCII text editing patterns (sequential 50k appends, 50k single-char tail backspaces, 20k mixed cursor/random edits, and 50k half-deleted tombstone field + 10k random inserts) verified for identical final text across all six implementations.
 

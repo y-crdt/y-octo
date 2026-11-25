@@ -40,6 +40,7 @@ y-octo-core   = { workspace = true }
 bench      = []
 debug      = []
 default    = ["random", "session"]
+# Retained for compatibility with downstream Cargo manifests.
 large_refs = []
 # Random default client IDs and GUIDs (`DocOptions::default`, `Doc::new`) and
 # runtime hash keys, through getrandom. Without it (for example on
