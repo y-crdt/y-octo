@@ -78,10 +78,11 @@ impl RedoMap {
         self.clients.is_empty()
     }
 
-    /// Upper bound on distinct cuts made by cleaning old redo targets.
-    pub(super) fn target_split_bound(&self, store: &DocStore) -> usize {
-        let mut total = 0usize;
+    /// Upper bound on distinct cuts made by cleaning old redo targets, by the
+    /// client whose timeline they cut.
+    pub(super) fn target_split_bounds(&self, store: &DocStore, mut bound: impl FnMut(Client, usize)) {
         for mapping in self.clients.values().flat_map(|ranges| ranges.values()) {
+            let mut total = 0usize;
             let start = mapping.target;
             let end = start.clock + mapping.len;
             let Some(blocks) = store.items.get(&start.client) else {
@@ -103,8 +104,8 @@ impl RedoMap {
                     }
                 }
             }
+            bound(start.client, total);
         }
-        total
     }
 
     /// The id `id` was recreated as by one redo, if any.

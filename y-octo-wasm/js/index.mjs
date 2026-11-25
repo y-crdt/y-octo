@@ -39,6 +39,8 @@ const UNDO_MODE_MAP = {
 
 const ASCII_WRITE_FAST_MAX = 16;
 const ASCII_READ_FAST_MAX = 12;
+const IN_TRIM_TARGET = 256 * 1024;
+const IN_HIGH_WATER = 4 * 1024 * 1024;
 
 /**
  * Instantiates a `y-octo-wasm` binary with zero host imports.
@@ -59,12 +61,16 @@ export async function loadYOctoWasm(wasmBytes) {
       `y-octo-wasm ABI version mismatch: expected 1, got ${exp.wasm_abi_version?.()}`,
     );
   }
+  const hasTextLenRoot = typeof exp.session_text_len_root === "function";
+  const hasTextLenId = typeof exp.session_text_len_id === "function";
+  const hasTextRemoveRoot = typeof exp.session_text_remove_root === "function";
 
   let memBuf = exp.memory.buffer;
   let u8 = new Uint8Array(memBuf);
   let dv = new DataView(memBuf);
   let inPtr = 0;
   let inCap = 0;
+  let inHighWater = false;
   let wPos = 0;
   let rPos = 0;
   let encodeDepth = 0;
@@ -83,16 +89,34 @@ export async function loadYOctoWasm(wasmBytes) {
     exp.runtime_trim_scratch();
     inPtr = 0;
     inCap = 0;
+    inHighWater = false;
     wPos = 0;
     rPos = 0;
     refreshMem();
   }
 
-  function wReset(minCap = 1024) {
-    const req = Math.max(minCap, 64);
+  function ensureInput(minCap) {
+    const req = minCap < 64 ? 64 : minCap;
+    if (
+      inPtr !== 0 &&
+      !inHighWater &&
+      req <= inCap &&
+      memBuf === exp.memory.buffer
+    ) {
+      return;
+    }
     inPtr = exp.in_buf_ensure(req);
     inCap = req;
+    if (req > IN_HIGH_WATER) {
+      inHighWater = true;
+    } else if (req <= IN_TRIM_TARGET) {
+      inHighWater = false;
+    }
     refreshMem();
+  }
+
+  function wReset(minCap = 1024) {
+    ensureInput(minCap);
     wPos = inPtr;
   }
 
@@ -114,6 +138,11 @@ export async function loadYOctoWasm(wasmBytes) {
         const need = Math.max(savedCap, savedBytes.length, 64);
         inPtr = exp.in_buf_ensure(need);
         inCap = need;
+        if (need > IN_HIGH_WATER) {
+          inHighWater = true;
+        } else if (need <= IN_TRIM_TARGET) {
+          inHighWater = false;
+        }
         refreshMem();
         u8.set(savedBytes, inPtr);
         wPos = inPtr + savedBytes.length;
@@ -129,6 +158,11 @@ export async function loadYOctoWasm(wasmBytes) {
       const nextCap = Math.max((used + extra) * 2, inCap * 2, 1024);
       inPtr = exp.in_buf_ensure(nextCap);
       inCap = nextCap;
+      if (nextCap > IN_HIGH_WATER) {
+        inHighWater = true;
+      } else if (nextCap <= IN_TRIM_TARGET) {
+        inHighWater = false;
+      }
       refreshMem();
       wPos = inPtr + used;
     } else {
@@ -417,6 +451,11 @@ export async function loadYOctoWasm(wasmBytes) {
     refreshMem();
     rPos = exp.out_buf_ptr();
     return exp.out_buf_len();
+  }
+
+  function rStartPtr() {
+    refreshMem();
+    rPos = exp.out_buf_ptr();
   }
 
   function readRawOutBytes() {
@@ -819,7 +858,7 @@ export async function loadYOctoWasm(wasmBytes) {
     _exec() {
       const len = wPos - inPtr;
       checkOk(exp.session_exec(this._handle, len));
-      rStart();
+      rStartPtr();
     }
 
     client() {
@@ -876,7 +915,7 @@ export async function loadYOctoWasm(wasmBytes) {
     commitTx() {
       const code = checkOk(exp.session_commit_tx(this._handle));
       if (code === 1) return null;
-      rStart();
+      rStartPtr();
       return rCommitBody();
     }
 
@@ -978,6 +1017,64 @@ export async function loadYOctoWasm(wasmBytes) {
     }
 
     readTextLen(target) {
+      if (
+        target !== null &&
+        typeof target === "object" &&
+        Object.hasOwn(target, "Identity")
+      ) {
+        const identity = target.Identity;
+        if (identity !== null && typeof identity === "object") {
+          if (hasTextLenRoot && Object.hasOwn(identity, "Root")) {
+            const root = identity.Root;
+            const handle = this._handle;
+            const req = root.length * 3 + 8;
+            let res;
+            if (
+              encodeDepth === 0 &&
+              !pendingTrim &&
+              typeof handle === "number" &&
+              typeof root === "string"
+            ) {
+              ensureInput(req);
+              const rlen = writeUtf8Raw(root, inPtr);
+              wPos = inPtr + rlen;
+              res = exp.session_text_len_root(handle, rlen);
+            } else {
+              res = withInputFrame(req, () => {
+                const rlen = writeUtf8Raw(root, inPtr);
+                wPos = inPtr + rlen;
+                return exp.session_text_len_root(handle, rlen);
+              });
+            }
+            if (res >= 0) return res;
+            if (res === -1) {
+              throw new Error(readError() || "readTextLen failed");
+            }
+          } else if (hasTextLenId && Object.hasOwn(identity, "Item")) {
+            const id = identity.Item;
+            if (id !== null && typeof id === "object") {
+              const client = id.client;
+              const clock = id.clock;
+              if (
+                typeof client === "number" &&
+                typeof clock === "number" &&
+                clock >= 0 &&
+                clock <= 0xffffffff
+              ) {
+                const handle = this._handle;
+                const cLo = client >>> 0;
+                const cHi = Math.floor(client / 4294967296) >>> 0;
+                const clk = clock >>> 0;
+                const res = exp.session_text_len_id(handle, cLo, cHi, clk);
+                if (res >= 0) return res;
+                if (res === -1) {
+                  throw new Error(readError() || "readTextLen failed");
+                }
+              }
+            }
+          }
+        }
+      }
       return withInputFrame(1024, () => {
         wU32(27);
         wTarget(target);
@@ -1008,35 +1105,55 @@ export async function loadYOctoWasm(wasmBytes) {
       const hasAny = Object.hasOwn(value, "Any");
       const anyVal = hasAny ? value.Any : undefined;
       if (
-        target.Identity &&
-        target.Identity.Item &&
         hasAny &&
         typeof anyVal === "number" &&
         (!Number.isInteger(anyVal) ||
           anyVal < -2147483648 ||
-          anyVal > 2147483647)
+          anyVal > 2147483647) &&
+        target !== null &&
+        typeof target === "object" &&
+        Object.hasOwn(target, "Identity")
       ) {
-        const id = target.Identity.Item;
-        const cLo = id.client >>> 0;
-        const cHi = Math.floor(id.client / 4294967296) >>> 0;
-        const clk = id.clock >>> 0;
-        return withInputFrame(key.length * 3 + 8, () => {
-          const klen = writeUtf8Raw(key, inPtr);
-          wPos = inPtr + klen;
-          const code = checkOk(
-            exp.session_map_set_f64_id(
-              this._handle,
-              cLo,
-              cHi,
-              clk,
-              klen,
-              anyVal,
-            ),
-          );
-          if (code === 1) return null;
-          rStart();
-          return rCommitBody();
-        });
+        const identity = target.Identity;
+        if (
+          identity !== null &&
+          typeof identity === "object" &&
+          Object.hasOwn(identity, "Item")
+        ) {
+          const id = identity.Item;
+          if (id !== null && typeof id === "object") {
+            const client = id.client;
+            const clock = id.clock;
+            if (
+              typeof client === "number" &&
+              typeof clock === "number" &&
+              clock >= 0 &&
+              clock <= 0xffffffff
+            ) {
+              const handle = this._handle;
+              const cLo = client >>> 0;
+              const cHi = Math.floor(client / 4294967296) >>> 0;
+              const clk = clock >>> 0;
+              return withInputFrame(key.length * 3 + 8, () => {
+                const klen = writeUtf8Raw(key, inPtr);
+                wPos = inPtr + klen;
+                const code = checkOk(
+                  exp.session_map_set_f64_id(
+                    handle,
+                    cLo,
+                    cHi,
+                    clk,
+                    klen,
+                    anyVal,
+                  ),
+                );
+                if (code === 1) return null;
+                rStartPtr();
+                return rCommitBody();
+              });
+            }
+          }
+        }
       }
       return withInputFrame(1024, () => {
         wU32(12);
@@ -1107,44 +1224,112 @@ export async function loadYOctoWasm(wasmBytes) {
     }
 
     textInsert(target, index, text) {
-      if (target.Identity && index <= 0xffffffff) {
-        const idxU32 = index >>> 0;
-        if (Object.hasOwn(target.Identity, "Root")) {
-          const root = target.Identity.Root;
-          return withInputFrame((root.length + text.length) * 3 + 16, () => {
-            const rlen = writeUtf8Raw(root, inPtr);
-            const tlen = writeUtf8Raw(text, inPtr + rlen);
-            wPos = inPtr + rlen + tlen;
-            const code = checkOk(
-              exp.session_text_insert_root(this._handle, rlen, idxU32, tlen),
-            );
-            if (code === 1) return null;
-            rStart();
-            return rCommitBody();
-          });
-        }
-        const id = target.Identity.Item;
-        if (id.clock <= 0xffffffff) {
-          const cLo = id.client >>> 0;
-          const cHi = Math.floor(id.client / 4294967296) >>> 0;
-          const clk = id.clock >>> 0;
-          return withInputFrame(text.length * 3 + 8, () => {
-            const tlen = writeUtf8Raw(text, inPtr);
-            wPos = inPtr + tlen;
-            const code = checkOk(
-              exp.session_text_insert_id(
-                this._handle,
-                cLo,
-                cHi,
-                clk,
-                idxU32,
-                tlen,
-              ),
-            );
-            if (code === 1) return null;
-            rStart();
-            return rCommitBody();
-          });
+      if (typeof index === "number" && index < 0) {
+        throw new RangeError("index must be non-negative");
+      }
+      if (
+        target !== null &&
+        typeof target === "object" &&
+        Object.hasOwn(target, "Identity") &&
+        typeof index === "number" &&
+        index <= 0xffffffff
+      ) {
+        const identity = target.Identity;
+        if (identity !== null && typeof identity === "object") {
+          const idxU32 = index >>> 0;
+          if (Object.hasOwn(identity, "Root")) {
+            const root = identity.Root;
+            const handle = this._handle;
+            const req = (root.length + text.length) * 3 + 16;
+            if (
+              encodeDepth === 0 &&
+              !pendingTrim &&
+              typeof handle === "number" &&
+              typeof root === "string" &&
+              typeof text === "string"
+            ) {
+              ensureInput(req);
+              const rlen = writeUtf8Raw(root, inPtr);
+              const tlen = writeUtf8Raw(text, inPtr + rlen);
+              wPos = inPtr + rlen + tlen;
+              const code = checkOk(
+                exp.session_text_insert_root(handle, rlen, idxU32, tlen),
+              );
+              if (code === 1) return null;
+              rStartPtr();
+              return rCommitBody();
+            }
+            return withInputFrame(req, () => {
+              const rlen = writeUtf8Raw(root, inPtr);
+              const tlen = writeUtf8Raw(text, inPtr + rlen);
+              wPos = inPtr + rlen + tlen;
+              const code = checkOk(
+                exp.session_text_insert_root(handle, rlen, idxU32, tlen),
+              );
+              if (code === 1) return null;
+              rStartPtr();
+              return rCommitBody();
+            });
+          }
+          if (Object.hasOwn(identity, "Item")) {
+            const id = identity.Item;
+            if (id !== null && typeof id === "object") {
+              const client = id.client;
+              const clock = id.clock;
+              if (
+                typeof client === "number" &&
+                typeof clock === "number" &&
+                clock >= 0 &&
+                clock <= 0xffffffff
+              ) {
+                const handle = this._handle;
+                const cLo = client >>> 0;
+                const cHi = Math.floor(client / 4294967296) >>> 0;
+                const clk = clock >>> 0;
+                const req = text.length * 3 + 8;
+                if (
+                  encodeDepth === 0 &&
+                  !pendingTrim &&
+                  typeof handle === "number" &&
+                  typeof text === "string"
+                ) {
+                  ensureInput(req);
+                  const tlen = writeUtf8Raw(text, inPtr);
+                  wPos = inPtr + tlen;
+                  const code = checkOk(
+                    exp.session_text_insert_id(
+                      handle,
+                      cLo,
+                      cHi,
+                      clk,
+                      idxU32,
+                      tlen,
+                    ),
+                  );
+                  if (code === 1) return null;
+                  rStartPtr();
+                  return rCommitBody();
+                }
+                return withInputFrame(req, () => {
+                  const tlen = writeUtf8Raw(text, inPtr);
+                  wPos = inPtr + tlen;
+                  const code = checkOk(
+                    exp.session_text_insert_id(
+                      handle,
+                      cLo,
+                      cHi,
+                      clk,
+                      idxU32,
+                      tlen,
+                    ),
+                  );
+                  if (code === 1) return null;
+                  rStartPtr();
+                  return rCommitBody();
+                });
+              }
+            }
+          }
         }
       }
       return withInputFrame(1024, () => {
@@ -1158,32 +1343,88 @@ export async function loadYOctoWasm(wasmBytes) {
     }
 
     textRemove(target, index, len) {
+      if (typeof index === "number" && index < 0) {
+        throw new RangeError("index must be non-negative");
+      }
+      if (typeof len === "number" && len < 0) {
+        throw new RangeError("len must be non-negative");
+      }
       if (
-        target.Identity &&
-        target.Identity.Item &&
-        target.Identity.Item.clock <= 0xffffffff &&
+        target !== null &&
+        typeof target === "object" &&
+        Object.hasOwn(target, "Identity") &&
+        typeof index === "number" &&
         index <= 0xffffffff &&
+        typeof len === "number" &&
         len <= 0xffffffff
       ) {
-        const id = target.Identity.Item;
-        const cLo = id.client >>> 0;
-        const cHi = Math.floor(id.client / 4294967296) >>> 0;
-        const clk = id.clock >>> 0;
-        const idxU32 = index >>> 0;
-        const lenU32 = len >>> 0;
-        const code = checkOk(
-          exp.session_text_remove_id(
-            this._handle,
-            cLo,
-            cHi,
-            clk,
-            idxU32,
-            lenU32,
-          ),
-        );
-        if (code === 1) return null;
-        rStart();
-        return rCommitBody();
+        const identity = target.Identity;
+        if (identity !== null && typeof identity === "object") {
+          const idxU32 = index >>> 0;
+          const lenU32 = len >>> 0;
+          if (hasTextRemoveRoot && Object.hasOwn(identity, "Root")) {
+            const root = identity.Root;
+            const handle = this._handle;
+            const req = root.length * 3 + 8;
+            if (
+              encodeDepth === 0 &&
+              !pendingTrim &&
+              typeof handle === "number" &&
+              typeof root === "string"
+            ) {
+              ensureInput(req);
+              const rlen = writeUtf8Raw(root, inPtr);
+              wPos = inPtr + rlen;
+              const code = checkOk(
+                exp.session_text_remove_root(handle, rlen, idxU32, lenU32),
+              );
+              if (code === 1) return null;
+              rStartPtr();
+              return rCommitBody();
+            }
+            return withInputFrame(req, () => {
+              const rlen = writeUtf8Raw(root, inPtr);
+              wPos = inPtr + rlen;
+              const code = checkOk(
+                exp.session_text_remove_root(handle, rlen, idxU32, lenU32),
+              );
+              if (code === 1) return null;
+              rStartPtr();
+              return rCommitBody();
+            });
+          }
+          if (Object.hasOwn(identity, "Item")) {
+            const id = identity.Item;
+            if (id !== null && typeof id === "object") {
+              const client = id.client;
+              const clock = id.clock;
+              if (
+                typeof client === "number" &&
+                typeof clock === "number" &&
+                clock >= 0 &&
+                clock <= 0xffffffff
+              ) {
+                const handle = this._handle;
+                const cLo = client >>> 0;
+                const cHi = Math.floor(client / 4294967296) >>> 0;
+                const clk = clock >>> 0;
+                const code = checkOk(
+                  exp.session_text_remove_id(
+                    handle,
+                    cLo,
+                    cHi,
+                    clk,
+                    idxU32,
+                    lenU32,
+                  ),
+                );
+                if (code === 1) return null;
+                rStartPtr();
+                return rCommitBody();
+              }
+            }
+          }
+        }
       }
       return withInputFrame(1024, () => {
         wU32(17);
@@ -1476,7 +1717,7 @@ export async function loadYOctoWasm(wasmBytes) {
         );
         const count = code - 1;
         if (count === 0) return [];
-        rStart();
+        rStartPtr();
         const commits = [];
         for (let i = 0; i < count; i++) {
           commits.push(rCommitBody());

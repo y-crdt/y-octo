@@ -288,7 +288,7 @@ struct DiffSink<'a> {
     target: StateVector,
     active: Option<ActiveClient>,
     emitted: Vec<EmittedClient>,
-    delete_set: DeleteSet,
+    deletes: Vec<(Client, Range<u64>)>,
     json_buf: Vec<&'a str>,
     any_buf: Vec<Range<usize>>,
 }
@@ -300,7 +300,7 @@ impl<'a> DiffSink<'a> {
             target,
             active: None,
             emitted: Vec::new(),
-            delete_set: DeleteSet::default(),
+            deletes: Vec::new(),
             json_buf: Vec::new(),
             any_buf: Vec::new(),
         }
@@ -504,7 +504,7 @@ impl<'a> decoder::Sink<'a> for DiffSink<'a> {
     }
 
     fn delete_range(&mut self, client: u64, range: Range<u64>) -> decoder::Result<()> {
-        self.delete_set.add_range(client, range);
+        self.deletes.push((client, range));
         Ok(())
     }
 
@@ -520,7 +520,7 @@ impl<'a> decoder::Sink<'a> for DiffSink<'a> {
             out.write_var_u64(entry.start_clock)?;
             out.write_raw(&entry.bytes)?;
         }
-        self.delete_set.write(&mut out)?;
+        DeleteSet::from_flat_ranges(self.deletes).write(&mut out)?;
         Ok(out.into_inner())
     }
 }

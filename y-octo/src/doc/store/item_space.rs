@@ -1,5 +1,7 @@
 use std::num::NonZeroU32;
 
+use y_octo_core::item_space::ItemSpaceCore;
+
 use super::*;
 
 /// A slot in one document. Only store-owned structures keep these across a
@@ -9,54 +11,99 @@ pub(crate) struct ItemIdx(NonZeroU32);
 
 const _: () = assert!(size_of::<Option<ItemIdx>>() == 4);
 
-const CHUNK_SIZE: usize = 1024;
-
 impl ItemIdx {
-    fn new(slot: usize) -> Option<Self> {
-        NonZeroU32::new(u32::try_from(slot).ok()?.checked_add(1)?).map(Self)
+    /// The item of a slot the arena handed out: below `u32::MAX`
+    /// (`ItemSpaceCore::alloc`), so one more is a `NonZeroU32`.
+    #[inline]
+    fn new(slot: u32) -> Option<Self> {
+        NonZeroU32::new(slot.checked_add(1)?).map(Self)
     }
 
+    #[cfg(test)]
     #[inline]
     pub(in crate::doc) fn slot(self) -> usize {
         (self.0.get() - 1) as usize
     }
 
+    /// The slot as `y_octo_core` names it: in the arena (`ItemSpaceCore`)
+    /// and in a block of a `ClientBlocksCore`.
     #[inline]
-    fn location(self) -> (usize, usize) {
-        let slot = self.slot();
-        (slot / CHUNK_SIZE, slot % CHUNK_SIZE)
+    pub(super) fn core_slot(self) -> u32 {
+        self.0.get() - 1
+    }
+
+    /// The item of a slot read back from a `ClientBlocksCore`: one that
+    /// [ItemIdx::core_slot] put there, so it is below `u32::MAX` and the sum
+    /// is exact. No branch and no panic: this is on the path of every node
+    /// read.
+    #[inline]
+    pub(super) fn of_core_slot(slot: u32) -> Self {
+        debug_assert!(slot < u32::MAX, "slot of an item");
+        Self(NonZeroU32::MIN.saturating_add(slot))
     }
 }
 
-/// Each chunk grows on demand up to CHUNK_SIZE entries.
+/// Where [ItemSpace::finish] moved the items: for every old slot, one more
+/// than the new slot of its item, and `0` for a slot that held none. This is
+/// the table `ItemSpaceCore::finish` of `y-octo-core` answers and
+/// `ClientBlocksCore::remap_slots` reads, and the bits of an
+/// `Option<ItemIdx>`: four bytes per old slot.
+#[derive(Debug)]
+pub(crate) struct Moved(Vec<u32>);
+
+impl Moved {
+    /// Where the item at `old` is now; `None` if `old` held no item.
+    #[inline]
+    pub(in crate::doc) fn get(&self, old: ItemIdx) -> Option<ItemIdx> {
+        NonZeroU32::new(self.0[old.core_slot() as usize]).map(ItemIdx)
+    }
+
+    #[inline]
+    pub(super) fn table(&self) -> &[u32] {
+        &self.0
+    }
+}
+
+/// The items of one document: the arena `ItemSpaceCore` of `y-octo-core`,
+/// whose functions `proofs/` proves (`ItemSpace.lean`). Nothing here reads or
+/// writes a slot by itself: an [ItemIdx] is a slot of the core plus one, and
+/// every method is the call of the core it is named after.
 #[derive(Debug, Default)]
 pub(crate) struct ItemSpace {
-    first: Vec<Option<Item>>,
-    rest: Vec<Vec<Option<Item>>>,
-    slots: usize,
-    free: Vec<ItemIdx>,
-    quarantine: Vec<ItemIdx>,
+    core: ItemSpaceCore<Item>,
     #[cfg(test)]
     limit: Option<usize>,
 }
 
+fn too_many_items() -> JwstCodecError {
+    JwstCodecError::IncompleteDocument(TOO_MANY_ITEMS.into())
+}
+
 impl ItemSpace {
-    pub fn check_capacity(&self, additional: usize) -> JwstCodecResult {
+    /// How many items the arena may hold: every slot plus one fits
+    /// [ItemIdx].
+    #[inline]
+    fn limit(&self) -> usize {
         #[cfg(test)]
-        let limit = self.limit.unwrap_or(u32::MAX as usize);
-        #[cfg(not(test))]
-        let limit = u32::MAX as usize;
-        if self
-            .slots
-            .checked_sub(self.free.len())
-            .and_then(|occupied| occupied.checked_add(additional))
-            .is_none_or(|n| n > limit)
-        {
-            return Err(JwstCodecError::IncompleteDocument(
-                "the document holds too many items".into(),
-            ));
+        if let Some(limit) = self.limit {
+            return limit;
         }
-        Ok(())
+        u32::MAX as usize
+    }
+
+    pub fn check_capacity(&self, additional: usize) -> JwstCodecResult {
+        if self.core.check_capacity(additional, self.limit()) {
+            Ok(())
+        } else {
+            Err(too_many_items())
+        }
+    }
+
+    /// Whether `additional` more items fit an arena that holds no more than
+    /// `limit` of them, when that is fewer than it takes.
+    #[inline]
+    pub(crate) fn fits_within(&self, additional: usize, limit: usize) -> bool {
+        self.core.check_capacity(additional, limit.min(self.limit()))
     }
 
     #[cfg(test)]
@@ -64,144 +111,72 @@ impl ItemSpace {
         self.limit = Some(limit.min(u32::MAX as usize));
     }
 
-    #[inline]
-    fn chunk_mut(&mut self, index: usize) -> Option<&mut Vec<Option<Item>>> {
-        if index == 0 {
-            Some(&mut self.first)
-        } else {
-            self.rest.get_mut(index - 1)
-        }
+    /// How many items the arena holds, the ones retired in this transaction
+    /// included.
+    #[cfg(test)]
+    pub(crate) fn occupied(&self) -> usize {
+        self.core.slots() - self.core.free_slots()
     }
 
-    #[inline]
-    fn slot_mut(&mut self, id: ItemIdx) -> Option<&mut Option<Item>> {
-        let (chunk, offset) = id.location();
-        self.chunk_mut(chunk)?.get_mut(offset)
+    /// How many slots the chunks have allocated.
+    #[cfg(test)]
+    pub(crate) fn allocated(&self) -> usize {
+        self.core.allocated_capacity()
     }
 
     pub fn alloc(&mut self, item: Item) -> JwstCodecResult<ItemIdx> {
-        #[cfg(test)]
-        self.check_capacity(1)?;
-        if let Some(id) = self.free.pop() {
-            *self.slot_mut(id).expect("allocated slot") = Some(item);
-            return Ok(id);
+        let limit = self.limit();
+        match self.core.alloc(item, limit) {
+            Ok(slot) => ItemIdx::new(slot).ok_or_else(too_many_items),
+            Err(_) => Err(too_many_items()),
         }
-        let id = ItemIdx::new(self.slots)
-            .ok_or_else(|| JwstCodecError::IncompleteDocument("the document holds too many items".into()))?;
-        let (chunk, offset) = id.location();
-        if chunk > 0 && offset == 0 {
-            self.rest.push(Vec::new());
-        }
-        self.chunk_mut(chunk).expect("allocated chunk").push(Some(item));
-        self.slots += 1;
-        Ok(id)
     }
 
     #[inline]
     pub fn get(&self, id: ItemIdx) -> Option<&Item> {
-        let (chunk, offset) = id.location();
-        if chunk == 0 {
-            self.first.get(offset)?.as_ref()
-        } else {
-            self.rest.get(chunk - 1)?.get(offset)?.as_ref()
-        }
+        self.core.get(id.core_slot())
     }
 
     #[inline]
     pub fn get_mut(&mut self, id: ItemIdx) -> Option<&mut Item> {
-        self.slot_mut(id)?.as_mut()
+        self.core.get_mut(id.core_slot())
     }
 
+    #[inline]
     pub fn get_two_mut(&mut self, a: ItemIdx, b: ItemIdx) -> Option<(&mut Item, &mut Item)> {
-        if a == b {
-            return None;
-        }
-        let reversed = a.slot() > b.slot();
-        let (left, right) = if reversed { (b, a) } else { (a, b) };
-        let (lc, li) = left.location();
-        let (rc, ri) = right.location();
-        let (left, right) = if lc == rc {
-            let (before, after) = self.chunk_mut(lc)?.split_at_mut_checked(ri)?;
-            (before.get_mut(li)?, after.first_mut()?)
-        } else if lc == 0 {
-            (self.first.get_mut(li)?, self.rest.get_mut(rc - 1)?.get_mut(ri)?)
-        } else {
-            let (before, after) = self.rest.split_at_mut_checked(rc - 1)?;
-            (before.get_mut(lc - 1)?.get_mut(li)?, after.first_mut()?.get_mut(ri)?)
-        };
-        let (left, right) = (left.as_mut()?, right.as_mut()?);
-        Some(if reversed { (right, left) } else { (left, right) })
+        self.core.get_two_mut(a.core_slot(), b.core_slot())
     }
 
     pub fn retire(&mut self, id: ItemIdx) {
-        self.slot_mut(id).and_then(Option::take).expect("retiring a live item");
-        self.quarantine.push(id);
+        self.core.retire(id.core_slot()).expect("retiring a live item");
     }
 
     #[cfg(test)]
     pub(super) fn live(&self) -> impl Iterator<Item = (ItemIdx, &Item)> {
-        self.first
-            .iter()
-            .chain(self.rest.iter().flatten())
-            .enumerate()
-            .filter_map(|(i, slot)| Some((ItemIdx::new(i)?, slot.as_ref()?)))
+        (0..self.core.slots() as u32).filter_map(|slot| Some((ItemIdx::new(slot)?, self.core.get(slot)?)))
     }
 
-    pub fn live_mut(&mut self) -> impl Iterator<Item = &mut Item> {
-        self.first
-            .iter_mut()
-            .chain(self.rest.iter_mut().flatten())
-            .filter_map(Option::as_mut)
+    /// Calls `relink` on every item, in the order of the slots.
+    pub fn for_each_mut(&mut self, mut relink: impl FnMut(&mut Item)) {
+        for slot in 0..self.core.slots() as u32 {
+            if let Some(item) = self.core.get_mut(slot) {
+                relink(item);
+            }
+        }
     }
 
     /// Called after the transaction has finished using temporary cursors.
     /// Live items move in place toward the front; the only full-size scratch
     /// allocation holds four bytes per old slot.
-    pub fn finish(&mut self) -> Option<Vec<Option<ItemIdx>>> {
-        self.free.append(&mut self.quarantine);
-        let compact = self.slots >= 256 && self.free.len() as u64 * 5 > self.slots as u64 * 2;
-        if !compact && self.free.len() != self.slots {
-            return None;
-        }
-        if self.free.is_empty() {
-            return None;
-        }
-        let mut remap = vec![None; self.slots];
-        let mut live = 0;
-        for (slot, entry) in remap.iter_mut().enumerate() {
-            let old = ItemIdx::new(slot).expect("allocated slot");
-            let source = self.slot_mut(old).expect("allocated slot");
-            if source.is_none() {
-                continue;
-            }
-            let new = ItemIdx::new(live).expect("allocated slot");
-            if old != new {
-                let item = source.take();
-                *self.slot_mut(new).expect("allocated slot") = item;
-            }
-            *entry = Some(new);
-            live += 1;
-        }
-        if let Some(last) = live.checked_sub(1).and_then(ItemIdx::new) {
-            let (chunk, offset) = last.location();
-            self.rest.truncate(chunk);
-            let tail = self.chunk_mut(chunk).expect("last live chunk");
-            tail.truncate(offset + 1);
-            tail.shrink_to_fit();
-        } else {
-            self.first = Vec::new();
-            self.rest.clear();
-        }
-        self.rest.shrink_to_fit();
-        self.free = Vec::new();
-        self.quarantine = Vec::new();
-        self.slots = live;
-        Some(remap)
+    pub fn finish(&mut self) -> Option<Moved> {
+        self.core.finish().map(Moved)
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use y_octo_core::item_space::CHUNK_SIZE;
+
     use super::*;
 
     #[test]
@@ -226,19 +201,92 @@ mod tests {
         }
         let fresh = arena.alloc(Item::default()).unwrap();
         assert_eq!(fresh.slot(), count);
-        let before = 1 + arena.rest.len();
+        let before = arena.core.chunk_count();
+        let allocated = arena.allocated();
         let remap = arena.finish().unwrap();
-        assert!((1 + arena.rest.len()) * 5 < before);
-        assert_eq!(arena.slots, count.div_ceil(10) + 1);
+        assert!(arena.core.chunk_count() * 5 < before);
+        assert_eq!(arena.core.slots(), count.div_ceil(10) + 1);
+        // no slot is kept for an item that is gone
+        assert_eq!(arena.allocated(), arena.core.slots());
+        assert!(arena.allocated() * 5 < allocated);
         for (i, id) in ids.iter().enumerate() {
-            match remap[id.slot()] {
+            match remap.get(*id) {
                 Some(new) => {
                     assert_eq!(i % 10, 0);
                     assert_eq!(arena.get(new).unwrap().id.clock, i as u64);
+                    // the table as `ClientBlocksCore::remap_slots` reads it
+                    assert_eq!(remap.table()[id.core_slot() as usize], new.core_slot() + 1);
+                    assert_eq!(ItemIdx::of_core_slot(new.core_slot()), new);
                 }
-                None => assert_ne!(i % 10, 0),
+                None => {
+                    assert_ne!(i % 10, 0);
+                    assert_eq!(remap.table()[id.core_slot() as usize], 0);
+                }
             }
         }
+    }
+
+    /// An arena of `first` items keeps its first `kept` ones, is filled up
+    /// to `second` items and keeps its first `kept_again` ones. Answers how
+    /// many slots it has memory for after each of the two compactions.
+    fn compacted_twice(first: usize, kept: usize, second: usize, kept_again: usize) -> (usize, usize) {
+        let mut arena = ItemSpace::default();
+        let ids: Vec<_> = (0..first).map(|_| arena.alloc(Item::default()).unwrap()).collect();
+        for &id in &ids[kept..] {
+            arena.retire(id);
+        }
+        arena.finish().expect("the first compaction");
+        assert_eq!(arena.live().count(), kept);
+        let once = arena.allocated();
+        let ids: Vec<_> = (kept..second).map(|_| arena.alloc(Item::default()).unwrap()).collect();
+        assert_eq!(ids[0].slot(), kept);
+        for &id in &ids[kept_again - kept..] {
+            arena.retire(id);
+        }
+        arena.finish().expect("the second compaction");
+        assert_eq!(arena.live().count(), kept_again);
+        assert_eq!(arena.core.slots(), kept_again);
+        (once, arena.allocated())
+    }
+
+    #[test]
+    fn a_chunk_that_grew_again_gives_its_memory_back_at_the_next_compaction() {
+        // the case of the review of PR #61: the chunk the first compaction
+        // ended in (1023 slots) grows past a chunk's size when it is filled
+        // again, and the second compaction keeps exactly that chunk, full.
+        // It must not keep the memory the chunk grew to.
+        assert_eq!(
+            compacted_twice(2 * CHUNK_SIZE, CHUNK_SIZE - 1, 2 * CHUNK_SIZE, CHUNK_SIZE),
+            (CHUNK_SIZE - 1, CHUNK_SIZE)
+        );
+        // the chunk that grew is one of the full ones before the last
+        assert_eq!(
+            compacted_twice(2 * CHUNK_SIZE, CHUNK_SIZE - 1, 4 * CHUNK_SIZE, 2 * CHUNK_SIZE),
+            (CHUNK_SIZE - 1, 2 * CHUNK_SIZE)
+        );
+        if cfg!(miri) {
+            return;
+        }
+        // the same at the end of a later chunk, and in the middle of one
+        assert_eq!(
+            compacted_twice(4 * CHUNK_SIZE, 2 * CHUNK_SIZE - 1, 4 * CHUNK_SIZE, 2 * CHUNK_SIZE),
+            (2 * CHUNK_SIZE - 1, 2 * CHUNK_SIZE)
+        );
+        assert_eq!(compacted_twice(2 * CHUNK_SIZE, 600, 2 * CHUNK_SIZE, 1000), (600, 1000));
+        assert_eq!(
+            compacted_twice(4 * CHUNK_SIZE, CHUNK_SIZE + 300, 4 * CHUNK_SIZE, CHUNK_SIZE + 900),
+            (CHUNK_SIZE + 300, CHUNK_SIZE + 900)
+        );
+        // nothing new is kept: the chunk is as full as it was
+        assert_eq!(
+            compacted_twice(2 * CHUNK_SIZE, CHUNK_SIZE, 2 * CHUNK_SIZE, CHUNK_SIZE),
+            (CHUNK_SIZE, CHUNK_SIZE)
+        );
+        // the second compaction ends after a chunk that grew in the middle
+        assert_eq!(
+            compacted_twice(4 * CHUNK_SIZE, CHUNK_SIZE + 300, 6 * CHUNK_SIZE, 3 * CHUNK_SIZE + 17),
+            (CHUNK_SIZE + 300, 3 * CHUNK_SIZE + 17)
+        );
     }
 
     #[test]
@@ -274,11 +322,7 @@ mod tests {
         undo.stop_capturing().unwrap();
         body.remove(1, 1).unwrap();
         undo.undo().unwrap();
-        let allocated = || {
-            let store = doc.store.read().unwrap();
-            let space = &store.type_arena.items;
-            space.first.capacity() + space.rest.iter().map(Vec::capacity).sum::<usize>()
-        };
+        let allocated = || doc.store.read().unwrap().type_arena.items.allocated();
         let before = allocated();
         root.remove("doomed");
         doc.gc().unwrap();
@@ -309,10 +353,7 @@ mod tests {
                 .filter_map(|n| n.as_item())
                 .collect();
             let space = &store.type_arena.items;
-            let actual: HashSet<_> = (0..space.slots)
-                .map(|i| ItemIdx::new(i).unwrap())
-                .filter(|i| space.get(*i).is_some())
-                .collect();
+            let actual: HashSet<_> = space.live().map(|(idx, _)| idx).collect();
             assert_eq!(owners, actual);
             for &idx in &owners {
                 let item = space.get(idx).unwrap();

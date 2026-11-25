@@ -3,7 +3,11 @@
 //! Every change of a document runs in a [TransactionMut] that owns the store
 //! write lock: explicit ones from [Doc::transact_mut], implicit ones around
 //! each single write method (`Text::insert`, `Map::insert`, …) and the one
-//! around [Doc::apply_update]. Committing runs, still under the lock:
+//! around [Doc::apply_update]. Implicit local writes without active subscribers
+//! or a history hook take the allocation-free `transact_local_implicit` fast
+//! path, which runs steps 3–4 via `optimize_local` (or `finish_item_space` when
+//! only staging retired slots) and bumps `commit_seq` with identical semantics.
+//! Committing runs, still under the lock:
 //!
 //! 1. collect the changes (state vectors, new and first-time deleted ranges,
 //!    changed types and keys and their ancestors, origin, locality),
@@ -460,6 +464,11 @@ impl fmt::Debug for EventHub {
 }
 
 impl EventHub {
+    pub(crate) fn has_subscribers(&self) -> bool {
+        let guard = self.subscribers.lock().unwrap();
+        !guard.1.is_empty()
+    }
+
     pub(crate) fn subscribe(self: &Arc<Self>, callback: Callback) -> Subscription {
         let mut subscribers = self.subscribers.lock().unwrap();
         subscribers.0 += 1;
@@ -807,7 +816,7 @@ impl<'doc> TransactionMut<'doc> {
         &mut self,
         maintenance_origin: Option<Origin>,
         capture_event: bool,
-    ) -> (Option<CommitEvent>, Option<CommitEvent>) {
+    ) -> (Option<Box<CommitEvent>>, Option<Box<CommitEvent>>) {
         commit_store(
             &mut self.store,
             &mut self.before_state,
@@ -834,7 +843,7 @@ pub(crate) fn commit_store(
     incoming: &mut Option<IncomingUpdate>,
     maintenance_origin: Option<Origin>,
     capture_event: bool,
-) -> (Option<CommitEvent>, Option<CommitEvent>) {
+) -> (Option<Box<CommitEvent>>, Option<Box<CommitEvent>>) {
     let is_local = *local;
     let collector = mem::take(&mut store.collector);
     let after_state = store.get_state_vector();
@@ -899,16 +908,21 @@ pub(crate) fn commit_store(
 
     // 3., 4. GC and merge of what this transaction touched
     let Collector {
-        changed,
+        mut changed,
         deleted,
         merges,
-        ..
+        mut subdocs_added,
+        mut subdocs_removed,
     } = collector;
     // The history stage only collects released ranges: it adds merge
     // points (children it replaced), never deletions.
     debug_assert!(store.collector.deleted.is_empty());
     store.collector.deleted = deleted;
-    store.collector.merges.extend(merges);
+    if store.collector.merges.is_empty() {
+        store.collector.merges = merges;
+    } else {
+        store.collector.merges.extend(merges);
+    }
     let client = store.client();
     let client_clock_advanced = !is_local && after_state.get(&client) != before_state.get(&client);
     store.optimize(store.gc, after_state);
@@ -924,6 +938,20 @@ pub(crate) fn commit_store(
                 markers.clear();
             }
         }
+    }
+
+    // Return small collector buffers to avoid per-transaction reallocation.
+    if store.collector.changed.capacity() == 0 && changed.capacity() <= store::COLLECTOR_REUSE_MAX_CAP {
+        changed.clear();
+        store.collector.changed = changed;
+    }
+    if store.collector.subdocs_added.capacity() == 0 && subdocs_added.capacity() <= store::COLLECTOR_REUSE_MAX_CAP {
+        subdocs_added.clear();
+        store.collector.subdocs_added = subdocs_added;
+    }
+    if store.collector.subdocs_removed.capacity() == 0 && subdocs_removed.capacity() <= store::COLLECTOR_REUSE_MAX_CAP {
+        subdocs_removed.clear();
+        store.collector.subdocs_removed = subdocs_removed;
     }
 
     // Another client advanced our clock: it uses our client ID. Yjs
@@ -958,7 +986,7 @@ pub(crate) fn commit_store(
         };
         if let Some(subscribers) = subscribers {
             if capture_event {
-                captured_primary = Some(event.clone());
+                captured_primary = Some(Box::new(event.clone()));
             }
             let ready = store.events.enqueue(
                 event,
@@ -967,7 +995,7 @@ pub(crate) fn commit_store(
             drop(subscribers);
             AfterUnlock::Deliver(store.events.clone(), ready).schedule();
         } else if capture_event {
-            captured_primary = Some(event);
+            captured_primary = Some(Box::new(event));
         }
     } else {
         drop(subscribers);
@@ -999,6 +1027,68 @@ pub(crate) fn commit_store(
     }
 
     (captured_primary, captured_cleanup)
+}
+
+/// Fast path for implicit local single-operation writes (`YTypeRef::write`):
+/// avoids allocating `StateVector`s when there are no subscribers or history
+/// hook, while remaining 100% equivalent to `transact_mut_with(store_ref,
+/// None, true, ...)`.
+pub(crate) fn transact_local_implicit<R>(
+    store_ref: &StoreRef,
+    f: impl FnOnce(&mut DocStore) -> JwstCodecResult<R>,
+) -> JwstCodecResult<R> {
+    let mut store = write_store(store_ref)?;
+    if store.client_required {
+        return Err(JwstCodecError::ClientIdRequired);
+    }
+    if !store.collector.is_empty() {
+        return Err(JwstCodecError::OpenTransactionFrame);
+    }
+    let client = store.client();
+    let before_clock = store.get_state(client);
+    let result = f(&mut store);
+    debug_assert_eq!(store.client(), client);
+    let after_clock = store.get_state(client);
+    let changes =
+        after_clock > before_clock || !store.collector.deleted.is_empty() || !store.collector.changed.is_empty();
+    let deliver = if changes {
+        let guard = store.events.subscribers.lock().unwrap();
+        !guard.1.is_empty()
+    } else {
+        false
+    };
+    if !deliver && store.history_hook.is_none() {
+        if changes || !store.collector.is_empty() {
+            let gc = store.gc;
+            store.optimize_local(gc, client, after_clock);
+        } else {
+            store.finish_item_space();
+        }
+        if changes {
+            store.commit_seq += 1;
+        }
+        return result;
+    }
+    let mut before_state = store.get_state_vector();
+    if before_clock == 0 {
+        before_state.remove(&client);
+    } else {
+        before_state.insert(client, before_clock);
+    }
+    let mut local = true;
+    let mut capture_history = true;
+    let mut incoming = None;
+    let _ = commit_store(
+        &mut store,
+        &mut before_state,
+        &mut local,
+        &mut capture_history,
+        &None,
+        &mut incoming,
+        None,
+        false,
+    );
+    result
 }
 
 /// A local transaction that creates no structs of its own (history
@@ -1046,7 +1136,7 @@ pub(crate) fn transact_mut_with_events<R>(
     let mut tx = TransactionMut::begin(store_ref, origin, local)?;
     let result = f(&mut tx);
     let (primary, cleanup) = tx.commit_with_origin(None, true);
-    result.map(|value| (value, primary, cleanup))
+    result.map(|value| (value, primary.map(|e| *e), cleanup.map(|e| *e)))
 }
 
 /// Changed types reported like Yjs `addChangedTypeToTransaction`: only types
@@ -1102,6 +1192,21 @@ fn changed_types(
 fn encode_commit(store: &DocStore, before: &StateVector, deleted: &DeleteSet) -> JwstCodecResult<Vec<u8>> {
     let mut encoder = RawEncoder::default();
     store.write_structs_since(before, &mut encoder)?;
+    deleted.write(&mut encoder)?;
+    Ok(encoder.into_inner())
+}
+
+/// Single-client variant of [`encode_commit`] for local standalone commits
+/// where only `client` may have advanced from `before_clock` to `after_clock`.
+pub(crate) fn encode_local_commit(
+    store: &DocStore,
+    client: Client,
+    before_clock: Clock,
+    after_clock: Clock,
+    deleted: &DeleteSet,
+) -> JwstCodecResult<Vec<u8>> {
+    let mut encoder = RawEncoder::default();
+    store.write_structs_since_local(client, before_clock, after_clock, &mut encoder)?;
     deleted.write(&mut encoder)?;
     Ok(encoder.into_inner())
 }
@@ -1167,9 +1272,9 @@ impl TextWrite<'_, '_> {
     }
 
     pub fn insert<T: ToString>(&mut self, index: u64, str: T) -> JwstCodecResult {
-        self.tx.with_type(self.parent, |store, ty| {
-            list_insert(store, ty, index, Content::String(str.to_string()))
-        })
+        let str = str.to_string();
+        self.tx
+            .with_type(self.parent, |store, ty| text::text_insert(store, ty, index, str))
     }
 
     pub fn insert_embed<V: Into<Any>>(&mut self, index: u64, embed: V) -> JwstCodecResult {
@@ -1324,8 +1429,9 @@ impl ArrayWrite<'_, '_> {
     }
 
     pub fn push<V: Into<Value>>(&mut self, value: V) -> JwstCodecResult {
-        let len = self.len();
-        self.insert(len, value)
+        let content = self.tx.new_content(self.parent, value.into());
+        self.tx
+            .with_type(self.parent, |store, ty| list_push(store, ty, content))
     }
 
     pub fn remove(&mut self, index: u64, len: u64) -> JwstCodecResult {
@@ -1610,9 +1716,9 @@ impl XMLTextWrite<'_, '_> {
     }
 
     pub fn insert<T: ToString>(&mut self, index: u64, str: T) -> JwstCodecResult {
-        self.tx.with_type(self.parent, |store, ty| {
-            list_insert(store, ty, index, Content::String(str.to_string()))
-        })
+        let str = str.to_string();
+        self.tx
+            .with_type(self.parent, |store, ty| text::text_insert(store, ty, index, str))
     }
 
     pub fn insert_embed<V: Into<Any>>(&mut self, index: u64, embed: V) -> JwstCodecResult {

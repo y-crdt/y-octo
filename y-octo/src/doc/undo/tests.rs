@@ -751,6 +751,7 @@ fn metadata_of_a_failed_set_meta_is_released_after_the_lock() {
 /// of dropped items is kept, and comes back with each undo.
 #[test]
 fn concurrent_metadata_is_kept() {
+    let count = if cfg!(miri) { 20 } else { 200 };
     let doc = doc(1);
     let mut text = doc.get_or_create_text("text").unwrap();
     let undo = Arc::new(UndoManager::<u64>::new(&doc, [(&text).into()], UndoOptions::default()).unwrap());
@@ -761,10 +762,12 @@ fn concurrent_metadata_is_kept() {
             while !stop.load(std::sync::atomic::Ordering::Relaxed) {
                 undo.peek(UndoStack::Undo);
                 undo.peek(UndoStack::Redo);
+                #[cfg(miri)]
+                std::thread::yield_now();
             }
         })
     };
-    for i in 0..200 {
+    for i in 0..count {
         text.insert(i, "x").unwrap();
         let top = undo.peek(UndoStack::Undo).unwrap();
         assert!(undo.set_meta(UndoStack::Undo, top.id, i).unwrap());
@@ -776,7 +779,7 @@ fn concurrent_metadata_is_kept() {
     }
     stop.store(true, std::sync::atomic::Ordering::Relaxed);
     reader.join().unwrap();
-    for i in (0..200).rev() {
+    for i in (0..count).rev() {
         let undone = undo.undo().unwrap().unwrap();
         if i % 10 != 9 {
             assert_eq!(undone.meta.as_deref(), Some(&i), "item {i}");

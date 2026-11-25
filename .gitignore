@@ -5,6 +5,11 @@ target
 .DS_Store
 *.db*
 *.md
+!proofs/TRUSTED.md
+.proof-tools
+proofs/.lake
+proofs/logs
+*.llbc
 /data/*
 **/.next
 **/out

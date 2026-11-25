@@ -792,14 +792,25 @@ impl UndoState {
                 break;
             };
             let insertions = insertion_targets(store, &next.insertions);
-            if let Err(err) = check_pop_capacity(store, next, &insertions) {
-                let history = match stack {
-                    UndoStack::Undo => &mut self.undo,
-                    UndoStack::Redo => &mut self.redo,
-                };
-                history.extend(skipped.into_iter().rev());
-                return Err(err);
-            }
+            let expected_clocks = match self.check_pop_capacity(store, stack, next, &insertions, other_stacks) {
+                Ok(expected) => expected,
+                Err(err) => {
+                    let history = match stack {
+                        UndoStack::Undo => &mut self.undo,
+                        UndoStack::Redo => &mut self.redo,
+                    };
+                    history.extend(skipped.into_iter().rev());
+                    return Err(err);
+                }
+            };
+            #[cfg(test)]
+            let expected_clocks = expected_clocks.or_else(|| {
+                Some(
+                    self.exact_pop_clocks(store, stack, next, &insertions, other_stacks)
+                        .expect("exact_pop_clocks under non-overflow"),
+                )
+            });
+            let state_before = store.get_state(store.client());
 
             let popped = match stack {
                 UndoStack::Undo => self.undo.pop(),
@@ -813,13 +824,11 @@ impl UndoState {
                 let mut to_delete = Vec::new();
                 for (id, len) in insertions {
                     for target in clean_items(store, id, len)? {
-                        if store
-                            .type_arena
-                            .items
-                            .get(target)
-                            .is_some_and(|item| !item.deleted() && self.in_scope(&store.type_arena, item))
+                        if let Some(target_item) = store.type_arena.items.get(target)
+                            && !target_item.deleted()
+                            && self.in_scope(&store.type_arena, target_item)
                         {
-                            to_delete.push(target);
+                            to_delete.push((target_item.id, target_item.len()));
                         }
                     }
                 }
@@ -834,7 +843,7 @@ impl UndoState {
                     // never recreate what the same capture window inserted
                     if self.in_scope(&store.type_arena, struct_item) && !contains(&item.insertions, struct_item.id) {
                         redo_ids.insert(struct_item.id);
-                        to_redo.push(idx);
+                        to_redo.push((struct_item.id, struct_item.len()));
                     }
                 }
 
@@ -849,18 +858,58 @@ impl UndoState {
                     insertions: &item.insertions,
                     stacks: &all_stacks,
                 };
-                for item_ref in &to_redo {
-                    changed |= redo_item(store, &ctx, *item_ref)?.is_some();
+                // Step across each queued `(id, len)` span by its current
+                // fragments rather than holding pre-split `ItemIdx`s: if an
+                // earlier `redo_item` splits a queued item via `clean_start` or
+                // `clean_end`, this restores every resulting right fragment
+                // instead of silently dropping it (intentionally stronger than
+                // Yjs's `itemsToRedo` item-object set).
+                for &(id, len) in &to_redo {
+                    let end = id.clock + len;
+                    let mut clock = id.clock;
+                    while clock < end {
+                        let Some(node) = store.get_node(Id::new(id.client, clock)) else {
+                            break;
+                        };
+                        if let Some(idx) = node.as_item() {
+                            changed |= redo_item(store, &ctx, idx)?.is_some();
+                        }
+                        let next_clock = store
+                            .get_node(Id::new(id.client, clock))
+                            .map_or(end, |n| n.clock() + n.len());
+                        clock = next_clock;
+                    }
                 }
-                // children before their parents
-                for item_ref in to_delete.iter().rev() {
-                    store.delete_item(*item_ref, None);
-                    changed = true;
+                // children before their parents; step across each span in case
+                // `redo_item` split a target into multiple fragments.
+                for &(id, len) in to_delete.iter().rev() {
+                    let end = id.clock + len;
+                    let mut clock = id.clock;
+                    while clock < end {
+                        let Some(node) = store.get_node(Id::new(id.client, clock)) else {
+                            break;
+                        };
+                        let next_clock = node.clock() + node.len();
+                        if let Some(idx) = node.as_item() {
+                            store.delete_item(idx, None);
+                            changed = true;
+                        }
+                        clock = next_clock;
+                    }
                 }
                 Ok(changed)
             };
             let changed = match apply() {
-                Ok(changed) => changed,
+                Ok(changed) => {
+                    if let Some(expected) = expected_clocks {
+                        debug_assert_eq!(
+                            store.get_state(store.client()) - state_before,
+                            expected,
+                            "exact_pop_clocks mismatch"
+                        );
+                    }
+                    changed
+                }
                 Err(err) => {
                     let history = match stack {
                         UndoStack::Undo => &mut self.undo,
@@ -992,64 +1041,706 @@ fn insertion_targets(store: &DocStore, set: &DeleteSet) -> Vec<(Id, u64)> {
     targets
 }
 
-fn check_pop_capacity(store: &DocStore, item: &StackItem, insertions: &[(Id, u64)]) -> JwstCodecResult {
-    let mut types = 0;
-    let mut copies = 0usize;
-    let mut next_clock = Some(store.get_state(store.client()));
-    for_each_item(store, &item.deletions, |item, len| {
-        next_clock = next_clock.and_then(|clock| clock.checked_add(len));
-        types += usize::from(matches!(item.content, Content::Type(_)));
-        copies += 1;
-    });
-    next_clock.ok_or_else(|| JwstCodecError::IncompleteDocument("struct clock overflow".into()))?;
-    store.type_arena.check_capacity(types)?;
-
-    // Count distinct interior cuts. An insertion boundary inside a deletion
-    // can leave another fragment to recreate as well as the original.
-    let mut cuts = HashSet::new();
-    let mut boundary = |id: Id| {
-        if store.get_node(id).is_some_and(|node| node.is_item() && node.id != id) {
-            cuts.insert(id);
-        }
-    };
-    for &(id, len) in insertions {
-        boundary(id);
-        boundary(id + len);
-    }
-    for (client, ranges) in item.deletions.iter() {
-        for range in ranges {
-            boundary(Id::new(*client, range.start));
-            boundary(Id::new(*client, range.end));
-        }
-    }
-    let extra_copies = cuts
-        .iter()
-        .filter(|id| {
-            contains(&item.deletions, **id)
-                && id.clock > 0
-                && contains(&item.deletions, Id::new(id.client, id.clock - 1))
-        })
-        .count();
-    let mut needed = copies.saturating_add(extra_copies).saturating_add(cuts.len());
-    if copies > 0 && !store.redone.is_empty() {
-        // Redo also cleans the neighbors and carriers reached through old
-        // mappings. Each cut of an old target may propagate into its new copy.
-        // Most documents have ample space even if every clock splits.
-        // Only inspect individual mappings near the item limit.
-        let clocks = store.items.values().fold(0usize, |sum, blocks| {
-            sum.saturating_add(usize::try_from(blocks.end_clock).unwrap_or(usize::MAX))
+impl UndoState {
+    fn check_pop_capacity(
+        &self,
+        store: &DocStore,
+        stack: UndoStack,
+        item: &StackItem,
+        insertions: &[(Id, u64)],
+        other_stacks: &[&[StackItem]],
+    ) -> JwstCodecResult<Option<u64>> {
+        let mut types = 0;
+        let mut copies = 0usize;
+        let state = store.get_state(store.client());
+        let mut next_clock = Some(state);
+        for_each_item(store, &item.deletions, |deleted, len| {
+            next_clock = next_clock.and_then(|clock| clock.checked_add(len));
+            types += usize::from(matches!(deleted.content, Content::Type(_)));
+            copies += 1;
         });
-        if store
-            .type_arena
-            .items
-            .check_capacity(needed.saturating_add(clocks.saturating_mul(2)))
-            .is_ok()
-        {
-            return Ok(());
+        let exact_clocks = if next_clock.is_none() {
+            let exact = self.exact_pop_clocks(store, stack, item, insertions, other_stacks)?;
+            state
+                .checked_add(exact)
+                .ok_or_else(|| JwstCodecError::IncompleteDocument("struct clock overflow".into()))?;
+            Some(exact)
+        } else {
+            None
+        };
+        store.type_arena.check_capacity(types)?;
+
+        // Count distinct interior cuts. An insertion or redone-coverage
+        // boundary inside a deletion can leave another fragment to recreate as
+        // well as the original.
+        let mut cuts = HashSet::new();
+        let mut boundary = |id: Id| {
+            if store.get_node(id).is_some_and(|node| node.is_item() && node.id != id) {
+                cuts.insert(id);
+            }
+        };
+        for &(id, len) in insertions {
+            boundary(id);
+            boundary(id + len);
         }
-        needed = needed.saturating_add(store.redone.target_split_bound(store).saturating_mul(2));
+        for (client, ranges) in item.deletions.iter() {
+            let client_state = store.get_state(*client);
+            for range in ranges.canonical_ranges() {
+                let end = range.end.min(client_state);
+                boundary(Id::new(*client, range.start));
+                boundary(Id::new(*client, end));
+                if !store.redone.is_empty() && range.start < end {
+                    let mut cursor = range.start;
+                    while cursor < end {
+                        let step = match store.redone.range_at(Id::new(*client, cursor)) {
+                            Ok(n) | Err(n) => n.min(end - cursor),
+                        };
+                        cursor += step;
+                        if cursor < end {
+                            boundary(Id::new(*client, cursor));
+                        }
+                    }
+                }
+            }
+        }
+        let extra_copies = cuts
+            .iter()
+            .filter(|id| {
+                contains(&item.deletions, **id)
+                    && id.clock > 0
+                    && contains(&item.deletions, Id::new(id.client, id.clock - 1))
+            })
+            .count();
+        let mut needed = copies.saturating_add(extra_copies).saturating_add(cuts.len());
+        // The blocks of the timelines: every copy is a block of the local
+        // timeline, every cut one of the timeline of the struct it cuts.
+        let mut local_blocks = copies.saturating_add(extra_copies);
+        let mut cut_blocks: Vec<(Client, usize)> = Vec::new();
+        let mut cut_block = |client: Client, blocks: usize| match cut_blocks.iter_mut().find(|(c, _)| *c == client) {
+            Some((_, n)) => *n = n.saturating_add(blocks),
+            None => cut_blocks.push((client, blocks)),
+        };
+        if copies > 0 && !store.redone.is_empty() {
+            // Redo also cleans the neighbors and carriers reached through old
+            // mappings. Each cut of an old target can allocate a split slot,
+            // split a queued `to_redo` item into an extra recreated right
+            // fragment, and propagate into its new copy (up to 3 slots per
+            // cut). Most documents have ample space even if every clock splits.
+            // Only inspect individual mappings near the item limit.
+            let clocks = store.items.values().fold(0usize, |sum, blocks| {
+                sum.saturating_add(usize::try_from(blocks.end_clock()).unwrap_or(usize::MAX))
+            });
+            let roomy = needed.saturating_add(clocks.saturating_mul(3));
+            if store.type_arena.items.check_capacity(roomy).is_ok() && store.blocks_fit(roomy) {
+                return Ok(exact_clocks);
+            }
+            // of the three slots a cut of an old target can take, one is the
+            // cut itself and two are local copies
+            let mut target_cuts = 0usize;
+            store.redone.target_split_bounds(store, |client, cuts| {
+                target_cuts = target_cuts.saturating_add(cuts);
+                cut_block(client, cuts);
+            });
+            needed = needed.saturating_add(target_cuts.saturating_mul(3));
+            local_blocks = local_blocks.saturating_add(target_cuts.saturating_mul(2));
+        }
+        store.type_arena.items.check_capacity(needed)?;
+        if !store.blocks_fit(needed) {
+            // Near a full timeline: each timeline is asked for what lands on
+            // it, so that a pop that adds no block to a full timeline, or
+            // exactly the blocks it has room for, is taken.
+            for id in &cuts {
+                cut_block(id.client, 1);
+            }
+            cut_block(store.client(), local_blocks);
+            for (client, blocks) in cut_blocks {
+                if blocks == 0 {
+                    continue;
+                }
+                match store.items.get(&client) {
+                    Some(timeline) => timeline.check_capacity(blocks)?,
+                    None => ClientBlocks::default().check_capacity(blocks)?,
+                }
+            }
+        }
+        Ok(exact_clocks)
     }
-    store.type_arena.items.check_capacity(needed)
+
+    /// Exact number of new local clocks this pop will allocate, computed by
+    /// read-only stateful simulation in the same `(client, clock)` order as
+    /// `clean_structs` and `redo_item`.
+    fn exact_pop_clocks(
+        &self,
+        store: &DocStore,
+        stack: UndoStack,
+        item: &StackItem,
+        insertions: &[(Id, u64)],
+        other_stacks: &[&[StackItem]],
+    ) -> JwstCodecResult<u64> {
+        let mut remaining_stacks: Vec<&[StackItem]> = Vec::with_capacity(2 + other_stacks.len());
+        match stack {
+            UndoStack::Undo => {
+                remaining_stacks.push(&self.undo[..self.undo.len().saturating_sub(1)]);
+                remaining_stacks.push(self.redo.as_slice());
+            }
+            UndoStack::Redo => {
+                remaining_stacks.push(self.undo.as_slice());
+                remaining_stacks.push(&self.redo[..self.redo.len().saturating_sub(1)]);
+            }
+        }
+        remaining_stacks.extend_from_slice(other_stacks);
+
+        let mut planner = ExactPopPlanner::new(self, store, item, insertions, &remaining_stacks);
+        planner.run()
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum ParentKey {
+    Existing(TypeIdx),
+    Planned(usize),
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SimNode {
+    Store(Id),
+    Planned(usize, u64),
+}
+
+struct PlannedNode {
+    len: u64,
+    splits: std::collections::BTreeSet<u64>,
+    right: Option<SimNode>,
+    parent_key: ParentKey,
+    is_type: bool,
+}
+
+struct ExactPopPlanner<'a> {
+    store: &'a DocStore,
+    stack_item: &'a StackItem,
+    remaining_stacks: &'a [&'a [StackItem]],
+    virtual_splits: HashMap<Client, std::collections::BTreeSet<Clock>>,
+    redo_ids: HashSet<Id>,
+    to_redo: Vec<(Id, u64, ItemIdx)>,
+    planned_redone: HashMap<Client, std::collections::BTreeMap<Clock, (u64, usize)>>,
+    planned_nodes: Vec<PlannedNode>,
+    planned_map_tail: HashMap<(ParentKey, SmolStr), usize>,
+    store_tail_right: HashMap<ItemIdx, SimNode>,
+    overwritten_store_items: HashSet<ItemIdx>,
+    total_clocks: u64,
+}
+
+impl<'a> ExactPopPlanner<'a> {
+    fn new(
+        mgr: &'a UndoState,
+        store: &'a DocStore,
+        stack_item: &'a StackItem,
+        insertions: &[(Id, u64)],
+        remaining_stacks: &'a [&'a [StackItem]],
+    ) -> Self {
+        let mut planner = Self {
+            store,
+            stack_item,
+            remaining_stacks,
+            virtual_splits: HashMap::new(),
+            redo_ids: HashSet::new(),
+            to_redo: Vec::new(),
+            planned_redone: HashMap::new(),
+            planned_nodes: Vec::new(),
+            planned_map_tail: HashMap::new(),
+            store_tail_right: HashMap::new(),
+            overwritten_store_items: HashSet::new(),
+            total_clocks: 0,
+        };
+
+        // Seed virtual splits from `clean_items(insertions)` and
+        // `clean_structs(deletions)`.
+        for &(id, len) in insertions {
+            planner.record_split(id);
+            if let Some(end) = id.clock.checked_add(len) {
+                planner.record_split(Id::new(id.client, end));
+            }
+        }
+
+        let mut clients: Vec<_> = stack_item.deletions.keys().copied().collect();
+        clients.sort_unstable();
+        for &client in &clients {
+            let state = store.get_state(client);
+            for range in stack_item.deletions[&client].canonical_ranges() {
+                if range.start >= state {
+                    break;
+                }
+                let end = range.end.min(state);
+                planner.record_split(Id::new(client, range.start));
+                if end < state {
+                    planner.record_split(Id::new(client, end));
+                }
+                if !store.redone.is_empty() {
+                    let mut cursor = range.start;
+                    while cursor < end {
+                        let step = match store.redone.range_at(Id::new(client, cursor)) {
+                            Ok(n) | Err(n) => n.min(end - cursor),
+                        };
+                        cursor += step;
+                        if cursor < end {
+                            planner.record_split(Id::new(client, cursor));
+                        }
+                    }
+                }
+            }
+        }
+
+        // Build `to_redo` and `redo_ids` in exact `clean_structs` order.
+        for client in clients {
+            let Some(nodes) = store.items.get(&client) else {
+                continue;
+            };
+            let state = nodes.end_clock();
+            let ins_ranges = stack_item.insertions.get(&client).map(|r| r.canonical_ranges());
+            for range in stack_item.deletions[&client].canonical_ranges() {
+                if range.start >= state {
+                    break;
+                }
+                let range_end = range.end.min(state);
+                let Some(mut idx) = DocStore::get_node_index(nodes, range.start) else {
+                    continue;
+                };
+                while let Some(node) = nodes.node(client, idx) {
+                    if node.clock() >= range_end {
+                        break;
+                    }
+                    idx += 1;
+                    let Some(item_idx) = node.as_item() else {
+                        continue;
+                    };
+                    let Some(struct_item) = store.type_arena.items.get(item_idx) else {
+                        continue;
+                    };
+                    if !mgr.in_scope(&store.type_arena, struct_item) {
+                        continue;
+                    }
+                    let overlap_lo = range.start.max(node.clock());
+                    let overlap_hi = range_end.min(node.clock() + node.len());
+                    let mut seg_lo = overlap_lo;
+                    while seg_lo < overlap_hi {
+                        let seg_hi = planner
+                            .virtual_splits
+                            .get(&client)
+                            .and_then(|s| s.range((seg_lo + 1)..overlap_hi).next().copied())
+                            .unwrap_or(overlap_hi);
+                        if !ranges_contain_clock(ins_ranges.as_deref(), seg_lo) {
+                            let id = Id::new(client, seg_lo);
+                            planner.redo_ids.insert(id);
+                            planner.to_redo.push((id, seg_hi - seg_lo, item_idx));
+                        }
+                        seg_lo = seg_hi;
+                    }
+                }
+            }
+        }
+
+        planner
+    }
+
+    fn record_split(&mut self, id: Id) {
+        if self
+            .store
+            .get_node(id)
+            .is_some_and(|node| node.is_item() && node.id != id)
+        {
+            self.virtual_splits.entry(id.client).or_default().insert(id.clock);
+        }
+    }
+
+    fn fragment_end(&self, id: Id) -> Option<(ItemIdx, Clock, Clock)> {
+        let node = self.store.get_node(id)?;
+        let item_idx = node.as_item()?;
+        let node_end = node.clock() + node.len();
+        let frag_end = self
+            .virtual_splits
+            .get(&id.client)
+            .and_then(|s| s.range((id.clock + 1)..node_end).next().copied())
+            .unwrap_or(node_end);
+        Some((item_idx, frag_end, node_end))
+    }
+
+    fn planned_redone_get(&self, id: Id) -> Option<(usize, u64)> {
+        let (start, &(len, p_idx)) = self.planned_redone.get(&id.client)?.range(..=id.clock).next_back()?;
+        (id.clock < start + len).then_some((p_idx, id.clock - start))
+    }
+
+    fn planned_redone_insert(&mut self, id: Id, len: u64, p_idx: usize) {
+        self.planned_redone
+            .entry(id.client)
+            .or_default()
+            .insert(id.clock, (len, p_idx));
+    }
+
+    fn clean_planned_start(&mut self, p_idx: usize, offset: u64) -> SimNode {
+        if offset > 0 {
+            self.planned_nodes[p_idx].splits.insert(offset);
+        }
+        SimNode::Planned(p_idx, offset)
+    }
+
+    fn clean_planned_end(&mut self, p_idx: usize, offset: u64) -> SimNode {
+        let p = &mut self.planned_nodes[p_idx];
+        if offset + 1 < p.len {
+            p.splits.insert(offset + 1);
+        }
+        let frag_start = p.splits.range(..=offset).next_back().copied().unwrap_or(0);
+        SimNode::Planned(p_idx, frag_start)
+    }
+
+    fn right_of(&self, node: SimNode) -> Option<SimNode> {
+        match node {
+            SimNode::Planned(p_idx, offset) => {
+                let p = &self.planned_nodes[p_idx];
+                if let Some(&next_off) = p.splits.range((offset + 1)..p.len).next() {
+                    return Some(SimNode::Planned(p_idx, next_off));
+                }
+                p.right
+            }
+            SimNode::Store(id) => {
+                let (item_idx, frag_end, node_end) = self.fragment_end(id)?;
+                if frag_end < node_end {
+                    return Some(SimNode::Store(Id::new(id.client, frag_end)));
+                }
+                let item = self.store.type_arena.items.get(item_idx)?;
+                if let Some(r_idx) = item.right {
+                    let r_id = self.store.type_arena.items.get(r_idx)?.id;
+                    return Some(SimNode::Store(r_id));
+                }
+                self.store_tail_right.get(&item_idx).copied()
+            }
+        }
+    }
+
+    fn left_of_store(&self, id: Id) -> Option<Id> {
+        let node = self.store.get_node(id)?;
+        let item_idx = node.as_item()?;
+        if id.clock > node.clock() {
+            let prev_start = self
+                .virtual_splits
+                .get(&id.client)
+                .and_then(|s| s.range(node.clock()..id.clock).next_back().copied())
+                .unwrap_or(node.clock());
+            return Some(Id::new(id.client, prev_start));
+        }
+        let item = self.store.type_arena.items.get(item_idx)?;
+        let l_idx = item.left?;
+        let l_item = self.store.type_arena.items.get(l_idx)?;
+        let l_lo = l_item.id.clock;
+        let l_hi = l_lo + l_item.len();
+        let last_start = self
+            .virtual_splits
+            .get(&l_item.id.client)
+            .and_then(|s| s.range((l_lo + 1)..l_hi).next_back().copied())
+            .unwrap_or(l_lo);
+        Some(Id::new(l_item.id.client, last_start))
+    }
+
+    fn parent_key_of(&self, node: SimNode) -> Option<ParentKey> {
+        match node {
+            SimNode::Planned(p_idx, _) => Some(self.planned_nodes[p_idx].parent_key),
+            SimNode::Store(id) => self
+                .store
+                .get_node(id)
+                .and_then(|n| n.as_item())
+                .and_then(|i| self.store.type_arena.items.get(i))
+                .and_then(|item| item.parent)
+                .map(ParentKey::Existing),
+        }
+    }
+
+    fn is_skippable_map_right(&self, node: SimNode) -> bool {
+        match node {
+            SimNode::Planned(_, _) => false,
+            SimNode::Store(right_id) => {
+                self.store.redone.get(right_id).is_some()
+                    || self.planned_redone_get(right_id).is_some()
+                    || contains(&self.stack_item.insertions, right_id)
+                    || self
+                        .remaining_stacks
+                        .iter()
+                        .any(|s| s.iter().any(|si| contains(&si.deletions, right_id)))
+            }
+        }
+    }
+
+    fn run(&mut self) -> JwstCodecResult<u64> {
+        let spans = std::mem::take(&mut self.to_redo);
+        for (id, len, item_idx) in spans {
+            let end = id.clock + len;
+            let mut clock = id.clock;
+            while clock < end {
+                let cur_id = Id::new(id.client, clock);
+                let Some((_, frag_end, _)) = self.fragment_end(cur_id) else {
+                    break;
+                };
+                let frag_len = frag_end.min(end) - clock;
+                self.plan_redo_item(cur_id, frag_len, item_idx)?;
+                let next_clock = self.fragment_end(cur_id).map_or(end, |(_, fe, _)| fe.min(end));
+                clock = next_clock;
+            }
+        }
+        Ok(self.total_clocks)
+    }
+
+    fn trace_list_neighbor_splits(&mut self, id: Id, parent_key: ParentKey) {
+        if self.store.redone.is_empty() && self.planned_redone.is_empty() {
+            return;
+        }
+        // Mirror `redo_item`'s left-neighbor `clean_end` trace.
+        let mut left = self.left_of_store(id);
+        while let Some(lid) = left {
+            let mut trace = Some(SimNode::Store(lid));
+            while let Some(SimNode::Store(tid)) = trace
+                && self.parent_key_of(SimNode::Store(tid)) != Some(parent_key)
+            {
+                let Some((_, frag_end, _)) = self.fragment_end(tid) else {
+                    trace = None;
+                    break;
+                };
+                let last_id = Id::new(tid.client, frag_end - 1);
+                if let Some((p_idx, offset)) = self.planned_redone_get(last_id) {
+                    trace = Some(self.clean_planned_end(p_idx, offset));
+                } else if let Some(redone) = self.store.redone.get(last_id) {
+                    if let Some(after) = redone.clock.checked_add(1) {
+                        self.record_split(Id::new(redone.client, after));
+                    }
+                    trace = self
+                        .store
+                        .get_node(redone)
+                        .and_then(|n| n.as_item().map(|_| SimNode::Store(redone)));
+                } else {
+                    trace = None;
+                }
+            }
+            if trace.is_some_and(|t| self.parent_key_of(t) == Some(parent_key)) {
+                break;
+            }
+            left = self.left_of_store(lid);
+        }
+
+        // Mirror `redo_item`'s right-neighbor `clean_start` trace (starts at
+        // `id` itself, so it can self-split the current item).
+        let mut right = Some(SimNode::Store(id));
+        while let Some(SimNode::Store(rid)) = right {
+            let mut trace = Some(SimNode::Store(rid));
+            while let Some(SimNode::Store(tid)) = trace
+                && self.parent_key_of(SimNode::Store(tid)) != Some(parent_key)
+            {
+                if let Some((p_idx, offset)) = self.planned_redone_get(tid) {
+                    trace = Some(self.clean_planned_start(p_idx, offset));
+                } else if let Some(redone) = self.store.redone.get(tid) {
+                    self.record_split(redone);
+                    trace = self
+                        .store
+                        .get_node(redone)
+                        .and_then(|n| n.as_item().map(|_| SimNode::Store(redone)));
+                } else {
+                    trace = None;
+                }
+            }
+            if trace.is_some_and(|t| self.parent_key_of(t) == Some(parent_key)) {
+                break;
+            }
+            right = self.right_of(SimNode::Store(rid));
+        }
+    }
+
+    fn plan_redo_item(&mut self, id: Id, len: u64, item_idx: ItemIdx) -> JwstCodecResult<Option<SimNode>> {
+        if let Some((p_idx, offset)) = self.planned_redone_get(id) {
+            return Ok(Some(self.clean_planned_start(p_idx, offset)));
+        }
+        if let Some(redone) = self.store.redone.get(id) {
+            self.record_split(redone);
+            let exists = self.store.get_node(redone).and_then(|n| n.as_item()).is_some();
+            return Ok(exists.then_some(SimNode::Store(redone)));
+        }
+
+        let Some(item) = self.store.type_arena.items.get(item_idx) else {
+            return Ok(None);
+        };
+        if matches!(item.content, Content::Deleted(_)) {
+            return Ok(None);
+        }
+        let Some(item_parent) = item.parent else {
+            return Ok(None);
+        };
+        let parent_sub = item.parent_sub.clone();
+        let is_type = matches!(item.content, Content::Type(_));
+        let has_right = self.right_of(SimNode::Store(id)).is_some();
+
+        // Ensure parent carrier is live or recreatable (and plan it if
+        // deleted).
+        let parent_key = match self.resolve_parent_key(item_parent)? {
+            Some(key) => key,
+            None => return Ok(None),
+        };
+
+        if parent_sub.is_some() {
+            if has_right {
+                let mut left = SimNode::Store(id);
+                while let Some(right_node) = self.right_of(left)
+                    && self.is_skippable_map_right(right_node)
+                {
+                    left = right_node;
+                    while let SimNode::Store(lid) = left {
+                        if let Some((p_idx, offset)) = self.planned_redone_get(lid) {
+                            left = self.clean_planned_start(p_idx, offset);
+                            continue;
+                        }
+                        if let Some(redone_id) = self.store.redone.get(lid) {
+                            self.record_split(redone_id);
+                            if self.store.get_node(redone_id).and_then(|n| n.as_item()).is_none() {
+                                return Ok(None);
+                            }
+                            left = SimNode::Store(redone_id);
+                            continue;
+                        }
+                        break;
+                    }
+                }
+                if self.right_of(left).is_some() {
+                    return Ok(None);
+                }
+            }
+        } else {
+            self.trace_list_neighbor_splits(id, parent_key);
+        }
+
+        // Re-read the fragment length after neighbor/parent tracing in case
+        // tracing split the current item itself.
+        let actual_len = self.fragment_end(id).map_or(len, |(_, fe, _)| (fe - id.clock).min(len));
+        self.total_clocks = self
+            .total_clocks
+            .checked_add(actual_len)
+            .ok_or_else(|| JwstCodecError::IncompleteDocument("struct clock overflow".into()))?;
+        let p_idx = self.planned_nodes.len();
+        self.planned_nodes.push(PlannedNode {
+            len: actual_len,
+            splits: std::collections::BTreeSet::new(),
+            right: None,
+            parent_key,
+            is_type,
+        });
+        if let Some(key) = parent_sub {
+            self.append_planned_map_tail(parent_key, key, p_idx);
+        }
+        self.planned_redone_insert(id, actual_len, p_idx);
+        Ok(Some(SimNode::Planned(p_idx, 0)))
+    }
+
+    fn resolve_parent_key(&mut self, item_parent: TypeIdx) -> JwstCodecResult<Option<ParentKey>> {
+        let Some(carrier_idx) = self.store.type_arena[item_parent].carrier_ref() else {
+            return Ok(Some(ParentKey::Existing(item_parent)));
+        };
+        let Some(carrier) = self.store.type_arena.items.get(carrier_idx) else {
+            return Ok(None);
+        };
+        if !carrier.deleted() {
+            // Check whether an earlier planned map recreation in this pop
+            // overwrote (and cascade-deleted) this live carrier or any of its
+            // ancestors. Only applies to carriers that were live before the
+            // pop; never to `redone` targets of already-deleted carriers.
+            if self.is_live_carrier_overwritten(carrier_idx) {
+                return Ok(None);
+            }
+            return Ok(Some(ParentKey::Existing(item_parent)));
+        }
+        let carrier_id = carrier.id;
+        if self.store.redone.get(carrier_id).is_none() && self.planned_redone_get(carrier_id).is_none() {
+            if !self.redo_ids.contains(&carrier_id) {
+                return Ok(None);
+            }
+            if self.plan_redo_item(carrier_id, 1, carrier_idx)?.is_none() {
+                return Ok(None);
+            }
+        }
+
+        let mut cur = SimNode::Store(carrier_id);
+        while let SimNode::Store(cid) = cur {
+            if let Some((p_idx, offset)) = self.planned_redone_get(cid) {
+                cur = self.clean_planned_start(p_idx, offset);
+                continue;
+            }
+            if let Some(redone_id) = self.store.redone.get(cid) {
+                self.record_split(redone_id);
+                if self.store.get_node(redone_id).and_then(|n| n.as_item()).is_none() {
+                    return Ok(None);
+                }
+                cur = SimNode::Store(redone_id);
+                continue;
+            }
+            break;
+        }
+
+        match cur {
+            SimNode::Planned(p_idx, _) => Ok(self.planned_nodes[p_idx].is_type.then_some(ParentKey::Planned(p_idx))),
+            SimNode::Store(cid) => {
+                let ty = self
+                    .store
+                    .get_node(cid)
+                    .and_then(|n| n.as_item())
+                    .and_then(|i| self.store.type_arena.items.get(i))
+                    .and_then(|item| match item.content {
+                        Content::Type(ty) => Some(ty),
+                        _ => None,
+                    });
+                Ok(ty.map(ParentKey::Existing))
+            }
+        }
+    }
+
+    fn is_live_carrier_overwritten(&self, mut carrier_idx: ItemIdx) -> bool {
+        if self.overwritten_store_items.is_empty() {
+            return false;
+        }
+        loop {
+            if self.overwritten_store_items.contains(&carrier_idx) {
+                return true;
+            }
+            let Some(parent_ty) = self
+                .store
+                .type_arena
+                .items
+                .get(carrier_idx)
+                .and_then(|item| item.parent)
+            else {
+                return false;
+            };
+            let Some(next_carrier) = self.store.type_arena[parent_ty].carrier_ref() else {
+                return false;
+            };
+            carrier_idx = next_carrier;
+        }
+    }
+
+    fn append_planned_map_tail(&mut self, parent_key: ParentKey, key: SmolStr, new_p_idx: usize) {
+        if let Some(prev_p_idx) = self.planned_map_tail.insert((parent_key, key.clone()), new_p_idx) {
+            self.planned_nodes[prev_p_idx].right = Some(SimNode::Planned(new_p_idx, 0));
+            return;
+        }
+        if let ParentKey::Existing(pty) = parent_key
+            && let Some(Some(tail_idx)) = self.store.type_arena[pty].map_get(&key)
+            && let Some(tail_item) = self.store.type_arena.items.get(*tail_idx)
+        {
+            self.store_tail_right.insert(*tail_idx, SimNode::Planned(new_p_idx, 0));
+            if !tail_item.deleted() {
+                self.overwritten_store_items.insert(*tail_idx);
+            }
+        }
+    }
+}
+
+fn ranges_contain_clock(ranges: Option<&[std::ops::Range<Clock>]>, clock: Clock) -> bool {
+    let Some(ranges) = ranges else {
+        return false;
+    };
+    let pos = ranges.partition_point(|r| r.end <= clock);
+    ranges.get(pos).is_some_and(|r| r.start <= clock)
 }
 
 fn clean_structs(store: &mut DocStore, set: &DeleteSet) -> JwstCodecResult<Vec<Node>> {
@@ -1062,7 +1753,20 @@ fn clean_structs(store: &mut DocStore, set: &DeleteSet) -> JwstCodecResult<Vec<N
             if range.start >= state {
                 break;
             }
-            structs.extend(clean_range(store, Id::new(client, range.start), range.end.min(state))?);
+            let end = range.end.min(state);
+            if !store.redone.is_empty() {
+                let mut cursor = range.start;
+                while cursor < end {
+                    let step = match store.redone.range_at(Id::new(client, cursor)) {
+                        Ok(n) | Err(n) => n.min(end - cursor),
+                    };
+                    cursor += step;
+                    if cursor < end {
+                        clean_start(store, Id::new(client, cursor))?;
+                    }
+                }
+            }
+            structs.extend(clean_range(store, Id::new(client, range.start), end)?);
         }
     }
     Ok(structs)
@@ -1117,11 +1821,10 @@ impl RedoContext<'_> {
 /// recreated with it, a remote change took its map key, or its content was
 /// already collected.
 fn redo_item(store: &mut DocStore, ctx: &RedoContext<'_>, idx: ItemIdx) -> JwstCodecResult<Option<ItemRef>> {
-    let (id, len, item_parent, parent_sub, item_left, has_right) = {
+    let (id, item_parent, parent_sub, item_left, has_right) = {
         let item = store.type_arena.items.get(idx).expect("retained item");
         (
             item.id,
-            item.len(),
             item.parent,
             item.parent_sub.clone(),
             item.left,
@@ -1245,10 +1948,11 @@ fn redo_item(store: &mut DocStore, ctx: &RedoContext<'_>, idx: ItemIdx) -> JwstC
     let content = copy_content(store, idx)?;
     let new_id = Id::new(store.client(), store.get_state(store.client()));
     let owned = store.create_item(content, left, right, Some(parent_type), parent_sub);
+    let actual_len = owned.len();
     let Some(redone) = store.integrate_item(owned, 0, None)? else {
         return Ok(None);
     };
-    store.register_redone(id, len, new_id);
+    store.register_redone(id, actual_len, new_id);
     Ok(Some(Some(redone)))
 }
 

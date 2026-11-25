@@ -1,0 +1,17 @@
+{
+  "replicas": [
+    { "client": 1, "gc": false },
+    { "client": 2, "gc": false }
+  ],
+  "steps": [
+    { "op": "insert", "replica": 0, "after": null, "text": "abc" },
+    { "op": "sync", "from": 0, "to": 1 },
+    { "op": "insert", "replica": 0, "after": [1, 1], "text": "XY" },
+    { "op": "insert", "replica": 1, "after": [1, 1], "text": "pq" },
+    { "op": "delete", "replica": 1, "ranges": [[1, 0, 1]] },
+    { "op": "sync", "from": 0, "to": 1 },
+    { "op": "sync", "from": 1, "to": 0 },
+    { "op": "gc", "replica": 0 },
+    { "op": "gc", "replica": 1 }
+  ]
+}

@@ -41,26 +41,30 @@ The default decoder accepts `Any` nesting up to 128 levels. For trusted inputs, 
 
 ## Performance
 
-| Tasks | automerge v0.12.0 (2026-09-16) | loro v1.18.0 (2026-11-16) | diamond-types v1.0.0 (2022-08-25) | y-octo v0.4.0 | yrs v0.28.2 (2026-11-19) |
-| :---- | :---- | :---- | :---- | :---- | :---- |
-| automerge - apply | 2136.55 ± 8.88 ms | 49.37 ± 0.43 ms | 9.57 ± 0.07 ms | 165.96 ± 0.38 ms | 2358.02 ± 20.35 ms |
-| automerge - decode time | 210.56 ± 2.51 ms | 106.23 ± 0.21 us | 1.46 ± 0.01 ms | 3.79 ± 0.01 ms | 2.45 ± 0.02 ms |
-| automerge - encode time | 155.90 ± 1.51 us | 174.01 ± 1.31 us | 717.02 ± 3.28 us | 568.37 ± 3.92 us | 426.80 ± 6.78 us |
-| concurrent list inserts | 77.62 ± 0.36 ms | 102.69 ± 1.65 ms | 35.17 ± 0.25 ms | 7.37 ± 0.03 ms | 7.76 ± 0.07 ms |
-| list_random_insert_1k | 337.38 ± 4.14 ms | 8.20 ± 0.12 ms | 2.56 ± 0.00 ms | 1.81 ± 0.00 ms | 3.19 ± 0.02 ms |
-| parallel applying automerge edits | 8351.01 ± 15.00 ms | 182.84 ± 1.47 ms | 91.69 ± 0.79 ms | 405.87 ± 1.47 ms | 6264.56 ± 126.42 ms |
+| Tasks | automerge v0.12.0 (2026-09-16) | loro v1.19.1 (2026-11-24) | diamond-types v1.0.0 (2022-08-25) | y-octo v0.4.1 | yrs v0.28.2 (2026-11-19) | crdt(pion) v0.2.0 (`f66e02f`) |
+| :---- | :---- | :---- | :---- | :---- | :---- | :---- |
+| automerge - apply | 2087.10 ± 1.91 ms | 48.92 ± 0.21 ms | 9.57 ± 0.04 ms | 98.39 ± 0.16 ms | 2438.34 ± 24.32 ms | 556.21 ± 2.54 ms |
+| automerge - decode time | 201.84 ± 1.86 ms | 90.64 ± 0.46 us | 1.53 ± 0.01 ms | 2.64 ± 0.00 ms | 2.42 ± 0.02 ms | 3.44 ± 0.04 ms |
+| automerge - encode time | 146.25 ± 0.44 us | 45.16 ± 0.13 us | 761.55 ± 4.69 us | 370.21 ± 0.69 us | 402.73 ± 3.38 us | 6.79 ± 0.39 ms |
+| concurrent list inserts | 113.36 ± 0.27 ms | 75.79 ± 1.56 ms | 35.43 ± 0.38 ms | 5.96 ± 0.02 ms | 7.57 ± 0.03 ms | 7.97 ± 0.10 ms |
+| list_random_insert_1k | 331.43 ± 0.63 ms | 5.22 ± 0.03 ms | 2.72 ± 0.06 ms | 1.37 ± 0.00 ms | 3.38 ± 0.06 ms | 1.78 ± 0.01 ms |
+| parallel applying automerge edits | 8413.91 ± 29.70 ms | 200.95 ± 1.36 ms | 88.47 ± 0.38 ms | 315.97 ± 0.51 ms | 6044.18 ± 83.54 ms | 1533.16 ± 27.67 ms |
+| text - append 50k | 144.56 ± 0.23 ms | 6.16 ± 0.02 ms | 1.19 ± 0.01 ms | 5.83 ± 0.05 ms | 13.57 ± 0.07 ms | 7.48 ± 0.11 ms |
+| text - backspace 50k | 97.65 ± 0.18 ms | 1006.59 ± 6.24 ms | 2.86 ± 0.01 ms | 26.44 ± 0.02 ms | 1774.49 ± 5.07 ms | 1020.77 ± 4.73 ms |
+| text - random edits 20k | 250.50 ± 0.35 ms | 6.13 ± 0.08 ms | 1.63 ± 0.01 ms | 14.54 ± 0.11 ms | 421.82 ± 2.64 ms | 30.05 ± 0.20 ms |
+| text - tombstone 50k | 320.08 ± 0.35 ms | 152.87 ± 0.87 ms | 3.33 ± 0.01 ms | 31.39 ± 0.08 ms | 2120.27 ± 30.28 ms | 1768.38 ± 132.89 ms |
 
-Measured on Apple M5 Max with rustc 1.96.0 and crdt-bench-native revision `0452093`. Each value is the Criterion mean ± standard error across 10 samples. The y-octo adapter uses Update V1 with `large_refs`; the Yrs adapter uses Update V2.
+Measured on Apple M5 Max (macOS arm64) with rustc 1.96.0, pionc 0.1.0 (ABI pionc-v0.22), and `crdt-bench-native` revision `29c7c67`. Values show mean elapsed time ± standard error across 10 samples. The Rust adapters use Criterion. The Pion adapter uses a monotonic clock. y-octo and Pion use Update V1. Yrs uses Update V2.
 
-The parallel workload applies the full Automerge trace to two replicas in random batches of 1–1000 local edits, synchronizes after each pair of batches, and verifies replica convergence.
+The parallel workload applies the full Automerge trace to two replicas in random batches of 1–1000 local edits, synchronizes after each pair of batches, and verifies replica convergence. The four `text - *` workloads run deterministic pure-ASCII text editing patterns (sequential 50k appends, 50k single-char tail backspaces, 20k mixed cursor/random edits, and 50k half-deleted tombstone field + 10k random inserts) verified for identical final text across all six implementations.
 
 Ref: https://github.com/darkskygit/crdt-bench-native
 
 ## Features
 
-- ✅: Supported by yjs; supported and compatible with y-octo
-- 🚧: Supported by yjs; in development for y-octo
-- ➕: Exclusive to y-octo
+- ✅ Supported by Yjs and compatible with y-octo
+- 🚧 Supported by Yjs and in development for y-octo
+- ➕ Exclusive to y-octo
 
 - **Collaborative text**
   - ✅ Rich-text deltas, formatting attributes, and UTF-16 offsets
@@ -81,13 +85,16 @@ Ref: https://github.com/darkskygit/crdt-bench-native
   - ✅ Encode and apply Update V1, exchange state vectors, and diff or merge encoded updates
   - ✅ Exchange sync and awareness messages with `y-protocols` peers
   - 🚧 Update V2 encoding and decoding
-  - ➕ Validate a complete V1 update with `validate_update_v1`
+  - ➕ Validate V1 update bytes before applying them with `validate_update_v1`
   - ➕ Query a full V1 update through the read-only `ReadDoc` view
   - ➕ Compute a V1 delta back to an ancestor snapshot with `revert_update_v1`
 - **WebAssembly**
   - ➕ Use `DocSession` from JavaScript through a Wasm module with no host imports
-- **Code quality**
-  - ➕ A completely unsafe-free, thread-safe implementation of Yjs
+  - ➕ Insert or remove text and read its UTF-16 length through direct Wasm calls
+- **Rust core and verification**
+  - ➕ The document engine and its dependency-free, `no_std` core forbid unsafe Rust
+  - ➕ Lean 4 proofs cover client clock lookup, deletion ranges, and conflict-scan decisions used by the document engine
+  - ➕ Differential tests replay the same edits in Rust and an executable Lean model of YATA
 
 ## Testing & Linting
 

@@ -1,0 +1,107 @@
+name: Lean YATA model
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  elan: v4.4.0
+  elan_sha256: 0e8250aa2be86c7af929ade68db617af9edc8b9ccf6eaf5ece228250d0d032e2
+
+permissions:
+  contents: read
+
+# Cancels all previous workflow runs for pull requests that have not completed.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.head_ref || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  lean-yata:
+    name: Lean proofs, axiom audit & differential test
+    runs-on: ubuntu-latest
+    env:
+      RUSTFLAGS: -D warnings
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check relevant changes
+        id: changes
+        run: |
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          BASE_SHA="${{ github.event.pull_request.base.sha }}"
+          git fetch --no-tags --depth=1 origin "$BASE_SHA"
+          CHANGED="$(git diff --no-renames --name-only "$BASE_SHA"...HEAD 2>/dev/null || git diff --no-renames --name-only "$BASE_SHA" HEAD)"
+          if printf '%s\n' "$CHANGED" | grep -qE '^(y-octo/|y-octo-core/|proofs-yata/|Cargo\.|\.github/actions/|\.github/workflows/lean-yata\.yml$)'; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No y-octo or YATA Lean files changed; skipping Lean YATA build and differential test."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Before the first file of `YoctoSpec` is built: a source could run code
+      # at build time and rewrite the audit that reads it afterwards.
+      - name: Audit the sources before they are built
+        if: steps.changes.outputs.run == 'true'
+        run: bash proofs-yata/scripts/audit.sh --static
+
+      # The project has no Lean dependencies (no mathlib): the toolchain and
+      # the build directory are all there is to cache.
+      - name: Cache elan and the Lean build
+        if: steps.changes.outputs.run == 'true'
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.elan
+            proofs-yata/.lake
+          key: lean-yata-${{ runner.os }}-${{ runner.arch }}-${{ env.elan }}-${{ hashFiles('proofs-yata/lean-toolchain', 'proofs-yata/lakefile.toml', 'proofs-yata/lake-manifest.json') }}-${{ hashFiles('proofs-yata/**/*.lean') }}
+          restore-keys: |
+            lean-yata-${{ runner.os }}-${{ runner.arch }}-${{ env.elan }}-${{ hashFiles('proofs-yata/lean-toolchain', 'proofs-yata/lakefile.toml', 'proofs-yata/lake-manifest.json') }}-
+
+      - name: Install elan
+        if: steps.changes.outputs.run == 'true'
+        run: |
+          if [ ! -x "$HOME/.elan/bin/elan" ]; then
+            curl -sSfL -o elan.tar.gz "https://github.com/leanprover/elan/releases/download/${{ env.elan }}/elan-x86_64-unknown-linux-gnu.tar.gz"
+            echo "${{ env.elan_sha256 }}  elan.tar.gz" | sha256sum -c -
+            tar -xzf elan.tar.gz
+            ./elan-init -y --default-toolchain none
+            rm -f elan.tar.gz elan-init
+          fi
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+
+      - name: Build the model and the proofs
+        if: steps.changes.outputs.run == 'true'
+        working-directory: proofs-yata
+        run: lake build --wfail
+
+      # The sources once more, then the compiled modules: a program that
+      # imports `Lean` only reads the `.olean` files, sends every constant of
+      # `YoctoSpec` to the kernel again and computes its axioms.
+      - name: Audit the compiled modules (kernel replay, axioms, required theorems)
+        if: steps.changes.outputs.run == 'true'
+        working-directory: proofs-yata
+        run: ./scripts/audit.sh
+
+      - name: Run the model on its own trace
+        if: steps.changes.outputs.run == 'true'
+        working-directory: proofs-yata
+        run: .lake/build/bin/yocto-spec traces/smoke.json > /dev/null
+
+      - name: Setup Rust
+        if: steps.changes.outputs.run == 'true'
+        uses: ./.github/actions/setup-rust
+
+      - name: Differential test against y-octo
+        if: steps.changes.outputs.run == 'true'
+        run: |
+          export YOCTO_SPEC_BIN="$PWD/proofs-yata/.lake/build/bin/yocto-spec"
+          export YOCTO_SPEC_REQUIRE=1
+          cargo test -p y-octo --test lean_yata_differential -- --nocapture

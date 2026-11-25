@@ -963,3 +963,376 @@ fn legacy_content_json_reads_elements_for_array_and_map() {
         Some(SessionReadValue::Any(Any::String("last".into())))
     );
 }
+
+#[test]
+fn borrowed_root_text_methods_match_target_methods() {
+    let mut s = DocSession::<Vec<u8>>::with_config(
+        DocOptions::from_identity(1, "root-fast".into()),
+        SessionConfig {
+            undo: SessionUndoConfig::Disabled,
+        },
+    );
+    assert!(matches!(
+        s.read_text_len_root("missing"),
+        Err(JwstCodecError::RootStructNotFound(_))
+    ));
+    assert!(matches!(
+        s.text_insert_root("missing", 0, "a"),
+        Err(JwstCodecError::RootStructNotFound(_))
+    ));
+    assert!(matches!(
+        s.text_remove_root("missing", 0, 1),
+        Err(JwstCodecError::RootStructNotFound(_))
+    ));
+
+    let map_id = s.ensure_root("m", YTypeKind::Map).unwrap();
+    assert!(matches!(
+        s.read_text_len_root("m"),
+        Err(JwstCodecError::UnexpectedType(_))
+    ));
+    assert!(matches!(
+        s.text_insert_root("m", 0, "a"),
+        Err(JwstCodecError::UnexpectedType(_))
+    ));
+    assert!(matches!(
+        s.text_remove_root("m", 0, 1),
+        Err(JwstCodecError::UnexpectedType(_))
+    ));
+    let _ = map_id;
+
+    let text_id = s.ensure_root("t", YTypeKind::Text).unwrap();
+    let target = TypeTarget::Identity(text_id);
+    assert_eq!(s.read_text_len_root("t").unwrap(), 0);
+    let c1 = s.text_insert_root("t", 0, "hello😀").unwrap().unwrap();
+    assert_eq!(s.read_text_len_root("t").unwrap(), 7);
+    assert_eq!(s.read_text_len(&target).unwrap(), 7);
+    assert_eq!(c1.revision, 1);
+
+    // No-op empty insert / zero-len remove return None
+    assert!(s.text_insert_root("t", 0, "").unwrap().is_none());
+    assert!(s.text_remove_root("t", 0, 0).unwrap().is_none());
+
+    // Out of bounds errors
+    assert!(matches!(
+        s.text_insert_root("t", 99, "x"),
+        Err(JwstCodecError::IndexOutOfBound(99))
+    ));
+    assert!(matches!(
+        s.text_remove_root("t", 7, 1),
+        Err(JwstCodecError::IndexOutOfBound(7))
+    ));
+
+    // Inside begin_tx returns None until commit_tx
+    s.begin_tx(SessionTxOrigin::Tracked).unwrap();
+    assert!(s.text_remove_root("t", 5, 2).unwrap().is_none());
+    assert_eq!(s.read_text_len_root("t").unwrap(), 5);
+    assert!(s.text_insert_root("t", 5, "!").unwrap().is_none());
+    let c2 = s.commit_tx().unwrap().unwrap();
+    assert_eq!(c2.revision, 2);
+    assert_eq!(s.read_text_string(&target).unwrap(), "hello!");
+}
+
+#[test]
+fn standalone_fastpath_matches_commit_store_parity() {
+    fn normalize_changed(mut changed: Vec<SessionChangedType>) -> Vec<SessionChangedType> {
+        changed.sort_by(|a, b| format!("{:?}", a.identity).cmp(&format!("{:?}", b.identity)));
+        changed
+    }
+
+    fn assert_commit_eq(
+        fast: Option<SessionCommit<Vec<u8>>>,
+        slow: Option<SessionCommit<Vec<u8>>>,
+        step: &str,
+        exact_bytes: bool,
+    ) {
+        match (fast, slow) {
+            (None, None) => {}
+            (Some(f), Some(s)) => {
+                assert_eq!(f.revision, s.revision, "{step}: revision");
+                if exact_bytes {
+                    assert_eq!(f.update, s.update, "{step}: update bytes");
+                } else {
+                    let uf = Update::decode_v1(&f.update).unwrap();
+                    let us = Update::decode_v1(&s.update).unwrap();
+                    assert_eq!(uf.structs, us.structs, "{step}: decoded structs");
+                    assert_eq!(uf.delete_set, us.delete_set, "{step}: decoded delete_set");
+                }
+                assert_eq!(f.is_local, s.is_local, "{step}: is_local");
+                assert_eq!(f.origin_kind, s.origin_kind, "{step}: origin_kind");
+                assert_eq!(
+                    normalize_changed(f.changed),
+                    normalize_changed(s.changed),
+                    "{step}: changed"
+                );
+                assert_eq!(f.subdocs_added, s.subdocs_added, "{step}: subdocs_added");
+                assert_eq!(f.subdocs_removed, s.subdocs_removed, "{step}: subdocs_removed");
+                assert!(!f.can_undo && !f.can_redo);
+                assert!(f.selection_meta.is_none());
+            }
+            (f, s) => panic!("{step}: Some/None mismatch: fast={f:?} slow={s:?}"),
+        }
+    }
+
+    // Prepare multi-peer seed updates (client 2 < 50 < 200)
+    let peer_small = {
+        let mut p = DocSession::<Vec<u8>>::with_config(
+            DocOptions::from_identity(2, "parity".into()).auto_gc(true),
+            SessionConfig {
+                undo: SessionUndoConfig::Disabled,
+            },
+        );
+        let t: TypeTarget = p.ensure_root("txt", YTypeKind::Text).unwrap().into();
+        let m: TypeTarget = p.ensure_root("mp", YTypeKind::Map).unwrap().into();
+        let a: TypeTarget = p.ensure_root("arr", YTypeKind::Array).unwrap().into();
+        let x: TypeTarget = p.ensure_root("xml", YTypeKind::XMLElement).unwrap().into();
+        p.text_insert(&t, 0, "seed-small ").unwrap();
+        p.map_set(&m, "k0".into(), SessionValue::Any(Any::Integer(10))).unwrap();
+        p.array_push(&a, vec![SessionValue::Any(Any::String("a0".into()))])
+            .unwrap();
+        p.xml_set_attr(&x, "role".into(), Any::String("init".into())).unwrap();
+        p.encode_update_v1().unwrap()
+    };
+    let peer_large = {
+        let mut p = DocSession::<Vec<u8>>::with_config(
+            DocOptions::from_identity(200, "parity".into()).auto_gc(true),
+            SessionConfig {
+                undo: SessionUndoConfig::Disabled,
+            },
+        );
+        let t: TypeTarget = p.ensure_root("txt", YTypeKind::Text).unwrap().into();
+        p.text_insert(&t, 0, "large-peer").unwrap();
+        p.encode_update_v1().unwrap()
+    };
+
+    for gc in [true, false] {
+        // Fast session: undo Disabled (takes zero-StateVector fast path)
+        let mut fast = DocSession::<Vec<u8>>::with_config(
+            DocOptions::from_identity(50, "parity".into()).auto_gc(gc),
+            SessionConfig {
+                undo: SessionUndoConfig::Disabled,
+            },
+        );
+        // Reference session: undo Custom with an untracked-only stack so
+        // `has_history_hub == true` (forces `commit_store` cold path) while
+        // NOT retaining GC ranges for Tracked edits (preserving identical GC).
+        let mut slow = DocSession::<Vec<u8>>::with_config(
+            DocOptions::from_identity(50, "parity".into()).auto_gc(gc),
+            SessionConfig {
+                undo: SessionUndoConfig::Custom,
+            },
+        );
+        slow.create_undo_stack(&[], 0, &[SessionTxOrigin::Untracked]).unwrap();
+
+        for s in [&mut fast, &mut slow] {
+            s.ensure_root("txt", YTypeKind::Text).unwrap();
+            s.ensure_root("mp", YTypeKind::Map).unwrap();
+            s.ensure_root("arr", YTypeKind::Array).unwrap();
+            s.ensure_root("xml", YTypeKind::XMLElement).unwrap();
+            s.apply_update_v1(&peer_small).unwrap();
+            s.apply_update_v1(&peer_large).unwrap();
+        }
+
+        let txt: TypeTarget = TypeIdentity::Root("txt".into()).into();
+        let mp: TypeTarget = TypeIdentity::Root("mp".into()).into();
+        let arr: TypeTarget = TypeIdentity::Root("arr".into()).into();
+        let xml: TypeTarget = TypeIdentity::Root("xml".into()).into();
+
+        // 1. Plain text insert & remove (both root & target)
+        assert_commit_eq(
+            fast.text_insert_root("txt", 0, "hello😀").unwrap(),
+            slow.text_insert_root("txt", 0, "hello😀").unwrap(),
+            "text_insert_root",
+            true,
+        );
+        assert_commit_eq(
+            fast.text_remove_root("txt", 5, 2).unwrap(),
+            slow.text_remove_root("txt", 5, 2).unwrap(),
+            "text_remove_root (delete-only)",
+            true,
+        );
+
+        // 2. Empty/no-op writes
+        assert_commit_eq(
+            fast.text_insert(&txt, 0, "").unwrap(),
+            slow.text_insert(&txt, 0, "").unwrap(),
+            "empty text_insert",
+            true,
+        );
+        assert_commit_eq(
+            fast.text_remove(&txt, 0, 0).unwrap(),
+            slow.text_remove(&txt, 0, 0).unwrap(),
+            "zero text_remove",
+            true,
+        );
+        assert_commit_eq(
+            fast.map_remove(&mp, "nonexistent").unwrap(),
+            slow.map_remove(&mp, "nonexistent").unwrap(),
+            "missing map_remove",
+            true,
+        );
+
+        // 3. Out-of-bounds errors do not diverge or corrupt collector
+        assert!(fast.text_insert_root("txt", 9999, "x").is_err());
+        assert!(slow.text_insert_root("txt", 9999, "x").is_err());
+        assert!(fast.text_remove_root("txt", 9999, 1).is_err());
+        assert!(slow.text_remove_root("txt", 9999, 1).is_err());
+
+        // 4. Formatted text & embed & delta
+        let mut attrs = TextAttributes::new();
+        attrs.insert("bold".into(), Any::True);
+        assert_commit_eq(
+            fast.text_format(&txt, 0, 5, attrs.clone()).unwrap(),
+            slow.text_format(&txt, 0, 5, attrs).unwrap(),
+            "text_format",
+            true,
+        );
+        assert_commit_eq(
+            fast.text_insert_embed(&txt, 5, Any::Integer(7)).unwrap(),
+            slow.text_insert_embed(&txt, 5, Any::Integer(7)).unwrap(),
+            "text_insert_embed",
+            true,
+        );
+        let delta = vec![
+            TextDeltaOp::Retain {
+                retain: 2,
+                format: None,
+            },
+            TextDeltaOp::Delete { delete: 2 },
+            TextDeltaOp::Insert {
+                insert: TextInsert::Text("XX".into()),
+                format: None,
+            },
+        ];
+        assert_commit_eq(
+            fast.text_apply_delta(&txt, &delta).unwrap(),
+            slow.text_apply_delta(&txt, &delta).unwrap(),
+            "text_apply_delta",
+            true,
+        );
+
+        // 5. Map nested creation + modification + delete + clear
+        let nested_val = SessionValue::Map(vec![
+            ("inner".into(), SessionValue::Any(Any::String("v1".into()))),
+            (
+                "sub_b".into(),
+                SessionValue::Doc {
+                    guid: "doc-b".into(),
+                    gc: true,
+                },
+            ),
+            (
+                "sub_a".into(),
+                SessionValue::Doc {
+                    guid: "doc-a".into(),
+                    gc: false,
+                },
+            ),
+        ]);
+        // Subdoc opts is an `Any::Object` (HashMap) whose key serialization
+        // order depends on per-map ahash seed, so compare decoded `Update`
+        // here.
+        assert_commit_eq(
+            fast.map_set(&mp, "nested".into(), nested_val.clone()).unwrap(),
+            slow.map_set(&mp, "nested".into(), nested_val).unwrap(),
+            "map_set nested with subdocs",
+            false,
+        );
+        let nested_path: TypeTarget = TypePath::root("mp").key("nested").into();
+        assert_commit_eq(
+            fast.map_set(&nested_path, "inner".into(), SessionValue::Any(Any::Integer(42)))
+                .unwrap(),
+            slow.map_set(&nested_path, "inner".into(), SessionValue::Any(Any::Integer(42)))
+                .unwrap(),
+            "nested map_set",
+            true,
+        );
+        // Replace subdoc (removes old, adds new)
+        assert_commit_eq(
+            fast.map_set(
+                &nested_path,
+                "sub_a".into(),
+                SessionValue::Doc {
+                    guid: "doc-c".into(),
+                    gc: true,
+                },
+            )
+            .unwrap(),
+            slow.map_set(
+                &nested_path,
+                "sub_a".into(),
+                SessionValue::Doc {
+                    guid: "doc-c".into(),
+                    gc: true,
+                },
+            )
+            .unwrap(),
+            "replace subdoc",
+            false,
+        );
+        assert_commit_eq(
+            fast.map_remove(&mp, "k0").unwrap(),
+            slow.map_remove(&mp, "k0").unwrap(),
+            "map_remove",
+            true,
+        );
+        assert_commit_eq(
+            fast.map_clear(&nested_path).unwrap(),
+            slow.map_clear(&nested_path).unwrap(),
+            "map_clear with subdocs",
+            true,
+        );
+
+        // 6. Array insert / push / remove
+        assert_commit_eq(
+            fast.array_insert(&arr, 0, vec![SessionValue::Any(Any::Integer(1))])
+                .unwrap(),
+            slow.array_insert(&arr, 0, vec![SessionValue::Any(Any::Integer(1))])
+                .unwrap(),
+            "array_insert",
+            true,
+        );
+        assert_commit_eq(
+            fast.array_push(&arr, vec![SessionValue::Any(Any::True)]).unwrap(),
+            slow.array_push(&arr, vec![SessionValue::Any(Any::True)]).unwrap(),
+            "array_push",
+            true,
+        );
+        assert_commit_eq(
+            fast.array_remove(&arr, 0, 1).unwrap(),
+            slow.array_remove(&arr, 0, 1).unwrap(),
+            "array_remove",
+            true,
+        );
+
+        // 7. XML attrs
+        assert_commit_eq(
+            fast.xml_set_attr(&xml, "id".into(), Any::String("x1".into())).unwrap(),
+            slow.xml_set_attr(&xml, "id".into(), Any::String("x1".into())).unwrap(),
+            "xml_set_attr",
+            true,
+        );
+        assert_commit_eq(
+            fast.xml_remove_attr(&xml, "role").unwrap(),
+            slow.xml_remove_attr(&xml, "role").unwrap(),
+            "xml_remove_attr",
+            true,
+        );
+
+        // Final full V1 snapshot must be identical (exact bytes when GC cleared
+        // subdoc opts, decoded equality when GC=false retains subdoc opts
+        // HashMap)
+        let fast_snap = fast.encode_update_v1().unwrap();
+        let slow_snap = slow.encode_update_v1().unwrap();
+        if gc {
+            assert_eq!(fast_snap, slow_snap, "final encode_update_v1 mismatch (gc=true)");
+        } else {
+            let uf = Update::decode_v1(&fast_snap).unwrap();
+            let us = Update::decode_v1(&slow_snap).unwrap();
+            assert_eq!(uf.structs, us.structs, "final decoded structs mismatch (gc=false)");
+            assert_eq!(
+                uf.delete_set, us.delete_set,
+                "final decoded delete_set mismatch (gc=false)"
+            );
+        }
+    }
+}

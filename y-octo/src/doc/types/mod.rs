@@ -298,7 +298,7 @@ impl YTypeRef {
     /// Runs `f` in an implicit write transaction of the owning document.
     pub fn write<R>(&self, f: impl FnOnce(&mut DocStore, TypeIdx) -> JwstCodecResult<R>) -> JwstCodecResult<R> {
         let store_ref = self.store_ref()?;
-        transact_mut_with(&store_ref, None, true, |tx| self.write_locked(tx.store_mut(), f))
+        transact_local_implicit(&store_ref, |store| self.write_locked(store, f))
     }
 
     /// Runs an edit of this type of `store` under the document's write lock,

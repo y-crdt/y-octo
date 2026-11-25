@@ -7,7 +7,7 @@ fixtures offline. Where versions differ, the reference is Yjs 13.6.33.
 ```sh
 npm ci --prefix y-octo/tests/oracle --ignore-scripts
 npm run check --prefix y-octo/tests/oracle
-cargo test -p y-octo --features large_refs --test yjs_live_oracle --test yjs_concurrent_oracle
+cargo test -p y-octo --test yjs_live_oracle --test yjs_concurrent_oracle
 ```
 
 After an intentional fixture change, run `npm run generate --prefix y-octo/tests/oracle`.
@@ -27,8 +27,8 @@ minimized failure, set `TRACE_INPUT` to the absolute path of its JSON file in
 `target/trace-failures`.
 
 ```sh
-cargo test -p y-octo --features large_refs --test trace_differential online_yjs_differential -- --ignored --exact
-cargo test -p y-octo --features large_refs --test trace_differential replay_saved_trace -- --ignored --exact
+cargo test -p y-octo --test trace_differential online_yjs_differential -- --ignored --exact
+cargo test -p y-octo --test trace_differential replay_saved_trace -- --ignored --exact
 ```
 
 Use `node y-octo/tests/oracle/regressions.mjs --import "$TRACE_INPUT"` to add
@@ -43,13 +43,13 @@ Reader limitations are registered in `upstream-known-failures.json`.
 
 ```sh
 npm run check:upstream --prefix y-octo/tests/oracle
-cargo test --release -p y-octo --features large_refs --test yjs_upstream_oracle replay_upstream_factory -- --ignored --exact
+cargo test --release -p y-octo --test yjs_upstream_oracle replay_upstream_factory -- --ignored --exact
 node y-octo/tests/oracle/upstream-exports.mjs
 ```
 
 Run `node y-octo/tests/oracle/budget.mjs` to report fixture sizes.
 
 To check raw update compaction across reopen and edit cycles, run
-`cargo test -p y-octo --features large_refs --test trace_differential online_storage_chain -- --ignored --exact`.
+`cargo test -p y-octo --test trace_differential online_storage_chain -- --ignored --exact`.
 
 Additional offline test targets include `yjs_undo_oracle` for scoped undo and redo and `yjs_local_oracle` for importing renderer edits.

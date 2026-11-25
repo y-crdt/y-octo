@@ -463,10 +463,11 @@ fn embed_and_format_json_validator_matches_update_decode() {
 #[test]
 fn property_wire_ops_invariants() {
     let mut rng = ChaCha20Rng::seed_from_u64(0x5EED_1A20);
+    let (seeds, steps, mutations) = if cfg!(miri) { (4u64, 8, 32) } else { (24, 12, 200) };
 
     // 1 & 2: diff(u, sv_of(u)) has only DS; applying diff(u, sv) to doc@sv ==
     // applying u
-    for seed in 0..24u64 {
+    for seed in 0..seeds {
         let mut r = ChaCha20Rng::seed_from_u64(seed + 100);
         let a = doc(1, seed % 2 == 0);
         let b = doc(2, seed % 2 == 1);
@@ -475,7 +476,7 @@ fn property_wire_ops_invariants() {
         let mut ma = a.get_or_create_map("m").unwrap();
         let mut aa = a.get_or_create_array("a").unwrap();
 
-        for step in 0..12 {
+        for step in 0..steps {
             match r.random_range(0..5) {
                 0 => {
                     let pos = r.random_range(0..=ta.len());
@@ -561,7 +562,7 @@ fn property_wire_ops_invariants() {
         );
     }
     // Single-byte mutations & random byte buffers
-    for _ in 0..200 {
+    for _ in 0..mutations {
         let mut mutated = sample.clone();
         let idx = rng.random_range(0..mutated.len());
         mutated[idx] = rng.random();

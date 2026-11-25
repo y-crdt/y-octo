@@ -70,6 +70,13 @@ impl WireContent {
             _ => Err(JwstCodecError::ContentSplitNotSupport(diff)),
         }
     }
+
+    pub(crate) fn split_in_place_with_len(&mut self, total_len: u64, diff: u64) -> JwstCodecResult<Self> {
+        match self {
+            Self::String(str) => Ok(Self::String(utf16_split_in_place_with_len(str, total_len, diff))),
+            _ => self.split_in_place(diff),
+        }
+    }
     /// The stored content. A type is allocated in `types`, the arena of the
     /// store the content is integrated into.
     pub(crate) fn into_content(self, types: &mut TypeArena) -> JwstCodecResult<Content> {
@@ -230,7 +237,7 @@ impl WireStruct {
                 },
             )),
             Self::Item(mut left) => {
-                let content = left.content.split_in_place(offset)?;
+                let content = left.content.split_in_place_with_len(left.len, offset)?;
                 let right = WireItem {
                     id: right_id,
                     len: right_len,

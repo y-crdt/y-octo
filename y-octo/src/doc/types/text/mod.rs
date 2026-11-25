@@ -8,7 +8,7 @@ pub(crate) use identity::identity_runs;
 
 use super::{
     AsInner, Id,
-    list::{ListIterator, ListType, list_remove},
+    list::{ListIterator, ListType, check_remove, list_remove},
 };
 use crate::{
     Any, Content, JwstCodecError, JwstCodecResult,
@@ -61,7 +61,9 @@ impl Text {
 
     #[inline]
     pub fn insert<T: ToString>(&mut self, char_index: u64, str: T) -> JwstCodecResult {
-        self.insert_at(char_index, Content::String(str.to_string()))
+        let str = str.to_string();
+        self.as_inner()
+            .write(|store, ty| text_insert(store, ty, char_index, str))
     }
 
     pub fn insert_embed<V: Into<Any>>(&mut self, char_index: u64, embed: V) -> JwstCodecResult {
@@ -175,6 +177,10 @@ pub(crate) fn apply_text_delta(store: &mut DocStore, ty: TypeIdx, delta: &[TextD
                             insert_text_content(store, ty, &mut pos, Content::String(text.clone()), attrs)?;
                         }
                         TextInsert::Embed(values) => {
+                            if values.is_empty() {
+                                continue;
+                            }
+                            check_embed_insert_capacity(store, &pos, values.len(), &attrs)?;
                             for value in values {
                                 insert_text_content(
                                     store,
@@ -253,6 +259,17 @@ impl TextPosition {
             attrs: FormatAttributes::default(),
             offset: 0,
         }
+    }
+
+    /// Where `normalize` cuts the struct on the right of a position inside
+    /// one: the first id of the right half.
+    fn split(&self, items: &ItemSpace) -> Option<Id> {
+        if self.offset == 0 {
+            return None;
+        }
+        self.right
+            .and_then(|right| items.get(right))
+            .map(|right| right.id + self.offset)
     }
 
     fn normalize(&mut self, store: &mut DocStore) -> JwstCodecResult {
@@ -438,6 +455,90 @@ fn insert_negated_attributes(
     Ok(())
 }
 
+fn check_embed_insert_capacity(
+    store: &DocStore,
+    pos: &TextPosition,
+    count: usize,
+    attrs: &TextAttributes,
+) -> JwstCodecResult {
+    if count <= 1 {
+        return Ok(());
+    }
+    let items = &store.type_arena.items;
+    let state = store.get_state(store.client());
+    let max_attr_keys = attrs.len().saturating_add(pos.attrs.keys().count());
+    let per_embed_slots = max_attr_keys.checked_mul(2).and_then(|n| n.checked_add(1));
+    let fast_slots_ok = per_embed_slots
+        .and_then(|per| per.checked_mul(count))
+        .and_then(|total| total.checked_add(usize::from(pos.offset > 0)))
+        .is_some_and(|total| items.check_capacity(total).is_ok() && store.blocks_fit(total));
+    let fast_clocks_ok = (max_attr_keys as u64)
+        .checked_mul(2)
+        .and_then(|n| n.checked_add(1))
+        .and_then(|per| per.checked_mul(count as u64))
+        .and_then(|total| state.checked_add(total))
+        .is_some();
+    if fast_slots_ok && fast_clocks_ok {
+        return Ok(());
+    }
+
+    let mut sim = pos.clone();
+    let mut total_slots = usize::from(sim.offset > 0);
+    let mut total_clocks = 0u64;
+    for i in 0..count {
+        let mut eff_attrs = attrs.clone();
+        for key in sim.attrs.keys() {
+            if !eff_attrs.contains_key(key.as_str()) {
+                eff_attrs.insert(key.to_string(), Any::Null);
+            }
+        }
+        if i == 0 && sim.offset > 0 {
+            let opening = eff_attrs
+                .iter()
+                .filter(|(key, value)| {
+                    let prev = sim.attrs.get(key.as_str()).unwrap_or(&Any::Null);
+                    !equal_attrs(prev, value)
+                })
+                .count();
+            let attr_items = opening.saturating_mul(2);
+            total_slots = total_slots.saturating_add(1).saturating_add(attr_items);
+            total_clocks = (attr_items as u64)
+                .checked_add(1)
+                .and_then(|step| total_clocks.checked_add(step))
+                .ok_or_else(|| JwstCodecError::IncompleteDocument("struct clock overflow".into()))?;
+            sim.offset = 0;
+        } else {
+            minimize_attribute_changes(store, &mut sim, &eff_attrs);
+            let mut closing: TextAttributes = eff_attrs
+                .iter()
+                .filter_map(|(key, value)| {
+                    let prev = sim.attrs.get(key.as_str()).unwrap_or(&Any::Null);
+                    (!equal_attrs(prev, value)).then(|| (key.clone(), prev.clone()))
+                })
+                .collect();
+            let opening = closing.len();
+            skip_negated_attributes(items, &mut sim, &mut closing);
+            let attr_items = opening.saturating_add(closing.len());
+            total_slots = total_slots.saturating_add(1).saturating_add(attr_items);
+            total_clocks = (attr_items as u64)
+                .checked_add(1)
+                .and_then(|step| total_clocks.checked_add(step))
+                .ok_or_else(|| JwstCodecError::IncompleteDocument("struct clock overflow".into()))?;
+        }
+    }
+
+    items.check_capacity(total_slots)?;
+    store.check_blocks(
+        store.client(),
+        total_slots - usize::from(pos.offset > 0),
+        &[pos.split(items)],
+    )?;
+    state
+        .checked_add(total_clocks)
+        .ok_or_else(|| JwstCodecError::IncompleteDocument("struct clock overflow".into()))?;
+    Ok(())
+}
+
 fn insert_text_content(
     store: &mut DocStore,
     ty: TypeIdx,
@@ -453,9 +554,22 @@ fn insert_text_content(
 
     minimize_attribute_changes(store, pos, &attrs);
     let items = &store.type_arena.items;
+    let state = store.get_state(store.client());
+    let content_clocks = content.clock_len();
     let slots = 1 + usize::from(pos.offset > 0);
-    // With room for all opening and closing markers no further scan is needed.
-    if items.check_capacity(slots + 2 * attrs.len()).is_err() {
+    // With room for all opening and closing markers (both item slots and local
+    // clocks) no further scan is needed.
+    let fast_slots_ok = attrs
+        .len()
+        .checked_mul(2)
+        .and_then(|n| slots.checked_add(n))
+        .is_some_and(|n| items.check_capacity(n).is_ok() && store.blocks_fit(n));
+    let fast_clocks_ok = (attrs.len() as u64)
+        .checked_mul(2)
+        .and_then(|c| content_clocks.checked_add(c))
+        .and_then(|total| state.checked_add(total))
+        .is_some();
+    if !fast_slots_ok || !fast_clocks_ok {
         let mut closing: TextAttributes = attrs
             .iter()
             .filter_map(|(key, value)| {
@@ -467,13 +581,108 @@ fn insert_text_content(
         if pos.offset == 0 {
             skip_negated_attributes(items, &mut pos.clone(), &mut closing);
         }
-        items.check_capacity(slots + opening + closing.len())?;
+        let attr_items = opening + closing.len();
+        items.check_capacity(slots + attr_items)?;
+        store.check_blocks(store.client(), 1 + attr_items, &[pos.split(items)])?;
+        content_clocks
+            .checked_add(attr_items as u64)
+            .and_then(|total| state.checked_add(total))
+            .ok_or_else(|| JwstCodecError::IncompleteDocument("struct clock overflow".into()))?;
     }
     pos.normalize(store)?;
     let negated = insert_attributes(store, ty, pos, &attrs)?;
     insert_item(store, ty, pos, content)?;
     insert_negated_attributes(store, ty, pos, negated)?;
 
+    Ok(())
+}
+
+fn check_format_capacity(
+    store: &DocStore,
+    pos: &TextPosition,
+    remaining: u64,
+    attrs: &TextAttributes,
+) -> JwstCodecResult {
+    let items = &store.type_arena.items;
+    let state = store.get_state(store.client());
+    let fast_slots_ok = attrs
+        .len()
+        .checked_mul(2)
+        .and_then(|n| n.checked_add(2))
+        .is_some_and(|n| items.check_capacity(n).is_ok() && store.blocks_fit(n));
+    let fast_clocks_ok = (attrs.len() as u64)
+        .checked_mul(2)
+        .and_then(|total| state.checked_add(total))
+        .is_some();
+    if fast_slots_ok && fast_clocks_ok {
+        return Ok(());
+    }
+
+    let mut sim = pos.clone();
+    let start_split = usize::from(sim.offset > 0);
+    let start_cut = sim.split(items);
+    let mut end_cut = None;
+    if sim.offset == 0 {
+        minimize_attribute_changes(store, &mut sim, attrs);
+    }
+    let mut negated: TextAttributes = attrs
+        .iter()
+        .filter_map(|(key, value)| {
+            let current = sim.attrs.get(key.as_str()).unwrap_or(&Any::Null);
+            (!equal_attrs(current, value)).then(|| (key.clone(), current.clone()))
+        })
+        .collect();
+    let opening = negated.len();
+
+    let mut rem = remaining;
+    let mut sim_offset = std::mem::take(&mut sim.offset);
+    let mut end_split = 0usize;
+    while let Some(item) = sim.right.and_then(|i| items.get(i)) {
+        if rem == 0 && (negated.is_empty() || !item.deleted() && !matches!(item.content, Content::Format(_))) {
+            break;
+        }
+        if item.deleted() {
+            sim.forward(items);
+            continue;
+        }
+        match &item.content {
+            Content::Format(format) => {
+                let (key, value) = (&format.key, &format.value);
+                if let Some(attr) = attrs.get(key.as_str()) {
+                    if equal_attrs(attr, value) {
+                        negated.remove(key.as_str());
+                    } else {
+                        if rem == 0 {
+                            break;
+                        }
+                        negated.insert(key.to_string(), value.clone());
+                    }
+                }
+                sim.forward(items);
+            }
+            _ => {
+                let skipped = std::mem::take(&mut sim_offset);
+                let item_len = item.len() - skipped;
+                if rem < item_len {
+                    end_split = 1;
+                    end_cut = Some(item.id + (skipped + rem));
+                    break;
+                }
+                rem -= item_len;
+                sim.forward(items);
+            }
+        }
+    }
+    if end_split == 0 {
+        skip_negated_attributes(items, &mut sim, &mut negated);
+    }
+
+    let attr_items = opening + negated.len();
+    items.check_capacity(start_split + end_split + attr_items)?;
+    store.check_blocks(store.client(), attr_items, &[start_cut, end_cut])?;
+    state
+        .checked_add(attr_items as u64)
+        .ok_or_else(|| JwstCodecError::IncompleteDocument("struct clock overflow".into()))?;
     Ok(())
 }
 
@@ -488,6 +697,7 @@ fn format_text(
         return Ok(());
     }
 
+    check_format_capacity(store, pos, remaining, &attrs)?;
     pos.normalize(store)?;
     minimize_attribute_changes(store, pos, &attrs);
     let mut negated = insert_attributes(store, ty, pos, &attrs)?;
@@ -544,6 +754,13 @@ fn delete_text(store: &mut DocStore, ty: TypeIdx, pos: &mut TextPosition, mut re
         return Ok(());
     }
 
+    check_remove(
+        store,
+        pos.right,
+        pos.offset,
+        remaining,
+        pos.split(&store.type_arena.items),
+    )?;
     pos.normalize(store)?;
     let start = remaining;
     let gap_start = pos.right;
@@ -630,9 +847,40 @@ pub(crate) fn text_format(
     apply_text_delta(store, ty, &ops)
 }
 
-/// Inserts an embed value at `char_index`.
+/// Inserts plain text at `index`, advancing past any deleted tombstones at the
+/// cursor while stopping before live `Format` items (matching Yjs
+/// `YText.insert`).
+pub(crate) fn text_insert(store: &mut DocStore, ty: TypeIdx, index: u64, str: String) -> JwstCodecResult {
+    if index > store.type_arena[ty].len {
+        return Err(JwstCodecError::IndexOutOfBound(index));
+    }
+    if str.is_empty() {
+        return Ok(());
+    }
+    super::list::list_insert_inner(store, ty, index, Content::String(str).into(), true)
+}
+
+/// Inserts an embed value at `char_index`, advancing past any deleted
+/// tombstones at the cursor (matching Yjs `YText.insertEmbed`). On formatted
+/// text, inserts with empty attributes `{}` (does not inherit surrounding
+/// formatting).
 pub(crate) fn text_insert_embed(store: &mut DocStore, ty: TypeIdx, char_index: u64, embed: Any) -> JwstCodecResult {
-    super::list::list_insert(store, ty, char_index, Content::Embed(Box::new(embed)))
+    let text = &store.type_arena[ty];
+    if char_index > text.len {
+        return Err(JwstCodecError::IndexOutOfBound(char_index));
+    }
+    if !text.has_formatting {
+        return super::list::list_insert_inner(store, ty, char_index, Content::Embed(Box::new(embed)).into(), true);
+    }
+    let mut pos = TextPosition::new(text.start);
+    advance_text_position(store, &mut pos, char_index)?;
+    insert_text_content(
+        store,
+        ty,
+        &mut pos,
+        Content::Embed(Box::new(embed)),
+        TextAttributes::new(),
+    )
 }
 
 #[cfg(test)]
@@ -1034,5 +1282,369 @@ mod tests {
                 .unwrap();
             assert_eq!(restored.identity().unwrap(), replacement.identity().unwrap());
         });
+    }
+
+    #[test]
+    #[cfg(not(loom))]
+    fn text_insert_skips_tombstones_and_merges_single_run() {
+        use crate::{Content, Id};
+
+        let prefix = "x".repeat(59);
+        let typed = "[utf8]{inputenc}";
+
+        let assert_single_merged_run = |doc: &Doc| {
+            let store = doc.store.read().unwrap();
+            let blocks = &store.items[&1];
+            let last = blocks.nodes(1).last().unwrap();
+            let item = last.item(&store.type_arena);
+            assert_eq!(item.content, Content::String(typed.to_string()));
+            assert_eq!(item.origin_left_id(), Some(Id::new(1, 59)));
+            assert_eq!(item.origin_right_id(), None);
+        };
+
+        // 1. Text::insert
+        {
+            let doc = Doc::with_client(1);
+            let mut text = doc.get_or_create_text("t").unwrap();
+            text.insert(0, format!("{prefix}Z")).unwrap();
+            text.remove(59, 1).unwrap();
+            for (i, ch) in typed.chars().enumerate() {
+                text.insert(59 + i as u64, ch).unwrap();
+            }
+            assert_eq!(text.to_string(), format!("{prefix}{typed}"));
+            assert_single_merged_run(&doc);
+        }
+
+        // 2. TextWrite::insert
+        {
+            let doc = Doc::with_client(1);
+            let text = doc.get_or_create_text("t").unwrap();
+            doc.transact_mut(None, |tx| {
+                let mut w = tx.text(&text)?;
+                w.insert(0, format!("{prefix}Z"))?;
+                w.remove(59, 1)
+            })
+            .unwrap();
+            for (i, ch) in typed.chars().enumerate() {
+                doc.transact_mut(None, |tx| tx.text(&text)?.insert(59 + i as u64, ch))
+                    .unwrap();
+            }
+            assert_eq!(text.to_string(), format!("{prefix}{typed}"));
+            assert_single_merged_run(&doc);
+        }
+
+        // 3. XMLText::insert
+        {
+            let doc = Doc::with_client(1);
+            let mut xml = doc.get_or_create_xml_text("x").unwrap();
+            xml.insert(0, format!("{prefix}Z")).unwrap();
+            xml.remove(59, 1).unwrap();
+            for (i, ch) in typed.chars().enumerate() {
+                xml.insert(59 + i as u64, ch).unwrap();
+            }
+            assert_eq!(xml.to_string(), format!("{prefix}{typed}"));
+            assert_single_merged_run(&doc);
+        }
+
+        // 4. XMLTextWrite::insert
+        {
+            let doc = Doc::with_client(1);
+            let xml = doc.get_or_create_xml_text("x").unwrap();
+            doc.transact_mut(None, |tx| {
+                let mut w = tx.xml_text(&xml)?;
+                w.insert(0, format!("{prefix}Z"))?;
+                w.remove(59, 1)
+            })
+            .unwrap();
+            for (i, ch) in typed.chars().enumerate() {
+                doc.transact_mut(None, |tx| tx.xml_text(&xml)?.insert(59 + i as u64, ch))
+                    .unwrap();
+            }
+            assert_eq!(xml.to_string(), format!("{prefix}{typed}"));
+            assert_single_merged_run(&doc);
+        }
+
+        // 5. DocSession::text_insert
+        #[cfg(feature = "session")]
+        {
+            let mut session = crate::DocSession::<()>::new(crate::DocOptions::new().with_client_id(1), 500);
+            let target: crate::TypeTarget = session.ensure_root("t", crate::YTypeKind::Text).unwrap().into();
+            session.text_insert(&target, 0, &format!("{prefix}Z")).unwrap();
+            session.text_remove(&target, 59, 1).unwrap();
+            for (i, ch) in typed.chars().enumerate() {
+                let mut buf = [0u8; 4];
+                session
+                    .text_insert(&target, 59 + i as u64, ch.encode_utf8(&mut buf))
+                    .unwrap();
+            }
+            let doc = session.into_doc().unwrap();
+            assert_eq!(
+                doc.get_or_create_text("t").unwrap().to_string(),
+                format!("{prefix}{typed}")
+            );
+            assert_single_merged_run(&doc);
+        }
+    }
+
+    #[test]
+    #[cfg(not(loom))]
+    fn formatted_text_insert_preserves_attributes_after_tombstone_skip() {
+        let doc = Doc::with_client(1);
+        let mut text = doc.get_or_create_text("t").unwrap();
+        let mut bold = TextAttributes::new();
+        bold.insert("bold".to_string(), Any::True);
+
+        text.apply_delta(&[TextDeltaOp::Insert {
+            insert: TextInsert::Text("hello world".to_string()),
+            format: Some(bold.clone()),
+        }])
+        .unwrap();
+        text.remove(5, 1).unwrap();
+        text.insert(5, "_").unwrap();
+        assert_eq!(text.to_string(), "hello_world");
+        assert_eq!(
+            text.to_delta(),
+            vec![TextDeltaOp::Insert {
+                insert: TextInsert::Text("hello_world".to_string()),
+                format: Some(bold),
+            }]
+        );
+    }
+
+    #[test]
+    #[cfg(not(loom))]
+    fn subscribe_sequential_append_linear_and_exact() {
+        let count = if cfg!(miri) { 64 } else { 5_000 };
+        let src = Doc::with_client(1);
+        let peer = Arc::new(crate::sync::RwLock::new(Doc::with_client(2)));
+        peer.write().unwrap().get_or_create_text("t").unwrap();
+        let peer_cb = peer.clone();
+        let _sub = src.subscribe(move |ev| {
+            peer_cb
+                .write()
+                .unwrap()
+                .apply_update_from_binary_v1(ev.update.clone())
+                .unwrap();
+        });
+
+        let mut text = src.get_or_create_text("t").unwrap();
+        let mut expected = String::new();
+        let mut utf16_pos = 0u64;
+        for i in 0..count {
+            let chunk = match i % 5 {
+                0 => "a",
+                1 => "中",
+                2 => "😀",
+                3 => "bc",
+                _ => "!",
+            };
+            text.insert(utf16_pos, chunk).unwrap();
+            expected.push_str(chunk);
+            utf16_pos += chunk.encode_utf16().count() as u64;
+        }
+
+        let peer_guard = peer.read().unwrap();
+        let peer_text = peer_guard.get_or_create_text("t").unwrap();
+        assert_eq!(text.to_string(), expected);
+        assert_eq!(peer_text.to_string(), expected);
+        assert_eq!(peer_guard.encode_update_v1().unwrap(), src.encode_update_v1().unwrap());
+    }
+
+    #[test]
+    #[cfg(not(loom))]
+    fn formatted_text_insert_inherits_bold_regardless_of_marker_state() {
+        use crate::Id;
+
+        let mut bold = TextAttributes::new();
+        bold.insert("bold".to_string(), Any::True);
+
+        for warm_marker in [false, true] {
+            let doc = Doc::with_client(1);
+            let mut text = doc.get_or_create_text("t").unwrap();
+            text.apply_delta(&[
+                TextDeltaOp::Insert {
+                    insert: TextInsert::Text("a".to_string()),
+                    format: Some(bold.clone()),
+                },
+                TextDeltaOp::Insert {
+                    insert: TextInsert::Text("bc".to_string()),
+                    format: None,
+                },
+            ])
+            .unwrap();
+            if warm_marker {
+                // Appending at the end leaves a marker at "bc" (index 1), whose
+                // left neighbor is the live closing Format(-bold) item.
+                text.insert(3, "!").unwrap();
+                let marker_count = text.0.read(|_, ty| ty.markers.as_ref().map_or(0, |m| m.len())).unwrap();
+                assert!(marker_count > 0, "expected warm marker to be populated");
+            }
+
+            let expected_x_clock = if warm_marker { 6 } else { 5 };
+            text.insert(1, "X").unwrap();
+
+            let tail = if warm_marker { "bc!" } else { "bc" };
+            assert_eq!(
+                text.to_delta(),
+                vec![
+                    TextDeltaOp::Insert {
+                        insert: TextInsert::Text("aX".to_string()),
+                        format: Some(bold.clone()),
+                    },
+                    TextDeltaOp::Insert {
+                        insert: TextInsert::Text(tail.to_string()),
+                        format: None,
+                    },
+                ],
+                "warm_marker={warm_marker}"
+            );
+
+            let store = doc.store.read().unwrap();
+            let x_item = store
+                .get_node(Id::new(1, expected_x_clock))
+                .unwrap()
+                .item(&store.type_arena);
+            assert_eq!(
+                x_item.origin_left_id(),
+                Some(Id::new(1, 1)),
+                "warm_marker={warm_marker}"
+            );
+            assert_eq!(
+                x_item.origin_right_id(),
+                Some(Id::new(1, 2)),
+                "warm_marker={warm_marker}"
+            );
+        }
+    }
+
+    #[test]
+    #[cfg(not(loom))]
+    fn formatted_text_insert_embed_does_not_inherit_bold() {
+        use crate::{Content, Id};
+
+        let mut bold = TextAttributes::new();
+        bold.insert("bold".to_string(), Any::True);
+
+        // 1. Inside a bold run: split bold around unformatted embed
+        {
+            let doc = Doc::with_client(1);
+            let mut text = doc.get_or_create_text("t").unwrap();
+            text.apply_delta(&[TextDeltaOp::Insert {
+                insert: TextInsert::Text("ab".to_string()),
+                format: Some(bold.clone()),
+            }])
+            .unwrap();
+            text.insert_embed(1, Any::True).unwrap();
+            assert_eq!(
+                text.to_delta(),
+                vec![
+                    TextDeltaOp::Insert {
+                        insert: TextInsert::Text("a".to_string()),
+                        format: Some(bold.clone()),
+                    },
+                    TextDeltaOp::Insert {
+                        insert: TextInsert::Embed(vec![Any::True]),
+                        format: None,
+                    },
+                    TextDeltaOp::Insert {
+                        insert: TextInsert::Text("b".to_string()),
+                        format: Some(bold.clone()),
+                    },
+                ]
+            );
+        }
+
+        // 2. At the bold closing boundary: embed is unformatted and placed
+        // after the closing Format(-bold) marker.
+        {
+            let doc = Doc::with_client(1);
+            let mut text = doc.get_or_create_text("t").unwrap();
+            text.apply_delta(&[
+                TextDeltaOp::Insert {
+                    insert: TextInsert::Text("a".to_string()),
+                    format: Some(bold.clone()),
+                },
+                TextDeltaOp::Insert {
+                    insert: TextInsert::Text("bc".to_string()),
+                    format: None,
+                },
+            ])
+            .unwrap();
+            text.insert_embed(1, Any::True).unwrap();
+            assert_eq!(
+                text.to_delta(),
+                vec![
+                    TextDeltaOp::Insert {
+                        insert: TextInsert::Text("a".to_string()),
+                        format: Some(bold),
+                    },
+                    TextDeltaOp::Insert {
+                        insert: TextInsert::Embed(vec![Any::True]),
+                        format: None,
+                    },
+                    TextDeltaOp::Insert {
+                        insert: TextInsert::Text("bc".to_string()),
+                        format: None,
+                    },
+                ]
+            );
+            let store = doc.store.read().unwrap();
+            let embed_item = store.get_node(Id::new(1, 5)).unwrap().item(&store.type_arena);
+            assert_eq!(embed_item.content, Content::Embed(Box::new(Any::True)));
+            // (1, 2) is the closing Format(-bold), (1, 3) is "bc"
+            assert_eq!(embed_item.origin_left_id(), Some(Id::new(1, 2)));
+            assert_eq!(embed_item.origin_right_id(), Some(Id::new(1, 3)));
+        }
+    }
+
+    #[test]
+    #[cfg(not(loom))]
+    fn formatted_text_insert_with_nested_attrs_and_concurrent_format() {
+        let sync = |from: &Doc, to: &mut Doc| {
+            let sv = to.get_state_vector();
+            let u = from.encode_state_as_update_v1(&sv).unwrap();
+            to.apply_update_from_binary_v1(u).unwrap();
+        };
+
+        let nested = Any::Array(vec![Any::Array(vec![Any::Integer(1)])]);
+        let mut init_attrs = TextAttributes::new();
+        init_attrs.insert("style".to_string(), nested);
+        let mut new_attrs = TextAttributes::new();
+        new_attrs.insert("style".to_string(), Any::String("new".to_string()));
+
+        for (c1, c2) in [(1u64, 2u64), (2u64, 1u64)] {
+            let mut d1 = Doc::with_client(c1);
+            let mut d2 = Doc::with_client(c2);
+            let mut t1 = d1.get_or_create_text("t").unwrap();
+            let mut t2 = d2.get_or_create_text("t").unwrap();
+
+            t1.apply_delta(&[TextDeltaOp::Insert {
+                insert: TextInsert::Text("ab".to_string()),
+                format: Some(init_attrs.clone()),
+            }])
+            .unwrap();
+            sync(&d1, &mut d2);
+
+            let clock_before = d1.get_state_vector().get(&c1);
+            assert_eq!(clock_before, 4);
+
+            // Peer 1 inserts "X" in the middle of the nested-attr run: must
+            // only add 1 String clock (no redundant Format items).
+            t1.insert(1, "X").unwrap();
+            assert_eq!(d1.get_state_vector().get(&c1), 5);
+
+            // Peer 2 concurrently reformats the whole range to style = "new".
+            t2.format(0, 2, new_attrs.clone()).unwrap();
+
+            sync(&d1, &mut d2);
+            sync(&d2, &mut d1);
+
+            let expected = vec![TextDeltaOp::Insert {
+                insert: TextInsert::Text("aXb".to_string()),
+                format: Some(new_attrs.clone()),
+            }];
+            assert_eq!(t1.to_delta(), expected, "c1={c1} c2={c2}");
+            assert_eq!(t2.to_delta(), expected, "c1={c1} c2={c2}");
+        }
     }
 }

@@ -124,8 +124,9 @@ fn run(count: usize, order: &[usize]) {
 fn nested_map_deletion_then_more_deletions_in_one_transaction() {
     // the hash map's order differs between maps, so repeat to cover many
     let repeats = if cfg!(miri) { 1 } else { 8 };
+    let counts: &[usize] = if cfg!(miri) { &[2, 5, 8] } else { &[2, 3, 5, 8, 16, 33] };
     for _ in 0..repeats {
-        for count in [2, 3, 5, 8, 16, 33] {
+        for &count in counts {
             for order in key_orders(count) {
                 run(count, &order);
             }

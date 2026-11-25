@@ -1,0 +1,27 @@
+[package]
+authors = [
+  "DarkSky <darksky2048@gmail.com>",
+  "forehalo <forehalo@gmail.com>",
+  "x1a0t <405028157@qq.com>",
+  "Brooklyn <lynweklm@gmail.com>",
+]
+description = "Pure, unsafe-free CRDT core extracted to Lean 4 via Charon and Aeneas"
+edition = "2024"
+include = ["src/**/*", "LICENSE", "README.md"]
+keywords = ["collaboration", "crdt", "crdts", "yjs", "yata"]
+license = "MIT"
+name = "y-octo-core"
+readme = "README.md"
+repository = "https://github.com/toeverything/y-octo"
+version = "0.1.0"
+
+[dependencies]
+
+[features]
+# What the tests of `y-octo` read to see that the arena gives memory back
+# (`ItemSpaceCore::allocated_capacity`). Not part of the extracted code and
+# not compiled into `y-octo` outside its tests.
+diagnostics = []
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(aeneas_extract)'] }

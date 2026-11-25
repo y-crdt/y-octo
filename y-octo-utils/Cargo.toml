@@ -10,8 +10,8 @@ version = "0.0.1"
 [features]
 bench     = ["regex"]
 default   = ["merger"]
-merger    = ["clap", "y-octo/large_refs"]
-profiling = ["y-octo/debug", "y-octo/large_refs"]
+merger    = ["clap"]
+profiling = ["y-octo/debug"]
 
 [dependencies]
 clap        = { workspace = true, features = ["derive"], optional = true }

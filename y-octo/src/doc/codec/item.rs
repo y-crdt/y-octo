@@ -257,6 +257,54 @@ impl Item {
         )
     }
 
+    /// Writes the suffix of the item starting at UTF-16/element `offset`
+    /// without cloning the full item or content. Matches
+    /// `WireStruct::from_node(...).split_at(offset).1.write(encoder)` byte for
+    /// byte.
+    pub fn write_from<W: CrdtWriter>(&self, types: &TypeArena, offset: u64, encoder: &mut W) -> JwstCodecResult {
+        if offset == 0 {
+            return self.write(types, encoder);
+        }
+        if offset >= self.len {
+            return Err(JwstCodecError::ContentSplitNotSupport(offset));
+        }
+        let origin_left = Some(self.id + (offset - 1));
+        let origin_right = self.origin_right_id();
+        let parent_sub = self.parent_sub.as_ref();
+        let no_parent = || unreachable!("split suffix always has origin_left");
+        match &self.content {
+            Content::Deleted(len) => {
+                let tail_len = len
+                    .checked_sub(offset)
+                    .filter(|&rem| rem > 0)
+                    .ok_or(JwstCodecError::ContentSplitNotSupport(offset))?;
+                ContentView::Deleted(tail_len).write_item(encoder, origin_left, origin_right, parent_sub, no_parent)
+            }
+            Content::Json(vec) => {
+                let off = usize::try_from(offset).map_err(|_| JwstCodecError::ContentSplitNotSupport(offset))?;
+                let slice = vec
+                    .get(off..)
+                    .filter(|s| !s.is_empty())
+                    .ok_or(JwstCodecError::ContentSplitNotSupport(offset))?;
+                ContentView::Json(slice).write_item(encoder, origin_left, origin_right, parent_sub, no_parent)
+            }
+            Content::Any(vec) => {
+                let off = usize::try_from(offset).map_err(|_| JwstCodecError::ContentSplitNotSupport(offset))?;
+                let slice = vec
+                    .get(off..)
+                    .filter(|s| !s.is_empty())
+                    .ok_or(JwstCodecError::ContentSplitNotSupport(offset))?;
+                ContentView::Any(slice).write_item(encoder, origin_left, origin_right, parent_sub, no_parent)
+            }
+            Content::String(s) => {
+                debug_assert!(offset < self.len);
+                let tail = utf16_tail(s, self.len, offset);
+                ContentView::String(&tail).write_item(encoder, origin_left, origin_right, parent_sub, no_parent)
+            }
+            _ => Err(JwstCodecError::ContentSplitNotSupport(offset)),
+        }
+    }
+
     pub fn deep_compare(&self, items: &ItemSpace, other: &Self, other_items: &ItemSpace) -> bool {
         self.id == other.id
             && self.deleted() == other.deleted()

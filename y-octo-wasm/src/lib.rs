@@ -22,6 +22,7 @@ const INITIAL_SCRATCH: usize = 64 * 1024;
 const TRIM_TARGET: usize = 256 * 1024;
 const HIGH_WATER: usize = 4 * 1024 * 1024;
 const MAX_PREALLOC: usize = 16_384;
+const MAX_SAFE_INTEGER: u64 = (1u64 << 53) - 1;
 const WASM_ABI_VERSION: u32 = 1;
 
 #[unsafe(no_mangle)]
@@ -1189,8 +1190,111 @@ pub extern "C" fn session_text_insert_root(handle: u32, root_len: u32, index: u3
             *error = "invalid utf8".into();
             return 0;
         };
-        let target = TypeTarget::Identity(TypeIdentity::Root(root.to_string()));
-        finish_opt_commit(session.text_insert(&target, index as u64, text), out_buf, error)
+        finish_opt_commit(session.text_insert_root(root, index as u64, text), out_buf, error)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn session_text_remove_root(handle: u32, root_len: u32, index: u32, len: u32) -> u32 {
+    with_session_mut(handle, |session, in_buf, out_buf, error| {
+        let rlen = root_len as usize;
+        if rlen > in_buf.len() {
+            reset_out_buf(out_buf);
+            *error = "in_buf bounds".into();
+            return 0;
+        }
+        let Ok(root) = std::str::from_utf8(&in_buf[..rlen]) else {
+            reset_out_buf(out_buf);
+            *error = "invalid utf8".into();
+            return 0;
+        };
+        finish_opt_commit(session.text_remove_root(root, index as u64, len as u64), out_buf, error)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn session_text_len_root(handle: u32, root_len: u32) -> f64 {
+    if handle == 0 {
+        set_error("invalid session handle 0");
+        return -1.0;
+    }
+    RUNTIME.with(|rt| {
+        let mut rt = rt.borrow_mut();
+        let WasmRuntime {
+            sessions,
+            in_buf,
+            out_buf,
+            error,
+            ..
+        } = &mut *rt;
+        let Some(Some(session)) = sessions.get((handle - 1) as usize) else {
+            reset_out_buf(out_buf);
+            *error = format!("session handle {handle} not found");
+            return -1.0;
+        };
+        let rlen = root_len as usize;
+        if rlen > in_buf.len() {
+            reset_out_buf(out_buf);
+            *error = "in_buf bounds".into();
+            return -1.0;
+        }
+        let Ok(root) = std::str::from_utf8(&in_buf[..rlen]) else {
+            reset_out_buf(out_buf);
+            *error = "invalid utf8".into();
+            return -1.0;
+        };
+        match session.read_text_len_root(root) {
+            Ok(len) => {
+                if out_buf.capacity() > HIGH_WATER {
+                    reset_out_buf(out_buf);
+                }
+                error.clear();
+                if len <= MAX_SAFE_INTEGER { len as f64 } else { -2.0 }
+            }
+            Err(err) => {
+                reset_out_buf(out_buf);
+                *error = err.to_string();
+                -1.0
+            }
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn session_text_len_id(handle: u32, client_lo: u32, client_hi: u32, clock: u32) -> f64 {
+    if handle == 0 {
+        set_error("invalid session handle 0");
+        return -1.0;
+    }
+    RUNTIME.with(|rt| {
+        let mut rt = rt.borrow_mut();
+        let WasmRuntime {
+            sessions,
+            out_buf,
+            error,
+            ..
+        } = &mut *rt;
+        let Some(Some(session)) = sessions.get((handle - 1) as usize) else {
+            reset_out_buf(out_buf);
+            *error = format!("session handle {handle} not found");
+            return -1.0;
+        };
+        let client = (client_lo as u64) | ((client_hi as u64) << 32);
+        let target = TypeTarget::Identity(TypeIdentity::Item(Id::new(client, clock as u64)));
+        match session.read_text_len(&target) {
+            Ok(len) => {
+                if out_buf.capacity() > HIGH_WATER {
+                    reset_out_buf(out_buf);
+                }
+                error.clear();
+                if len <= MAX_SAFE_INTEGER { len as f64 } else { -2.0 }
+            }
+            Err(err) => {
+                reset_out_buf(out_buf);
+                *error = err.to_string();
+                -1.0
+            }
+        }
     })
 }
 
@@ -2110,5 +2214,133 @@ mod tests {
         RUNTIME.with(|rt| {
             assert!(rt.borrow().in_buf.len() <= TRIM_TARGET);
         });
+    }
+
+    #[test]
+    fn direct_scalar_text_remove_and_len_exports() {
+        let guid = b"scalar-doc";
+        let ptr = in_buf_ensure(guid.len());
+        unsafe { std::ptr::copy_nonoverlapping(guid.as_ptr(), ptr, guid.len()) };
+        let h = session_create(77, guid.len(), 1, 1, 0);
+        assert_ne!(h, 0);
+
+        // EnsureRoot("body", Text) and EnsureRoot("m", Map)
+        for (name, kind) in [("body", 2u32), ("m", 1u32)] {
+            let mut cmd = Vec::new();
+            {
+                let mut w = TapeWriter::new(&mut cmd);
+                w.write_u32(5);
+                w.write_str(name);
+                w.write_u32(kind);
+            }
+            let ptr = in_buf_ensure(cmd.len());
+            unsafe { std::ptr::copy_nonoverlapping(cmd.as_ptr(), ptr, cmd.len()) };
+            assert_eq!(session_exec(h, cmd.len()), 1);
+        }
+
+        // Insert "hello😀" (UTF-16 len = 7) on root "body"
+        let ins = b"bodyhello\xF0\x9F\x98\x80";
+        let ptr = in_buf_ensure(ins.len());
+        unsafe { std::ptr::copy_nonoverlapping(ins.as_ptr(), ptr, ins.len()) };
+        assert_eq!(session_text_insert_root(h, 4, 0, (ins.len() - 4) as u32), 2);
+
+        // session_text_len_root -> 7.0
+        let root = b"body";
+        let ptr = in_buf_ensure(root.len());
+        unsafe { std::ptr::copy_nonoverlapping(root.as_ptr(), ptr, root.len()) };
+        assert_eq!(session_text_len_root(h, 4), 7.0);
+
+        // session_text_remove_root: remove emoji (index 5, len 2) -> commit
+        // (code 2)
+        let ptr = in_buf_ensure(root.len());
+        unsafe { std::ptr::copy_nonoverlapping(root.as_ptr(), ptr, root.len()) };
+        assert_eq!(session_text_remove_root(h, 4, 5, 2), 2);
+        assert_eq!(session_text_len_root(h, 4), 5.0);
+
+        // No-op remove (len 0) -> code 1 (Ok(None))
+        assert_eq!(session_text_remove_root(h, 4, 0, 0), 1);
+
+        // Error cases for session_text_len_root / session_text_remove_root
+        assert_eq!(session_text_len_root(0, 4), -1.0);
+        assert_eq!(session_text_len_root(999, 4), -1.0);
+        assert_eq!(session_text_len_root(h, u32::MAX), -1.0);
+        assert_eq!(session_text_remove_root(0, 4, 0, 1), 0);
+        assert_eq!(session_text_remove_root(h, u32::MAX, 0, 1), 0);
+
+        // Invalid UTF-8
+        let bad_utf8 = [0xffu8, 0xfe];
+        let ptr = in_buf_ensure(bad_utf8.len());
+        unsafe { std::ptr::copy_nonoverlapping(bad_utf8.as_ptr(), ptr, bad_utf8.len()) };
+        assert_eq!(session_text_len_root(h, 2), -1.0);
+        assert_eq!(session_text_remove_root(h, 2, 0, 1), 0);
+
+        // Wrong type kind ("m" is Map)
+        let mroot = b"m";
+        let ptr = in_buf_ensure(mroot.len());
+        unsafe { std::ptr::copy_nonoverlapping(mroot.as_ptr(), ptr, mroot.len()) };
+        assert_eq!(session_text_len_root(h, 1), -1.0);
+        assert_eq!(session_text_remove_root(h, 1, 0, 1), 0);
+
+        // Nested Text item for session_text_len_id
+        let mut cmd = Vec::new();
+        {
+            let mut w = TapeWriter::new(&mut cmd);
+            w.write_u32(12); // map_set
+            w.write_u32(0); // Identity
+            w.write_u32(0); // Root
+            w.write_str("m");
+            w.write_str("child");
+            w.write_u32(3); // SessionValue::Text
+            w.write_u32(1); // 1 delta op
+            w.write_u32(0); // Insert Text
+            w.write_str("abc");
+            w.write_u32(0); // no format
+        }
+        let ptr = in_buf_ensure(cmd.len());
+        unsafe { std::ptr::copy_nonoverlapping(cmd.as_ptr(), ptr, cmd.len()) };
+        assert_eq!(session_exec(h, cmd.len()), 1);
+
+        // Read back child Text item identity via get_map_value (op 7)
+        cmd.clear();
+        {
+            let mut w = TapeWriter::new(&mut cmd);
+            w.write_u32(7);
+            w.write_u32(0);
+            w.write_u32(0);
+            w.write_str("m");
+            w.write_str("child");
+        }
+        let ptr = in_buf_ensure(cmd.len());
+        unsafe { std::ptr::copy_nonoverlapping(cmd.as_ptr(), ptr, cmd.len()) };
+        assert_eq!(session_exec(h, cmd.len()), 1);
+        let (client, clock) = RUNTIME.with(|rt| {
+            let rt = rt.borrow();
+            let mut r = TapeReader::new(&rt.out_buf);
+            assert_eq!(r.read_u32().unwrap(), 1); // Some
+            assert_eq!(r.read_u32().unwrap(), 3); // Text
+            assert_eq!(r.read_u32().unwrap(), 1); // Item
+            (r.read_u64().unwrap(), r.read_u64().unwrap())
+        });
+        assert_eq!(
+            session_text_len_id(h, client as u32, (client >> 32) as u32, clock as u32),
+            3.0
+        );
+        // Invalid handle / unknown item id
+        assert_eq!(
+            session_text_len_id(0, client as u32, (client >> 32) as u32, clock as u32),
+            -1.0
+        );
+        assert_eq!(session_text_len_id(h, 999, 0, 999), -1.0);
+
+        // High-water trim still works after large ensure
+        let _ = in_buf_ensure(HIGH_WATER + 4096);
+        let ptr = in_buf_ensure(root.len());
+        unsafe { std::ptr::copy_nonoverlapping(root.as_ptr(), ptr, root.len()) };
+        assert_eq!(session_text_len_root(h, 4), 5.0);
+        RUNTIME.with(|rt| {
+            assert!(rt.borrow().in_buf.capacity() <= HIGH_WATER);
+        });
+
+        session_free(h);
     }
 }

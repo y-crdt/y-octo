@@ -1,5 +1,6 @@
 use std::{
-    collections::hash_map::Entry,
+    collections::{VecDeque, hash_map::Entry},
+    mem,
     ops::{Deref, Range},
 };
 
@@ -18,12 +19,12 @@ impl<W: CrdtWriter> CrdtWrite<W> for OrderRange {
     fn write(&self, encoder: &mut W) -> JwstCodecResult {
         // canonicalize like yjs' sortAndMergeDeleteSet so the wire format is
         // stable no matter how the ranges were inserted or decoded
-        write_ranges(&self.canonical_ranges(), encoder)
+        write_ranges(self, encoder)
     }
 }
 
-fn write_ranges<W: CrdtWriter>(ranges: &[Range<u64>], encoder: &mut W) -> JwstCodecResult {
-    encoder.write_var_u64(ranges.len() as u64)?;
+fn write_ranges<W: CrdtWriter>(ranges: &OrderRange, encoder: &mut W) -> JwstCodecResult {
+    encoder.write_var_u64(ranges.ranges_len() as u64)?;
     for range in ranges {
         range.write(encoder)?;
     }
@@ -66,6 +67,35 @@ impl<const N: usize> From<[(Client, Vec<Range<u64>>); N]> for DeleteSet {
 }
 
 impl DeleteSet {
+    /// Builds a set from `(client, range)` pairs in any order, in
+    /// `O(k log k)`. Decoders collect into this rather than adding ranges one
+    /// at a time, which is quadratic for out-of-order wire input.
+    pub(crate) fn from_flat_ranges(mut ranges: Vec<(Client, Range<u64>)>) -> Self {
+        ranges.sort_unstable_by_key(|(client, range)| (*client, range.start, range.end));
+
+        let mut clients = ClientMap::default();
+        let mut ranges = ranges.into_iter().filter(|(_, range)| !range.is_empty()).peekable();
+        while let Some((client, mut last)) = ranges.next() {
+            // stays unallocated for a client with a single merged range
+            let mut earlier = VecDeque::new();
+            while let Some((_, range)) = ranges.next_if(|(next, _)| *next == client) {
+                if last.end >= range.start {
+                    last.end = last.end.max(range.end);
+                } else {
+                    earlier.push_back(mem::replace(&mut last, range));
+                }
+            }
+            let merged = if earlier.is_empty() {
+                OrderRange::from(last)
+            } else {
+                earlier.push_back(last);
+                OrderRange::from_sorted_disjoint(earlier)
+            };
+            clients.insert(client, merged);
+        }
+        Self { clients }
+    }
+
     /// Adds the half-open range `from..from.saturating_add(len)`: a range
     /// reaching past `u64::MAX` is cut there. Nothing is added when the
     /// range is empty (`len == 0` or `from == u64::MAX`).
@@ -90,7 +120,7 @@ impl DeleteSet {
     pub fn batch_add_ranges(&mut self, client: Client, ranges: Vec<Range<u64>>) {
         match self.clients.entry(client) {
             Entry::Occupied(e) => {
-                e.into_mut().extend(ranges);
+                e.into_mut().extend_vec(ranges);
             }
             Entry::Vacant(e) => {
                 // `ranges` may come in any order (e.g. the clocks of a map's
@@ -108,7 +138,7 @@ impl DeleteSet {
         for (client, range) in &other.clients {
             match self.clients.entry(*client) {
                 Entry::Occupied(e) => {
-                    e.into_mut().merge(range.clone());
+                    e.into_mut().merge_from(range);
                 }
                 Entry::Vacant(e) => {
                     if !range.is_empty() {
@@ -128,6 +158,17 @@ impl DeleteSet {
     pub fn clear(&mut self) {
         self.clients.clear();
     }
+
+    /// Clears entries in place when the backing map capacity is within
+    /// `max_cap`, or resets to an empty map to avoid retaining oversized
+    /// buffers from occasional large transactions.
+    pub(crate) fn clear_or_reset(&mut self, max_cap: usize) {
+        if self.clients.capacity() <= max_cap {
+            self.clients.clear();
+        } else {
+            *self = Self::default();
+        }
+    }
 }
 
 impl<W: CrdtWriter> CrdtWrite<W> for DeleteSet {
@@ -136,10 +177,7 @@ impl<W: CrdtWriter> CrdtWrite<W> for DeleteSet {
         // zero-length ranges), keeping the wire format minimal and stable
         let mut clients = self
             .iter()
-            .filter_map(|(&client, ranges)| {
-                let ranges = ranges.canonical_ranges();
-                (!ranges.is_empty()).then_some((client, ranges))
-            })
+            .filter_map(|(&client, ranges)| (!ranges.is_empty()).then_some((client, ranges)))
             .collect::<Vec<_>>();
         clients.sort_unstable_by_key(|entry| std::cmp::Reverse(entry.0));
 
@@ -147,7 +185,7 @@ impl<W: CrdtWriter> CrdtWrite<W> for DeleteSet {
 
         for (client, ranges) in clients {
             encoder.write_var_u64(client)?;
-            write_ranges(&ranges, encoder)?;
+            write_ranges(ranges, encoder)?;
         }
 
         Ok(())
@@ -271,6 +309,27 @@ mod tests {
 
         set.add_range(1, 6..10);
         assert_eq!(set[&1], OrderRange::from(2..12));
+    }
+
+    #[test]
+    fn test_from_flat_ranges() {
+        let set = DeleteSet::from_flat_ranges(vec![
+            (2, 8..9),
+            (1, 5..6),
+            (2, 0..3),
+            (3, 4..4),
+            (2, 2..5),
+            (1, 6..7),
+            (2, 9..10),
+            (4, 0..u64::MAX),
+            (4, 7..8),
+        ]);
+        assert_eq!(
+            set,
+            DeleteSet::from([(1, vec![5..7]), (2, vec![0..5, 8..10]), (4, vec![0..u64::MAX])])
+        );
+        assert_canonical(&set[&2]);
+        assert!(DeleteSet::from_flat_ranges(Vec::new()).is_empty());
     }
 
     #[test]

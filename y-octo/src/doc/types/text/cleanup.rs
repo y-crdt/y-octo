@@ -296,8 +296,7 @@ fn visit_items(store: &DocStore, client: u64, range: std::ops::Range<u64>, mut v
         return;
     };
     for node in nodes
-        .nodes(client)
-        .skip(start)
+        .nodes_from(client, start)
         .take_while(|node| node.clock() < range.end)
     {
         if let Some(item) = node.as_item() {

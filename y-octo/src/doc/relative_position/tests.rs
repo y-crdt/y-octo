@@ -89,20 +89,17 @@ fn some<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(deserializer: D) 
     T::deserialize(deserializer).map(Some)
 }
 
-impl From<IdJson> for Id {
-    fn from(id: IdJson) -> Self {
-        Id::new(id.client, id.clock)
-    }
+fn fixture() -> &'static Fixture {
+    static FIXTURE_CACHE: std::sync::OnceLock<Fixture> = std::sync::OnceLock::new();
+    FIXTURE_CACHE.get_or_init(|| {
+        let fixture: Fixture = serde_json::from_str(FIXTURE).unwrap();
+        assert_eq!(fixture.yjs, "13.6.33");
+        fixture
+    })
 }
 
-fn fixture() -> Fixture {
-    let fixture: Fixture = serde_json::from_str(FIXTURE).unwrap();
-    assert_eq!(fixture.yjs, "13.6.33");
-    fixture
-}
-
-fn case(name: &str) -> Case {
-    fixture().cases.into_iter().find(|c| c.name == name).unwrap()
+fn case(name: &str) -> &'static Case {
+    fixture().cases.iter().find(|c| c.name == name).unwrap()
 }
 
 fn load(update: &[u8], gc: bool) -> Doc {
@@ -123,7 +120,7 @@ fn create(doc: &Doc, target: &Target, index: u64, assoc: i64) -> RelativePositio
 }
 
 /// What y-octo must return for a position Yjs resolved to `yjs`.
-fn expected(case: &str, yjs: Option<Resolved>) -> Option<AbsolutePosition> {
+fn expected(case: &str, yjs: Option<&Resolved>) -> Option<AbsolutePosition> {
     let yjs = yjs?;
     // Intended differences from Yjs, not taken from the Yjs output:
     // - Yjs resolves into a type whose item is deleted (index 0, or its length
@@ -135,9 +132,9 @@ fn expected(case: &str, yjs: Option<Resolved>) -> Option<AbsolutePosition> {
         return None;
     }
     Some(AbsolutePosition {
-        r#type: match yjs.r#type {
-            TypeJson { root: Some(root), .. } => TypeIdentity::Root(root),
-            TypeJson { item: Some(id), .. } => TypeIdentity::Item(id.into()),
+        r#type: match &yjs.r#type {
+            TypeJson { root: Some(root), .. } => TypeIdentity::Root(root.clone()),
+            TypeJson { item: Some(id), .. } => TypeIdentity::Item(Id::new(id.client, id.clock)),
             _ => unreachable!(),
         },
         index: yjs.index,
@@ -155,21 +152,24 @@ fn check_yjs_case(name: &str) {
     let final_doc = load(&case.final_update, case.gc);
     {
         let mut store = final_doc.store.write().unwrap();
-        for redone in case.redone {
-            store.register_redone(redone.old.into(), redone.len, redone.new.into());
+        for redone in &case.redone {
+            store.register_redone(
+                Id::new(redone.old.client, redone.old.clock),
+                redone.len,
+                Id::new(redone.new.client, redone.new.clock),
+            );
         }
     }
 
-    for mut group in case.targets {
-        let positions = std::mem::take(&mut group.positions);
-        for (i, position) in positions.into_iter().enumerate() {
+    for group in &case.targets {
+        for (i, position) in group.positions.iter().enumerate() {
             let at = format!(
                 "{name} {:?} #{i} index {:?} assoc {:?}",
                 group.target.as_ref().map(|t| (&t.root, &t.key)),
                 position.index,
                 position.assoc
             );
-            check_yjs_position(name, &at, &create_doc, &final_doc, &group, position);
+            check_yjs_position(name, &at, &create_doc, &final_doc, group, position);
         }
     }
 }
@@ -180,7 +180,7 @@ fn check_yjs_position(
     create_doc: &Doc,
     final_doc: &Doc,
     group: &TargetGroup,
-    position: PositionJson,
+    position: &PositionJson,
 ) {
     let decoded = RelativePosition::decode(&position.rpos).unwrap();
     assert_eq!(decoded.encode().unwrap(), position.rpos, "{at}: binary round trip");
@@ -220,9 +220,9 @@ fn check_yjs_position(
 
     let assoc = decoded.assoc;
     let with_assoc = |p: Option<AbsolutePosition>| p.map(|p| AbsolutePosition { assoc, ..p });
-    let resolved = with_assoc(expected(name, position.resolved));
-    let resolved_no_follow = match position.resolved_no_follow {
-        Some(yjs) => with_assoc(expected(name, yjs)),
+    let resolved = with_assoc(expected(name, position.resolved.as_ref()));
+    let resolved_no_follow = match &position.resolved_no_follow {
+        Some(yjs) => with_assoc(expected(name, yjs.as_ref())),
         None => resolved.clone(),
     };
     assert_eq!(
@@ -247,11 +247,11 @@ fn check_yjs_position(
 /// writes it back exactly as `relativePositionToJSON` does.
 #[test]
 fn yjs_json_shapes() {
-    let shapes = fixture().json;
+    let shapes = &fixture().json;
     assert!(!shapes.is_empty());
     for json in shapes {
-        let rpos: RelativePosition = serde_json::from_str(&json).unwrap();
-        assert_eq!(serde_json::to_string(&rpos).unwrap(), json);
+        let rpos: RelativePosition = serde_json::from_str(json).unwrap();
+        assert_eq!(serde_json::to_string(&rpos).unwrap(), *json);
     }
 }
 
@@ -267,7 +267,7 @@ macro_rules! yjs_cases {
         #[test]
         fn every_yjs_case_has_a_test() {
             let tested = [$(stringify!($name)),*];
-            for case in fixture().cases {
+            for case in &fixture().cases {
                 assert!(tested.contains(&case.name.as_str()), "no test for {}", case.name);
             }
         }

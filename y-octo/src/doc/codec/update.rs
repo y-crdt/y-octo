@@ -4,8 +4,14 @@ use std::{
     ops::Range,
 };
 
+use y_octo_core::{
+    order_range::ClockRange,
+    pending::{LocalStep, StructStep, check_local_readiness, classify_ready_step, split_delete_range},
+    yata_store::IdCore,
+};
+
 use super::*;
-use crate::doc::{StateVector, codec::decoder::v1 as decoder, find_missing_dependency};
+use crate::doc::{OrderRange, StateVector, codec::decoder::v1 as decoder, find_missing_dependency};
 
 #[derive(Debug, Default, Clone)]
 pub struct Update {
@@ -49,6 +55,7 @@ impl Update {
 #[derive(Default)]
 struct OwnedUpdateSink {
     update: Update,
+    deletes: Vec<(Client, Range<u64>)>,
     json: Vec<Option<String>>,
     content_any: Vec<Any>,
     any_stack: Vec<AnyFrame>,
@@ -267,11 +274,12 @@ impl<'a> decoder::Sink<'a> for OwnedUpdateSink {
     }
 
     fn delete_range(&mut self, client: u64, range: Range<u64>) -> decoder::Result<()> {
-        self.update.delete_set.add_range(client, range);
+        self.deletes.push((client, range));
         Ok(())
     }
 
     fn finish(mut self) -> decoder::Result<Update> {
+        self.update.delete_set = DeleteSet::from_flat_ranges(std::mem::take(&mut self.deletes));
         for structs in self.update.structs.values_mut() {
             structs.shrink_to_fit();
         }
@@ -609,59 +617,82 @@ impl<'a> UpdateIterator<'a> {
 
         cur
     }
+
+    /// Ends the walk at a struct the store refused: the structs the walk took
+    /// off their queues to hand out after it, which wait for it, go back to
+    /// the front of them. The update then holds every struct the walk has
+    /// not handed out, the ones set aside in `pending_structs`.
+    pub(crate) fn give_back(&mut self) {
+        // the last one taken off a queue is the first to go back to it
+        for wire in self.stack.drain(..).rev() {
+            self.update.structs.entry(wire.client()).or_default().push_front(wire);
+        }
+    }
 }
 
 impl Iterator for UpdateIterator<'_> {
     type Item = (WireStruct, u64);
 
+    /// What to do with a struct is decided by `y-octo-core`
+    /// (`check_local_readiness`, then `classify_ready_step` for a struct
+    /// whose earlier clocks are there; `Pending.classify_struct_step_spec`
+    /// in `proofs/`). The dependencies of a skip, or of a struct that waits
+    /// for clocks of its own client, are not looked up.
     fn next(&mut self) -> Option<Self::Item> {
         // fetch the first candidate from stack or updates
         let mut cur = self.next_candidate();
 
         while let Some(cur_update) = cur.take() {
             let id = cur_update.id();
-            if cur_update.is_skip() {
-                cur = self.next_candidate();
-                continue;
-            } else if !self.state.contains(&id) {
-                // missing local state of same client
-                // can't apply the continuous updates from same client
-                // push into the stack and put tell all the items in stack are
-                // unapplicable
-                self.stack.push(cur_update);
-                self.update_missing_state(id.client, id.clock - 1);
-                self.add_stack_to_rest();
-            } else {
-                let id = cur_update.id();
-                let dep = self.get_missing_dep(&cur_update);
-                // some dependency is missing, we need to turn to iterate the
-                // dependency first.
-                if let Some(dep) = dep {
+            let core_id = IdCore {
+                client: id.client,
+                clock: id.clock,
+            };
+            // a skip is a skip whatever the document holds: no lookup for it
+            let is_skip = cur_update.is_skip();
+            let local_state = if is_skip { 0 } else { self.state.get(&id.client) };
+            match check_local_readiness(core_id, is_skip, local_state) {
+                LocalStep::Skip => {}
+                LocalStep::MissingLocal { client, missing_clock } => {
+                    // missing local state of same client
+                    // can't apply the continuous updates from same client
+                    // push into the stack and put tell all the items in stack
+                    // are unapplicable
                     self.stack.push(cur_update);
+                    self.update_missing_state(client, missing_clock);
+                    self.add_stack_to_rest();
+                }
+                LocalStep::Ready => {
+                    let missing = self.get_missing_dep(&cur_update);
+                    match classify_ready_step(core_id, cur_update.len(), local_state, missing) {
+                        // some dependency is missing, we need to turn to
+                        // iterate the dependency first.
+                        StructStep::MissingDep { client: dep } => {
+                            self.stack.push(cur_update);
 
-                    match self.update.structs.get_mut(&dep) {
-                        Some(updates) if !updates.is_empty() => {
-                            // iterate the dependency client first
-                            cur.replace(updates.pop_front().unwrap());
-                            continue;
+                            match self.update.structs.get_mut(&dep) {
+                                Some(updates) if !updates.is_empty() => {
+                                    // iterate the dependency client first
+                                    cur.replace(updates.pop_front().unwrap());
+                                    continue;
+                                }
+                                // but the dependency update is drained
+                                // need to move all stack item to unapplicable
+                                // store
+                                _ => {
+                                    self.update_missing_state(dep, self.state.get(&dep));
+                                    self.add_stack_to_rest();
+                                }
+                            }
                         }
-                        // but the dependency update is drained
-                        // need to move all stack item to unapplicable store
-                        _ => {
-                            self.update_missing_state(dep, self.state.get(&dep));
-                            self.add_stack_to_rest();
+                        // we finally find the first applicable update
+                        StructStep::Apply { offset, next_state } => {
+                            self.state.set_max(id.client, next_state);
+                            return Some((cur_update, offset));
                         }
-                    }
-                } else {
-                    // we finally find the first applicable update
-                    let local_state = self.state.get(&id.client);
-                    // we've already check the local state is greater or equal
-                    // to current update's clock so offset
-                    // here will never be negative
-                    let offset = local_state - id.clock;
-                    if offset == 0 || offset < cur_update.len() {
-                        self.state.set_max(id.client, id.clock + cur_update.len());
-                        return Some((cur_update, offset));
+                        // every clock of the struct is there already; the other
+                        // answers are the ones of `check_local_readiness`
+                        StructStep::AlreadyApplied | StructStep::Skip | StructStep::MissingLocal { .. } => {}
                     }
                 }
             }
@@ -686,39 +717,68 @@ impl<'a> DeleteSetIterator<'a> {
     }
 }
 
+/// The ranges of a client from the first one with a part that waits:
+/// `first` and the pending parts of the ranges after it, up to the first
+/// range with a part to apply (`applicable` when that is the first one
+/// itself), go to the client's entry of the pending set, looked up once. A
+/// part that waits is not empty, so the entry is not left without a range.
+/// Out of line, as the usual range waits for nothing.
+#[inline(never)]
+fn wait_from(
+    deletes: &mut OrderRange,
+    pending_set: &mut DeleteSet,
+    client: Client,
+    local_state: u64,
+    first: ClockRange,
+    mut applicable: Option<ClockRange>,
+) -> Option<Range<u64>> {
+    let waiting = pending_set.clients.entry(client).or_default();
+    waiting.push(first.start..first.end);
+    while applicable.is_none() {
+        let Some(range) = deletes.pop() else { break };
+        let split = split_delete_range(range.start, range.end, local_state);
+        if let Some(pending) = split.pending {
+            waiting.push(pending.start..pending.end);
+        }
+        applicable = split.applicable;
+    }
+    applicable.map(|range| range.start..range.end)
+}
+
 impl Iterator for DeleteSetIterator<'_> {
     type Item = (Client, Range<u64>);
 
+    /// A range is cut at the clocks the document holds by
+    /// `split_delete_range` of `y-octo-core` (`Pending.split_delete_range_spec`
+    /// in `proofs/`): the part below them is applied, the rest waits.
     fn next(&mut self) -> Option<Self::Item> {
-        while let Some(client) = self.update.delete_set.keys().next().cloned() {
-            let deletes = self.update.delete_set.clients.get_mut(&client).unwrap();
+        // the first client and its ranges, in one step
+        while let Some((&client, deletes)) = self.update.delete_set.clients.iter_mut().next() {
             let local_state = self.state.get(&client);
 
             let mut applicable = None;
             while let Some(range) = deletes.pop() {
-                let start = range.start;
-                let end = range.end;
-
-                if start < local_state {
-                    if local_state < end {
-                        // partially state missing
-                        // [start..end)
-                        //        ^ local_state in between
-                        // // split
-                        // [start..local_state) [local_state..end)
-                        //                      ^^^^^ unapplicable
-                        self.update
-                            .pending_delete_set
-                            .add(client, local_state, end - local_state);
-
-                        applicable = Some(start..local_state);
-                    } else {
-                        applicable = Some(range);
-                    }
+                let split = split_delete_range(range.start, range.end, local_state);
+                // all state missing, or partially state missing:
+                // [start..end)
+                //        ^ local_state in between
+                // // split
+                // [start..local_state) [local_state..end)
+                //                      ^^^^^ unapplicable
+                if let Some(pending) = split.pending {
+                    applicable = wait_from(
+                        deletes,
+                        &mut self.update.pending_delete_set,
+                        client,
+                        local_state,
+                        pending,
+                        split.applicable,
+                    );
                     break;
-                } else {
-                    // all state missing
-                    self.update.pending_delete_set.add(client, start, end - start);
+                }
+                if let Some(range) = split.applicable {
+                    applicable = Some(range.start..range.end);
+                    break;
                 }
             }
 

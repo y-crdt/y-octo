@@ -1,0 +1,10 @@
+{
+  "aeneas_release": "nightly-2026.11.22-2e3d448",
+  "aeneas_commit": "2e3d4488280bb8a95411db81019a7854a784861f",
+  "charon_commit": "9e193f0317dacc822cc864c1798b117c70dcf7df",
+  "linux_x86_64_archive_sha256": "22bb7387aff731b3e4fbdaed05f107d920183f51dc5d0247f1e21913f1b3e20b",
+  "rust_toolchain": "nightly-2026-09-17",
+  "charon_sysroot": "default",
+  "lean_toolchain": "leanprover/lean4:v4.36.0",
+  "mathlib_commit": "fc4f59e577feb1a4956671bc04ac18aaaf8cd842"
+}

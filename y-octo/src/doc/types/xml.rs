@@ -633,7 +633,9 @@ impl XMLText {
 
     #[inline]
     pub fn insert<T: ToString>(&mut self, char_index: u64, str: T) -> JwstCodecResult {
-        self.insert_at(char_index, Content::String(str.to_string()))
+        let str = str.to_string();
+        self.as_inner()
+            .write(|store, ty| text::text_insert(store, ty, char_index, str))
     }
 
     pub fn insert_embed<V: Into<Any>>(&mut self, char_index: u64, embed: V) -> JwstCodecResult {

@@ -1,10 +1,13 @@
 [workspace]
 
-members  = ["y-octo", "y-octo-utils", "y-octo-wasm"]
+members  = ["y-octo", "y-octo-core", "y-octo-utils", "y-octo-wasm"]
 resolver = "2"
 
   [workspace.dependencies]
-  ahash = { version = "0.8", default-features = false }
+  # Pin below 0.8.13: 0.8.13 added an unconditional wasm32 getrandom
+  # dependency (breaking no-randomness wasm32 builds) and broke Borrow<str>
+  # hash consistency (SmolStr vs &str) under nightly #[cfg(specialize)].
+  ahash = { version = ">=0.8.0, <0.8.13", default-features = false }
   arbitrary = { version = "1.4", features = ["derive"] }
   assert-json-diff = "2.0"
   async-lock = { version = "3.4", features = ["loom"] }
@@ -33,6 +36,7 @@ resolver = "2"
   smol_str = "0.3"
   thiserror = "2"
   y-octo = { path = "./y-octo" }
+  y-octo-core = { path = "./y-octo-core", version = "0.1.0" }
 
 [profile.release]
 codegen-units = 1

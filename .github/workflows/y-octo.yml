@@ -65,6 +65,7 @@ jobs:
         run: |
           set -o pipefail
           cargo +nightly clippy --all-features --message-format=json -- -D warnings | clippy-sarif | tee rust-clippy-results.sarif | sarif-fmt
+          RUSTFLAGS="-D warnings" cargo check --workspace --benches
           RUSTDOCFLAGS="-D rustdoc::broken-intra-doc-links" cargo doc --workspace --all-features --no-deps
         env:
           CARGO_TERM_COLOR: always
@@ -99,7 +100,7 @@ jobs:
         uses: taiki-e/install-action@cargo-llvm-cov
 
       - name: Collect coverage data
-        run: cargo llvm-cov nextest --all-targets --lcov --output-path lcov.info
+        run: cargo llvm-cov nextest --lib --tests --lcov --output-path lcov.info
       - name: Upload coverage data to codecov
         # uploads without a token are rate limited; coverage is informative,
         # the tests above are the gate
@@ -142,13 +143,13 @@ jobs:
         uses: ./.github/actions/setup-rust
         with:
           toolchain: ${{ env.nightly }}
-          components: miri
+          components: miri, rust-src
       - name: Install latest nextest release
         uses: taiki-e/install-action@nextest
 
       - name: Miri Code Check
         run: |
-          cargo +${{ env.nightly }} miri nextest run -p y-octo -j2
+          TOOLCHAIN="${{ env.nightly }}" bash .github/scripts/run-miri.sh
 
   asan:
     name: Address sanitizer
@@ -164,11 +165,13 @@ jobs:
         uses: ./.github/actions/setup-rust
         with:
           toolchain: ${{ env.nightly }}
+          components: rust-src
+      - name: Install latest nextest release
+        uses: taiki-e/install-action@nextest
 
       - name: Memory Check
         run: |
-          rustup component add rust-src --toolchain ${{ env.nightly }}
-          cargo +${{ env.nightly }} test -Zbuild-std --target x86_64-unknown-linux-gnu -p y-octo --lib
+          cargo +${{ env.nightly }} nextest run -Zbuild-std --target x86_64-unknown-linux-gnu -p y-octo --lib
 
   differential:
     name: bidirectional Yjs differential
@@ -189,16 +192,16 @@ jobs:
           npm run check --prefix y-octo/tests/oracle
       - name: Run online differential batch
         run: |
-          cargo test -p y-octo --test trace_differential --features large_refs online_storage_chain -- --ignored --exact --nocapture
-          cargo test -p y-octo --test trace_differential --features large_refs online_yjs_differential -- --ignored --exact --nocapture
-          cargo test -p y-octo --test legacy_yjs_wire --features large_refs online_legacy_yjs_roundtrip -- --ignored --exact --nocapture
-          cargo test -p y-octo --test trace_differential --features large_refs online_fuzz_trajectories -- --ignored --exact --nocapture
-          cargo test -p y-octo --test detached_child --features large_refs online_preliminary_yjs_roundtrip -- --ignored --exact --nocapture
-          cargo test -p y-octo --test format_cleanup --features large_refs online_format_cleanup_persistent_replicas -- --ignored --exact --nocapture
-          cargo test -p y-octo --test yjs_local_oracle --features large_refs online_yjs_renderer_reads_native_undo -- --ignored --exact --nocapture
-          cargo test -p y-octo --test deep_any --features large_refs online_deep_any_yjs_roundtrip -- --ignored --exact --nocapture
-          cargo test -p y-octo --test wire_ops --features large_refs online_wire_ops_yjs_differential -- --ignored --exact --nocapture
-          cargo test -p y-octo --test yjs_xml_oracle --features large_refs online_yjs_13_6_33_xml_bidirectional_oracle -- --ignored --exact --nocapture
+          cargo test -p y-octo --test trace_differential online_storage_chain -- --ignored --exact --nocapture
+          cargo test -p y-octo --test trace_differential online_yjs_differential -- --ignored --exact --nocapture
+          cargo test -p y-octo --test legacy_yjs_wire online_legacy_yjs_roundtrip -- --ignored --exact --nocapture
+          cargo test -p y-octo --test trace_differential online_fuzz_trajectories -- --ignored --exact --nocapture
+          cargo test -p y-octo --test detached_child online_preliminary_yjs_roundtrip -- --ignored --exact --nocapture
+          cargo test -p y-octo --test format_cleanup online_format_cleanup_persistent_replicas -- --ignored --exact --nocapture
+          cargo test -p y-octo --test yjs_local_oracle online_yjs_renderer_reads_native_undo -- --ignored --exact --nocapture
+          cargo test -p y-octo --test deep_any online_deep_any_yjs_roundtrip -- --ignored --exact --nocapture
+          cargo test -p y-octo --test wire_ops online_wire_ops_yjs_differential -- --ignored --exact --nocapture
+          cargo test -p y-octo --test yjs_xml_oracle online_yjs_13_6_33_xml_bidirectional_oracle -- --ignored --exact --nocapture
       - name: Preserve minimized failures
         if: failure()
         uses: actions/upload-artifact@v4
@@ -246,7 +249,6 @@ jobs:
         run: |
           cargo check -p y-octo --target wasm32-unknown-unknown --no-default-features
           cargo check -p y-octo --target wasm32-unknown-unknown --no-default-features --features session
-          cargo check -p y-octo --target wasm32-unknown-unknown --no-default-features --features large_refs
           cargo test -p y-octo --lib --no-default-features
           cargo test -p y-octo --lib --no-default-features --features session
       - name: Run the wasm module and read its update with Yjs
@@ -276,7 +278,7 @@ jobs:
           npm run check:upstream --prefix y-octo/tests/oracle
           node y-octo/tests/oracle/upstream.mjs --report >> "$GITHUB_STEP_SUMMARY"
       - name: Replay every recorded document
-        run: cargo test --release -p y-octo --test yjs_upstream_oracle --features large_refs replay_upstream_factory -- --ignored --exact --nocapture
+        run: cargo test --release -p y-octo --test yjs_upstream_oracle replay_upstream_factory -- --ignored --exact --nocapture
       - name: Verify full exports for the registered text-reader gap
         run: node y-octo/tests/oracle/upstream-exports.mjs
       - name: Preserve generated corpus on failure or manual request

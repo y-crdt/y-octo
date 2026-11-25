@@ -24,15 +24,16 @@ use history::SessionHistoryHub;
 use ops::{
     InsertSlot, check_array_read_kind, check_map_read_kind, check_text_read_kind, check_xml_element_kind,
     check_xml_name_kind, check_xml_string_kind, compute_type_path, insert_session_value, is_type_alive, new_type_count,
-    parse_json_content_elem, read_value_from_content, resolve_identity_raw, resolve_path_in_store, resolve_target,
-    solidify_array_kind, solidify_map_kind, solidify_text_kind, solidify_xml_element_kind, validate_session_value,
+    parse_json_content_elem, read_value_from_content, resolve_identity_raw, resolve_path_in_store, resolve_root,
+    resolve_target, solidify_array_kind, solidify_map_kind, solidify_text_kind, solidify_xml_element_kind,
+    validate_session_value,
 };
 use smol_str::SmolStr;
 
 use super::{
-    transaction::commit_store,
+    transaction::{commit_store, encode_local_commit},
     types::{
-        ListIterator, YTypeBuilder, item_at, list_insert, list_remove, map, text,
+        ListIterator, YTypeBuilder, item_at, list_remove, map, text,
         xml::{xml_hook_name, xml_tag_name, xml_text_to_string, xml_to_string},
     },
     undo::{Meta, downcast},
@@ -461,7 +462,7 @@ impl<M: Clone + Send + Sync + 'static> DocSession<M> {
             None,
             true,
         );
-        let commit = primary.as_ref().map(|ev| self.build_commit_locked(&store, ev, None));
+        let commit = primary.map(|ev| self.build_commit_locked(&store, *ev, None));
         drop(deferred);
         Ok(commit)
     }
@@ -590,12 +591,23 @@ impl<M: Clone + Send + Sync + 'static> DocSession<M> {
             }))
     }
 
-    pub fn read_text_len(&self, target: &TypeTarget) -> JwstCodecResult<u64> {
-        let store = read_store(&self.doc_ref().store)?;
-        let ty = resolve_target(&store, target)?;
+    #[inline]
+    fn read_text_len_idx(store: &DocStore, ty: TypeIdx) -> JwstCodecResult<u64> {
         let ty = store.type_arena.get(ty).ok_or(JwstCodecError::DocReleased)?;
         check_text_read_kind(ty)?;
         Ok(ty.len)
+    }
+
+    pub fn read_text_len(&self, target: &TypeTarget) -> JwstCodecResult<u64> {
+        let store = read_store(&self.doc_ref().store)?;
+        let ty = resolve_target(&store, target)?;
+        Self::read_text_len_idx(&store, ty)
+    }
+
+    pub fn read_text_len_root(&self, root: &str) -> JwstCodecResult<u64> {
+        let store = read_store(&self.doc_ref().store)?;
+        let ty = resolve_root(&store, root)?;
+        Self::read_text_len_idx(&store, ty)
     }
 
     pub fn read_text_string(&self, target: &TypeTarget) -> JwstCodecResult<String> {
@@ -737,17 +749,16 @@ impl<M: Clone + Send + Sync + 'static> DocSession<M> {
         }
         self.mutate_in_tx(|store| {
             let parent = resolve_target(store, target)?;
-            let start = {
+            {
                 let ty = store.type_arena.get(parent).ok_or(JwstCodecError::DocReleased)?;
                 check_array_read_kind(ty)?;
-                ty.len
-            };
+            }
             // all of the batch or none of it
             store
                 .type_arena
                 .check_capacity(values.iter().map(new_type_count).sum())?;
-            for (cursor, value) in (start..).zip(values) {
-                insert_session_value(store, parent, InsertSlot::ListIndex(cursor), value)?;
+            for value in values {
+                insert_session_value(store, parent, InsertSlot::ListPush, value)?;
             }
             Ok(())
         })
@@ -772,6 +783,21 @@ impl<M: Clone + Send + Sync + 'static> DocSession<M> {
         })
     }
 
+    #[inline]
+    fn text_insert_idx(store: &mut DocStore, parent: TypeIdx, index: u64, text_str: &str) -> JwstCodecResult {
+        store.edit_type(parent, |store, ty| {
+            check_text_read_kind(&store.type_arena[ty])?;
+            if index > store.type_arena[ty].len {
+                return Err(JwstCodecError::IndexOutOfBound(index));
+            }
+            solidify_text_kind(&mut store.type_arena[ty])?;
+            if text_str.is_empty() {
+                return Ok(());
+            }
+            text::text_insert(store, ty, index, text_str.to_string())
+        })
+    }
+
     pub fn text_insert(
         &mut self,
         target: &TypeTarget,
@@ -780,14 +806,31 @@ impl<M: Clone + Send + Sync + 'static> DocSession<M> {
     ) -> JwstCodecResult<Option<SessionCommit<M>>> {
         self.mutate_in_tx(|store| {
             let parent = resolve_target(store, target)?;
-            store.edit_type(parent, |store, ty| {
-                check_text_read_kind(&store.type_arena[ty])?;
-                if index > store.type_arena[ty].len {
-                    return Err(JwstCodecError::IndexOutOfBound(index));
-                }
-                solidify_text_kind(&mut store.type_arena[ty])?;
-                list_insert(store, ty, index, Content::String(text_str.to_string()))
-            })
+            Self::text_insert_idx(store, parent, index, text_str)
+        })
+    }
+
+    pub fn text_insert_root(
+        &mut self,
+        root: &str,
+        index: u64,
+        text_str: &str,
+    ) -> JwstCodecResult<Option<SessionCommit<M>>> {
+        self.mutate_in_tx(|store| {
+            let parent = resolve_root(store, root)?;
+            Self::text_insert_idx(store, parent, index, text_str)
+        })
+    }
+
+    #[inline]
+    fn text_remove_idx(store: &mut DocStore, parent: TypeIdx, index: u64, len: u64) -> JwstCodecResult {
+        store.edit_type(parent, |store, ty| {
+            check_text_read_kind(&store.type_arena[ty])?;
+            if len > 0 && store.type_arena[ty].len > 0 && index >= store.type_arena[ty].len {
+                return Err(JwstCodecError::IndexOutOfBound(index));
+            }
+            solidify_text_kind(&mut store.type_arena[ty])?;
+            text::text_remove(store, ty, index, len)
         })
     }
 
@@ -799,14 +842,14 @@ impl<M: Clone + Send + Sync + 'static> DocSession<M> {
     ) -> JwstCodecResult<Option<SessionCommit<M>>> {
         self.mutate_in_tx(|store| {
             let parent = resolve_target(store, target)?;
-            store.edit_type(parent, |store, ty| {
-                check_text_read_kind(&store.type_arena[ty])?;
-                if len > 0 && store.type_arena[ty].len > 0 && index >= store.type_arena[ty].len {
-                    return Err(JwstCodecError::IndexOutOfBound(index));
-                }
-                solidify_text_kind(&mut store.type_arena[ty])?;
-                text::text_remove(store, ty, index, len)
-            })
+            Self::text_remove_idx(store, parent, index, len)
+        })
+    }
+
+    pub fn text_remove_root(&mut self, root: &str, index: u64, len: u64) -> JwstCodecResult<Option<SessionCommit<M>>> {
+        self.mutate_in_tx(|store| {
+            let parent = resolve_root(store, root)?;
+            Self::text_remove_idx(store, parent, index, len)
         })
     }
 
@@ -919,10 +962,10 @@ impl<M: Clone + Send + Sync + 'static> DocSession<M> {
             Doc::integrate_update(tx.store_mut(), update)
         })?;
         let mut commits = Vec::with_capacity(usize::from(primary.is_some()) + usize::from(cleanup.is_some()));
-        if let Some(ev) = primary.as_ref() {
+        if let Some(ev) = primary {
             commits.push(self.build_commit_unlocked(ev, None));
         }
-        if let Some(cleanup_ev) = cleanup.as_ref() {
+        if let Some(cleanup_ev) = cleanup {
             commits.push(self.build_commit_unlocked(cleanup_ev, None));
         }
         Ok(commits)
@@ -1081,7 +1124,7 @@ impl<M: Clone + Send + Sync + 'static> DocSession<M> {
         match (performed, primary) {
             (Some((_, meta)), Some(ev)) => {
                 let typed = meta.map(|m| (*downcast::<M>(m)).clone());
-                Ok(Some(self.build_commit_unlocked(&ev, typed)))
+                Ok(Some(self.build_commit_unlocked(ev, typed)))
             }
             _ => Ok(None),
         }
@@ -1230,11 +1273,44 @@ impl<M: Clone + Send + Sync + 'static> DocSession<M> {
             return Err(JwstCodecError::ClientIdRequired);
         }
         debug_assert!(store.collector.is_empty());
-        let mut before_state = store.get_state_vector();
-        let mut local = true;
-        let mut capture_history = true;
-        let origin = Some(self.tracked_origin.clone());
-        let mut incoming = None;
+
+        if self.has_history_hub || store.history_hook.is_some() {
+            let mut before_state = store.get_state_vector();
+            let mut local = true;
+            let mut capture_history = true;
+            let origin = Some(self.tracked_origin.clone());
+            let mut incoming = None;
+
+            let res = f(&mut store);
+            if let Err(err) = res {
+                debug_assert!(
+                    store.collector.is_empty(),
+                    "failed standalone session write mutated store.collector"
+                );
+                if let Some(origin) = origin {
+                    after_unlock(move || drop(origin));
+                }
+                return Err(err);
+            }
+            let (primary, _) = commit_store(
+                &mut store,
+                &mut before_state,
+                &mut local,
+                &mut capture_history,
+                &origin,
+                &mut incoming,
+                None,
+                true,
+            );
+            let commit = primary.map(|ev| self.build_commit_locked(&store, *ev, None));
+            if let Some(origin) = origin {
+                after_unlock(move || drop(origin));
+            }
+            return Ok(commit);
+        }
+
+        let client = store.client();
+        let before_clock = store.get_state(client);
 
         let res = f(&mut store);
         if let Err(err) = res {
@@ -1242,11 +1318,112 @@ impl<M: Clone + Send + Sync + 'static> DocSession<M> {
                 store.collector.is_empty(),
                 "failed standalone session write mutated store.collector"
             );
-            if let Some(origin) = origin {
-                after_unlock(move || drop(origin));
-            }
             return Err(err);
         }
+
+        debug_assert_eq!(store.client(), client);
+        let after_clock = store.get_state(client);
+        let changes =
+            after_clock > before_clock || !store.collector.deleted.is_empty() || !store.collector.changed.is_empty();
+        if !changes {
+            if !store.collector.is_empty() {
+                let gc = store.gc;
+                store.optimize_local(gc, client, after_clock);
+            } else {
+                store.finish_item_space();
+            }
+            return Ok(None);
+        }
+
+        if !store.events.has_subscribers() {
+            let mut changed_entries = Vec::with_capacity(store.collector.changed.len());
+            for (&ty_idx, raw_keys) in &store.collector.changed {
+                let Some(ty) = store.type_arena.get(ty_idx) else {
+                    continue;
+                };
+                if let Some(item) = ty.live_carrier(&store.type_arena.items)
+                    && (item.deleted() || (item.id.client == client && item.id.clock >= before_clock))
+                {
+                    continue;
+                }
+                let Ok(identity) = ty.identity(&store.type_arena.items) else {
+                    continue;
+                };
+                let keys = if raw_keys.is_empty() {
+                    Vec::new()
+                } else {
+                    let mut keys: Vec<String> = raw_keys.iter().map(|k| k.to_string()).collect();
+                    keys.sort();
+                    keys.dedup();
+                    keys
+                };
+                changed_entries.push((identity, keys));
+            }
+
+            let subdocs_added = if store.collector.subdocs_added.is_empty() {
+                Vec::new()
+            } else {
+                let mut v: Vec<String> = store
+                    .collector
+                    .subdocs_added
+                    .iter()
+                    .map(|(_, guid)| guid.clone())
+                    .collect();
+                v.sort();
+                v.dedup();
+                v
+            };
+            let subdocs_removed = if store.collector.subdocs_removed.is_empty() {
+                Vec::new()
+            } else {
+                let mut v = store.collector.subdocs_removed.clone();
+                v.sort();
+                v.dedup();
+                v
+            };
+            let deleted_for_wire = if store.collector.deleted.is_empty() {
+                DeleteSet::default()
+            } else {
+                store.collector.deleted.clone()
+            };
+
+            let gc = store.gc;
+            store.optimize_local(gc, client, after_clock);
+            store.commit_seq += 1;
+            let update = encode_local_commit(&store, client, before_clock, after_clock, &deleted_for_wire)
+                .expect("the store encodes its own structs");
+            let changed = changed_entries
+                .into_iter()
+                .map(|(identity, keys)| {
+                    let path = Self::resolve_changed_path(&store, &identity);
+                    SessionChangedType { identity, path, keys }
+                })
+                .collect();
+
+            return Ok(Some(SessionCommit {
+                revision: store.commit_seq,
+                update,
+                is_local: true,
+                origin_kind: SessionOriginKind::LocalTransact,
+                changed,
+                subdocs_added,
+                subdocs_removed,
+                can_undo: false,
+                can_redo: false,
+                selection_meta: None,
+            }));
+        }
+
+        let mut before_state = store.get_state_vector();
+        if before_clock == 0 {
+            before_state.remove(&client);
+        } else {
+            before_state.insert(client, before_clock);
+        }
+        let mut local = true;
+        let mut capture_history = true;
+        let origin = Some(self.tracked_origin.clone());
+        let mut incoming = None;
         let (primary, _) = commit_store(
             &mut store,
             &mut before_state,
@@ -1257,11 +1434,28 @@ impl<M: Clone + Send + Sync + 'static> DocSession<M> {
             None,
             true,
         );
-        let commit = primary.as_ref().map(|ev| self.build_commit_locked(&store, ev, None));
+        let commit = primary.map(|ev| self.build_commit_locked(&store, *ev, None));
         if let Some(origin) = origin {
             after_unlock(move || drop(origin));
         }
         Ok(commit)
+    }
+
+    fn resolve_changed_path(store: &DocStore, identity: &TypeIdentity) -> Option<TypePath> {
+        match identity {
+            TypeIdentity::Root(name) => store
+                .types
+                .get(name)
+                .and_then(|&ty| store.type_arena.get(ty))
+                .and_then(|t| t.root_name())
+                .map(|root_name| TypePath {
+                    root: root_name.to_owned(),
+                    segments: Vec::new(),
+                }),
+            TypeIdentity::Item(_) => resolve_identity_raw(store, identity)
+                .ok()
+                .and_then(|ty| compute_type_path(&store.type_arena, ty)),
+        }
     }
 
     fn classify_origin(&self, summary: &CommitSummary) -> SessionOriginKind {
@@ -1289,53 +1483,60 @@ impl<M: Clone + Send + Sync + 'static> DocSession<M> {
         SessionOriginKind::LocalTransact
     }
 
-    fn build_commit_locked(
-        &self,
-        store: &DocStore,
-        event: &CommitEvent,
-        selection_meta: Option<M>,
-    ) -> SessionCommit<M> {
-        let changed = event
-            .summary
-            .changed
-            .iter()
+    fn build_commit_locked(&self, store: &DocStore, event: CommitEvent, selection_meta: Option<M>) -> SessionCommit<M> {
+        let origin_kind = self.classify_origin(&event.summary);
+        let CommitEvent { seq, summary, update } = event;
+        let CommitSummary {
+            origin,
+            local,
+            changed: raw_changed,
+            subdocs_added,
+            subdocs_removed,
+            ..
+        } = summary;
+        if let Some(origin) = origin {
+            after_unlock(move || drop(origin));
+        }
+
+        let changed = raw_changed
+            .into_iter()
             .map(|c| {
-                let mut keys: Vec<String> = c.keys.to_vec();
-                keys.sort();
-                keys.dedup();
-                let path = resolve_identity_raw(store, &c.identity)
-                    .ok()
-                    .and_then(|ty| compute_type_path(&store.type_arena, ty));
+                debug_assert!(c.keys.windows(2).all(|w| w[0] < w[1]));
+                let path = Self::resolve_changed_path(store, &c.identity);
                 SessionChangedType {
-                    identity: c.identity.clone(),
+                    identity: c.identity,
                     path,
-                    keys,
+                    keys: c.keys,
                 }
             })
             .collect();
 
-        let (can_undo, can_redo) = store
-            .history_hook
-            .as_deref()
-            .and_then(|hook| hook.as_any().downcast_ref::<SessionHistoryHub>())
-            .map(|hub| hub.can_undo_redo(UndoStackId(0)))
-            .unwrap_or((false, false));
+        let (can_undo, can_redo) = if self.has_history_hub {
+            store
+                .history_hook
+                .as_deref()
+                .and_then(|hook| hook.as_any().downcast_ref::<SessionHistoryHub>())
+                .map(|hub| hub.can_undo_redo(UndoStackId(0)))
+                .unwrap_or((false, false))
+        } else {
+            (false, false)
+        };
 
         SessionCommit {
-            revision: event.seq,
-            update: event.update.clone(),
-            is_local: event.summary.local,
-            origin_kind: self.classify_origin(&event.summary),
+            revision: seq,
+            update,
+            is_local: local,
+            origin_kind,
             changed,
-            subdocs_added: event.summary.subdocs_added.iter().cloned().collect(),
-            subdocs_removed: event.summary.subdocs_removed.iter().cloned().collect(),
+            subdocs_added: subdocs_added.into_iter().collect(),
+            subdocs_removed: subdocs_removed.into_iter().collect(),
             can_undo,
             can_redo,
             selection_meta,
         }
     }
 
-    fn build_commit_unlocked(&self, event: &CommitEvent, selection_meta: Option<M>) -> SessionCommit<M> {
+    fn build_commit_unlocked(&self, event: CommitEvent, selection_meta: Option<M>) -> SessionCommit<M> {
         let store = read_store_or_panic(&self.doc_ref().store);
         self.build_commit_locked(&store, event, selection_meta)
     }

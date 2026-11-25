@@ -472,3 +472,49 @@ fn contended_nested_read_does_not_wait_across_a_thread_join() {
         Some(3000),
     );
 }
+
+#[cfg(loom)]
+#[test]
+fn implicit_local_write_linearizes_with_concurrent_subscribe_and_unsubscribe() {
+    run_loom_model(
+        || {
+            let doc = Doc::with_client(1);
+            let mut text = doc.get_or_create_text("text").unwrap();
+            let reader_text = text.clone();
+            let seen = Arc::new(Mutex::new(Vec::new()));
+            let sink = seen.clone();
+
+            let writer = thread::spawn(move || {
+                text.insert(0, "x").unwrap();
+            });
+
+            let before_sub = reader_text.len();
+            let sub = doc.subscribe(move |event| {
+                sink.lock().unwrap().push(event.seq);
+            });
+            let after_sub = reader_text.len();
+            let before_unsub = reader_text.len();
+            drop(sub);
+            let after_unsub = reader_text.len();
+
+            writer.join().unwrap();
+            let seen = seen.lock().unwrap().clone();
+            if before_sub == 1 || after_unsub == 0 {
+                assert!(
+                    seen.is_empty(),
+                    "before_sub={before_sub} after_sub={after_sub} before_unsub={before_unsub} \
+                     after_unsub={after_unsub} seen={seen:?}"
+                );
+            }
+            if after_sub == 0 && before_unsub == 1 {
+                assert_eq!(
+                    seen,
+                    vec![1],
+                    "before_sub={before_sub} after_sub={after_sub} before_unsub={before_unsub} \
+                     after_unsub={after_unsub}"
+                );
+            }
+        },
+        Some(3000),
+    );
+}

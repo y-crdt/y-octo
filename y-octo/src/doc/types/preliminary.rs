@@ -50,6 +50,8 @@ impl TypeArena {
 // iterative and cannot overflow the stack on deeply nested preliminary types.
 pub(in crate::doc) struct PreparedType {
     nodes: Vec<PreparedNode>,
+    /// The items the type and the types below it bring: a local block each.
+    items: usize,
 }
 struct PreparedNode {
     ty: TypeIdx,
@@ -101,7 +103,10 @@ impl PreparedType {
             nodes[node_idx].entries = entries;
         }
         types.items.check_capacity(slots)?;
-        Ok(Self { nodes })
+        Ok(Self {
+            nodes,
+            items: slots - 1,
+        })
     }
     fn integrate(mut self, store: &mut DocStore) -> JwstCodecResult {
         struct Frame {
@@ -162,6 +167,47 @@ impl PreparedType {
 }
 
 impl DocStore {
+    /// Whether the document takes `content` as a new local item, with the
+    /// items of the preliminary type it may carry, after the struct that
+    /// holds `split` is cut there (`None`: the item goes between two
+    /// structs).
+    pub(in crate::doc) fn check_local_insert(&self, content: &Content, split: Option<Id>) -> JwstCodecResult {
+        let mut clock = self
+            .get_state(self.client())
+            .checked_add(content.clock_len())
+            .ok_or_else(|| JwstCodecError::IncompleteDocument("struct clock overflow".into()))?;
+        let extra_slots = usize::from(split.is_some());
+        let mut slots = 1usize.saturating_add(extra_slots);
+        if let Content::Type(child) = content
+            && self.type_arena[*child].preliminary.is_some()
+        {
+            let mut stack = vec![*child];
+            while let Some(ty_idx) = stack.pop() {
+                let ty = &self.type_arena[ty_idx];
+                let mut visit = |item: &Item| -> JwstCodecResult {
+                    clock = clock
+                        .checked_add(item.len())
+                        .ok_or_else(|| JwstCodecError::IncompleteDocument("struct clock overflow".into()))?;
+                    slots = slots.saturating_add(1);
+                    if let Content::Type(nested) = item.content {
+                        stack.push(nested);
+                    }
+                    Ok(())
+                };
+                for item in ListIterator::new(&self.type_arena.items, ty) {
+                    visit(item)?;
+                }
+                for (_, item) in map_entries(&self.type_arena.items, ty) {
+                    visit(item)?;
+                }
+            }
+        }
+        self.type_arena.items.check_capacity(slots)?;
+        // the new items are blocks of the local timeline, the cut is one of
+        // the timeline of the struct it cuts
+        self.check_blocks(self.client(), slots - extra_slots, &[split])
+    }
+
     pub(in crate::doc) fn prepare_preliminary(
         &self,
         ty: TypeIdx,
@@ -174,7 +220,16 @@ impl DocStore {
             Some(self.get_state(self.client()))
         };
         let clock = start.ok_or_else(|| JwstCodecError::IncompleteDocument("struct clock overflow".into()))?;
-        PreparedType::capture(&self.type_arena, ty, clock)
+        let prepared = PreparedType::capture(&self.type_arena, ty, clock)?;
+        // The items of the type follow its carrier on the local timeline,
+        // which the carrier is on as well when it is a local item: all of
+        // them fit before the carrier is added, or it is not.
+        self.check_blocks(
+            self.client(),
+            prepared.items + usize::from(carrier.client == self.client()),
+            &[],
+        )?;
+        Ok(prepared)
     }
 }
 

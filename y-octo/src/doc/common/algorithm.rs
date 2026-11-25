@@ -1,6 +1,14 @@
 use std::borrow::Cow;
 
-use super::{HashSet, Id, StateVector};
+use y_octo_core::{
+    id_order::{IdOrderCore, Recent},
+    pending::dep_missing,
+    utf16::utf16_split_byte_offset,
+    yata_store::{ConflictDecision, IdCore, ScanStep, decide_conflict_step, decide_owner_step},
+};
+
+use super::{Id, StateVector, TOO_MANY_CANDIDATES};
+use crate::{JwstCodecError, JwstCodecResult};
 
 pub(crate) fn find_clock_segment(
     count: usize,
@@ -30,29 +38,154 @@ pub(crate) fn find_clock_segment(
 /// Like Yjs ContentString.splice, replace each retained half of a split
 /// surrogate pair with U+FFFD rather than rounding the boundary and changing
 /// its clock length.
+///
+/// The two boundaries are found by
+/// `y_octo_core::utf16::utf16_split_byte_offset` (proved in `proofs/`): the
+/// first from the start of `value`, the second from the first one on, so
+/// `value` is walked once.
 pub(crate) fn utf16_slice(value: &str, offset: u64, len: u64) -> Cow<'_, str> {
-    Utf16Slices::new(value).slice(offset, len)
+    if len == 0 {
+        return Cow::Borrowed(&value[..0]);
+    }
+    let bytes = value.as_bytes();
+    let start = utf16_split_byte_offset(bytes, offset);
+    // the clock of the char at `start.start`: `offset`, or the half before it
+    let start_clock = if start.split_surrogate { offset - 1 } else { offset };
+    let end = utf16_split_byte_offset(&bytes[start.start..], offset.saturating_add(len) - start_clock);
+    let selected = &value[if start.split_surrogate { start.end } else { start.start }..start.start + end.start];
+    if start.split_surrogate || end.split_surrogate {
+        Cow::Owned(format!(
+            "{}{selected}{}",
+            if start.split_surrogate { "\u{FFFD}" } else { "" },
+            if end.split_surrogate { "\u{FFFD}" } else { "" },
+        ))
+    } else {
+        Cow::Borrowed(selected)
+    }
+}
+
+/// Returns the suffix of `value` starting at UTF-16 code-unit `offset`, given
+/// the precomputed `total_utf16_len` of `value`. Matches
+/// `utf16_slice(value, offset, u64::MAX)` on surrogate-pair boundaries by
+/// prefixing `U+FFFD` when `offset` splits a 4-byte scalar.
+///
+/// Uses an O(1) ASCII fast path when `total_utf16_len == value.len() as u64`,
+/// and scans from the closer end (reverse when `offset > total_utf16_len / 2`,
+/// forward otherwise) so sequential tail encoding is O(tail) instead of O(N).
+pub(crate) fn utf16_tail(value: &str, total_utf16_len: u64, offset: u64) -> Cow<'_, str> {
+    if offset == 0 {
+        return Cow::Borrowed(value);
+    }
+    if offset >= total_utf16_len {
+        return Cow::Borrowed(&value[value.len()..]);
+    }
+    if total_utf16_len == value.len() as u64 {
+        let off = usize::try_from(offset).expect("offset < value.len()");
+        return Cow::Borrowed(&value[off..]);
+    }
+    if offset > total_utf16_len / 2 {
+        let rem = total_utf16_len - offset;
+        let mut seen = 0u64;
+        for (byte_idx, ch) in value.char_indices().rev() {
+            seen += ch.len_utf16() as u64;
+            if seen == rem {
+                return Cow::Borrowed(&value[byte_idx..]);
+            }
+            if seen > rem {
+                let tail = &value[byte_idx + ch.len_utf8()..];
+                let mut owned = String::with_capacity('\u{FFFD}'.len_utf8() + tail.len());
+                owned.push('\u{FFFD}');
+                owned.push_str(tail);
+                return Cow::Owned(owned);
+            }
+        }
+        return Cow::Borrowed(value);
+    }
+    let at = utf16_split_byte_offset(value.as_bytes(), offset);
+    if at.split_surrogate {
+        let tail = &value[at.end..];
+        let mut owned = String::with_capacity('\u{FFFD}'.len_utf8() + tail.len());
+        owned.push('\u{FFFD}');
+        owned.push_str(tail);
+        Cow::Owned(owned)
+    } else {
+        Cow::Borrowed(&value[at.start..])
+    }
 }
 
 /// Split `value` in place at UTF-16 code-unit `offset`, returning the right
 /// half. Matches [`utf16_slice`] on surrogate-pair boundaries by replacing each
 /// retained half with `U+FFFD`.
 pub(crate) fn utf16_split_in_place(value: &mut String, offset: u64) -> String {
-    let mut slices = Utf16Slices::new(value);
-    let (byte, after_byte, split_surrogate) = slices.boundary(offset);
-    let right = if split_surrogate {
-        let tail = &value[after_byte..];
+    let at = utf16_split_byte_offset(value.as_bytes(), offset);
+    let right = if at.split_surrogate {
+        let tail = &value[at.end..];
         let mut right = String::with_capacity('\u{FFFD}'.len_utf8() + tail.len());
         right.push('\u{FFFD}');
         right.push_str(tail);
-        value.truncate(byte);
+        value.truncate(at.start);
         value.push('\u{FFFD}');
         right
     } else {
-        value.split_off(byte)
+        value.split_off(at.start)
     };
-    value.shrink_to_fit();
+    if value.capacity() > value.len().saturating_mul(2).max(64) {
+        value.shrink_to_fit();
+    }
     right
+}
+
+/// Split `value` in place at UTF-16 code-unit `offset` using the precomputed
+/// `total_utf16_len` of `value`, returning the right half.
+///
+/// Matches [`utf16_split_in_place`] and [`utf16_slice`] on every boundary
+/// including surrogate pairs, with an O(1) ASCII fast path when
+/// `total_utf16_len == value.len() as u64` and a reverse scan when
+/// `offset > total_utf16_len / 2`.
+pub(crate) fn utf16_split_in_place_with_len(value: &mut String, total_utf16_len: u64, offset: u64) -> String {
+    debug_assert!(total_utf16_len <= value.len() as u64);
+    if offset == 0 {
+        return std::mem::take(value);
+    }
+    if offset >= total_utf16_len {
+        return String::new();
+    }
+    if total_utf16_len == value.len() as u64 {
+        let off = usize::try_from(offset).expect("offset < value.len()");
+        let right = value.split_off(off);
+        if value.capacity() > value.len().saturating_mul(2).max(64) {
+            value.shrink_to_fit();
+        }
+        return right;
+    }
+    if offset > total_utf16_len / 2 {
+        let rem = total_utf16_len - offset;
+        let mut seen = 0u64;
+        for (byte_idx, ch) in value.char_indices().rev() {
+            seen += ch.len_utf16() as u64;
+            if seen == rem {
+                let right = value.split_off(byte_idx);
+                if value.capacity() > value.len().saturating_mul(2).max(64) {
+                    value.shrink_to_fit();
+                }
+                return right;
+            }
+            if seen > rem {
+                let tail = &value[byte_idx + ch.len_utf8()..];
+                let mut right = String::with_capacity('\u{FFFD}'.len_utf8() + tail.len());
+                right.push('\u{FFFD}');
+                right.push_str(tail);
+                value.truncate(byte_idx);
+                value.push('\u{FFFD}');
+                if value.capacity() > value.len().saturating_mul(2).max(64) {
+                    value.shrink_to_fit();
+                }
+                return right;
+            }
+        }
+        return std::mem::take(value);
+    }
+    utf16_split_in_place(value, offset)
 }
 
 pub(crate) struct Utf16Slices<'a> {
@@ -102,7 +235,172 @@ impl<'a> Utf16Slices<'a> {
     }
 }
 
+#[inline]
+pub(crate) fn core_id(id: Id) -> IdCore {
+    IdCore {
+        client: id.client,
+        clock: id.clock,
+    }
+}
+
+/// The key of the table of one conflict scan: two words a peer cannot know,
+/// so the ids it sends cannot be chosen to share their probes
+/// (`IdOrderCore::key`). One `RandomState` gives both. Without the feature
+/// `random` (`ahash` 0.8.12 with `compile-time-rng`) the seeds `ahash`
+/// hashes under are the ones it was built with, the same in every run of
+/// one build. The words are still not one key for the process: every
+/// `RandomState::new()` mixes in a counter that `ahash` steps by an address
+/// of its own, so no two scans share a key. They are no better hidden than
+/// the build, the number of `RandomState`s made before the scan and that
+/// address (`proofs/TRUSTED.md`, §4).
+#[cfg(not(loom))]
+fn scan_key() -> (u64, u64) {
+    let state = ahash::RandomState::new();
+    (state.hash_one(0u64), state.hash_one(1u64))
+}
+
+/// Loom needs every execution of a model to take the same steps.
+#[cfg(loom)]
+fn scan_key() -> (u64, u64) {
+    (0, 0)
+}
+
+/// The candidates one conflict scan has walked, in their order: what Yjs
+/// keeps as the sets `itemsBeforeOrigin` (all of them) and
+/// `conflictingItems` (the ones since the last candidate that was taken).
+///
+/// Both sets are read off one list, `IdOrderCore` of `y-octo-core`
+/// (`IdOrder.recent_spec`, `position_spec` in `proofs/`): a struct is in the
+/// first set when the list holds it, and in the second one when its place is
+/// not before the last taken candidate. Taking a candidate moves a mark and
+/// empties nothing. The struct an origin points into is mostly the one the
+/// scan asked for before, or among the last candidates, and is found there
+/// by hand; a scan that has to look further back gives the list a key no
+/// peer knows and asks its table.
+/// How many candidates a scan takes before it refuses the next one: as many
+/// as its list holds, or, in tests, a smaller number that reaches the
+/// refusal. Outside tests it is nothing: a scan makes its list where it
+/// walks, as before.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct ScanLimit {
+    #[cfg(test)]
+    pub(crate) candidates: Option<usize>,
+}
+
+#[derive(Default)]
+struct Scanned {
+    order: IdOrderCore,
+    /// the place the candidates since the last taken one begin at
+    conflict_from: usize,
+    /// A smaller number of candidates than the list takes, to reach the
+    /// refusal in tests.
+    #[cfg(test)]
+    limit: Option<usize>,
+}
+
+impl Scanned {
+    /// The empty list of a scan that takes the candidates `limit` allows.
+    #[inline]
+    fn limited(limit: ScanLimit) -> Self {
+        #[cfg(test)]
+        {
+            Self {
+                limit: limit.candidates,
+                ..Self::default()
+            }
+        }
+        #[cfg(not(test))]
+        {
+            let ScanLimit {} = limit;
+            Self::default()
+        }
+    }
+
+    /// The scan is at the candidate `id`. Answers `false` when the list
+    /// does not take it: it holds `2 ^ 30` candidates (`IdOrder.push_spec`).
+    /// Candidates are distinct items of one list, 128 bytes each next to a
+    /// block of 16 bytes on a timeline and their 16 bytes here: a document
+    /// that gets there holds some 170 GB of them. The scan then ends with
+    /// an error, as it would for a struct the document has no room for.
+    #[inline]
+    fn push(&mut self, id: IdCore) -> bool {
+        #[cfg(test)]
+        if self.limit.is_some_and(|limit| self.order.len() >= limit) {
+            return false;
+        }
+        self.order.push(id)
+    }
+
+    /// The candidate the scan is at becomes the left neighbour: nothing
+    /// conflicts with what comes after it yet.
+    #[inline]
+    fn take(&mut self) {
+        self.conflict_from = self.order.len();
+    }
+
+    /// Whether the struct `owner` is among the candidates walked so far, and
+    /// whether it is among the ones since the last taken candidate.
+    /// Candidates are structs of the document: none is there twice.
+    #[inline]
+    fn find(&mut self, owner: IdCore) -> (bool, bool) {
+        let at = match self.order.recent(owner) {
+            Recent::At(at) => Some(at),
+            Recent::Absent => None,
+            Recent::Far => self.find_far(owner),
+        };
+        match at {
+            Some(at) => (true, at >= self.conflict_from),
+            None => (false, false),
+        }
+    }
+
+    /// The place of a struct that is not among the last candidates.
+    #[cold]
+    #[inline(never)]
+    fn find_far(&mut self, owner: IdCore) -> Option<usize> {
+        if !self.order.is_indexed() {
+            let (k0, k1) = scan_key();
+            self.order.key(k0, k1);
+        }
+        self.order.position(owner)
+    }
+}
+
+/// The YATA conflict scan. What it does with a candidate is decided by
+/// `decide_conflict_step` and `decide_owner_step` of `y-octo-core`: the code
+/// the scan of `YataStoreCore` runs, which `proofs/` shows to be the scan of
+/// the model (`YataStore.scan_step_spec`). The walk, the candidates it has
+/// passed ([Scanned]) and the lookup of the struct that holds an origin stay
+/// here.
+///
+/// It fails only when the list of its candidates is full (`Scanned::push`),
+/// before anything is linked.
+#[inline]
 pub(crate) fn find_conflict_left<T: Clone + Eq>(
+    this: ConflictItem,
+    left: Option<T>,
+    conflict: Option<T>,
+    right: Option<T>,
+    item: impl FnMut(&T) -> Option<ConflictItem>,
+    next: impl FnMut(&T) -> Option<T>,
+    origin_owner: impl FnMut(Id) -> Option<Id>,
+) -> JwstCodecResult<Option<T>> {
+    scan_conflict_left(
+        ScanLimit::default(),
+        this,
+        left,
+        conflict,
+        right,
+        item,
+        next,
+        origin_owner,
+    )
+}
+
+/// [find_conflict_left] with the number of candidates its list takes.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn scan_conflict_left<T: Clone + Eq>(
+    limit: ScanLimit,
     this: ConflictItem,
     mut left: Option<T>,
     mut conflict: Option<T>,
@@ -110,9 +408,10 @@ pub(crate) fn find_conflict_left<T: Clone + Eq>(
     mut item: impl FnMut(&T) -> Option<ConflictItem>,
     mut next: impl FnMut(&T) -> Option<T>,
     mut origin_owner: impl FnMut(Id) -> Option<Id>,
-) -> Option<T> {
-    let mut conflicting = HashSet::default();
-    let mut before_origin = HashSet::default();
+) -> JwstCodecResult<Option<T>> {
+    let mut scanned = Scanned::limited(limit);
+    let origin_left = this.origin_left.map(core_id);
+    let origin_right = this.origin_right.map(core_id);
 
     while let Some(current) = conflict {
         if right.as_ref() == Some(&current) {
@@ -121,45 +420,59 @@ pub(crate) fn find_conflict_left<T: Clone + Eq>(
         let Some(candidate) = item(&current) else {
             break;
         };
-        before_origin.insert(candidate.id);
-        conflicting.insert(candidate.id);
+        if !scanned.push(core_id(candidate.id)) {
+            return Err(JwstCodecError::IncompleteDocument(TOO_MANY_CANDIDATES.into()));
+        }
 
-        if this.origin_left == candidate.origin_left {
-            if candidate.id.client < this.id.client {
-                left = Some(current.clone());
-                conflicting.clear();
-            } else if this.origin_right == candidate.origin_right {
-                break;
+        // the candidate becomes the left neighbour (`Take`), the scan goes on
+        // over it (`Skip`) or ends (`Stop`)
+        let take = match decide_conflict_step(
+            this.id.client,
+            origin_left,
+            origin_right,
+            candidate.id.client,
+            candidate.origin_left.map(core_id),
+            candidate.origin_right.map(core_id),
+        ) {
+            ConflictDecision::Step(ScanStep::Stop) => break,
+            ConflictDecision::Step(ScanStep::Take) => true,
+            ConflictDecision::Step(ScanStep::Skip) => false,
+            ConflictDecision::Owner(candidate_left) => {
+                // Origins can point inside compacted structs; the candidates
+                // are struct starts.
+                let Some(owner) = origin_owner(Id::new(candidate_left.client, candidate_left.clock)) else {
+                    break;
+                };
+                // Yjs stops at an origin outside the scanned prefix; continuing
+                // could choose a later conflict and delete the actual map
+                // winner.
+                let (in_before, in_conflicting) = scanned.find(core_id(owner));
+                match decide_owner_step(in_before, in_conflicting) {
+                    ScanStep::Stop => break,
+                    ScanStep::Take => true,
+                    ScanStep::Skip => false,
+                }
             }
-        } else if let Some(candidate_left) = candidate.origin_left {
-            // Origins can point inside compacted structs; the sets contain
-            // struct starts.
-            let Some(owner) = origin_owner(candidate_left) else {
-                break;
-            };
-            // Yjs stops at an origin outside the scanned prefix; continuing
-            // could choose a later conflict and delete the actual map winner.
-            if !before_origin.contains(&owner) {
-                break;
-            }
-            if !conflicting.contains(&owner) {
-                left = Some(current.clone());
-                conflicting.clear();
-            }
-        } else {
-            break;
+        };
+        if take {
+            left = Some(current.clone());
+            scanned.take();
         }
 
         conflict = next(&current);
     }
 
-    left
+    Ok(left)
 }
 
 /// Returns the client of the first dependency (origin left, origin right,
 /// then parent) not yet covered by `state`, mirroring yjs' integration order
 /// decision. Dependencies on the same client never block: structs of one
 /// client are always consumed in clock order.
+///
+/// Whether a dependency blocks is `dep_missing` of `y-octo-core`
+/// (`Pending.dep_missing_spec`); `state` is only asked for a dependency on
+/// another client, and not past the first one that blocks.
 pub(crate) fn find_missing_dependency(
     id: Id,
     origin_left: Option<Id>,
@@ -167,9 +480,13 @@ pub(crate) fn find_missing_dependency(
     parent: Option<Id>,
     state: &StateVector,
 ) -> Option<u64> {
-    for dependency in [origin_left, origin_right, parent].into_iter().flatten() {
-        if dependency.client != id.client && dependency.clock >= state.get(&dependency.client) {
-            return Some(dependency.client);
+    for dependency in [origin_left, origin_right, parent] {
+        let held = match dependency {
+            Some(dependency) if dependency.client != id.client => state.get(&dependency.client),
+            _ => 0,
+        };
+        if let Some(client) = dep_missing(id.client, dependency.map(core_id), held) {
+            return Some(client);
         }
     }
     None
@@ -274,6 +591,132 @@ mod tests {
     }
 
     #[test]
+    fn utf16_tail_matches_utf16_slice_exhaustively() {
+        let samples = [
+            "",
+            "a",
+            "abcdef",
+            "hello world 0123456789",
+            "中文测试",
+            "Привет мир",
+            "😀",
+            "a😀b",
+            "😀🎉🚀",
+            "a😀😀b",
+            "中😀文🎉Привет𝕳𝖊𝖑𝖑𝖔!",
+            "𝕳a𝕴b𝕵",
+        ];
+        for s in samples {
+            let total = s.encode_utf16().count() as u64;
+            for offset in 0..=total + 2 {
+                let got = utf16_tail(s, total, offset);
+                let expected = utf16_slice(s, offset, u64::MAX);
+                assert_eq!(got, expected, "s={s:?} total={total} offset={offset}");
+                assert_eq!(
+                    matches!(got, Cow::Borrowed(_)),
+                    matches!(expected, Cow::Borrowed(_)),
+                    "Cow variant mismatch for s={s:?} offset={offset}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn utf16_split_in_place_with_len_matches_exhaustively() {
+        let samples = [
+            "",
+            "a",
+            "abcdef",
+            "hello world 0123456789",
+            "café naïve résumé",
+            "Привет мир",
+            "中文测试日本語",
+            "😀",
+            "a😀b",
+            "😀🎉🚀",
+            "a😀😀b",
+            "中😀文🎉Привет𝕳𝖊𝖑𝖑𝖔!",
+            "𝕳a𝕴b𝕵",
+        ];
+        for s in samples {
+            let total = s.encode_utf16().count() as u64;
+            for offset in 0..=total {
+                let mut left_fast = s.to_string();
+                let right_fast = utf16_split_in_place_with_len(&mut left_fast, total, offset);
+
+                let mut left_ref = s.to_string();
+                let right_ref = utf16_split_in_place(&mut left_ref, offset);
+
+                let slice_left = utf16_slice(s, 0, offset);
+                let slice_right = utf16_slice(s, offset, u64::MAX);
+
+                assert_eq!(
+                    (left_fast.as_str(), right_fast.as_str()),
+                    (left_ref.as_str(), right_ref.as_str()),
+                    "split_in_place mismatch for s={s:?} total={total} offset={offset}"
+                );
+                assert_eq!(
+                    (left_fast.as_str(), right_fast.as_str()),
+                    (slice_left.as_ref(), slice_right.as_ref()),
+                    "utf16_slice mismatch for s={s:?} total={total} offset={offset}"
+                );
+                assert_eq!(
+                    left_fast.encode_utf16().count() as u64,
+                    offset,
+                    "left utf16 len invariant broken for s={s:?} offset={offset}"
+                );
+                assert_eq!(
+                    right_fast.encode_utf16().count() as u64,
+                    total - offset,
+                    "right utf16 len invariant broken for s={s:?} offset={offset}"
+                );
+
+                // Secondary split on both halves (crucial after splitting a
+                // surrogate pair where U+FFFD is 3 UTF-8 bytes / 1 UTF-16 code
+                // unit).
+                let left_len = offset;
+                for sub_off in 0..=left_len {
+                    let mut ll = left_fast.clone();
+                    let lr = utf16_split_in_place_with_len(&mut ll, left_len, sub_off);
+                    let mut ll_ref = left_fast.clone();
+                    let lr_ref = utf16_split_in_place(&mut ll_ref, sub_off);
+                    assert_eq!((ll.as_str(), lr.as_str()), (ll_ref.as_str(), lr_ref.as_str()));
+                    assert_eq!(ll.encode_utf16().count() as u64, sub_off);
+                    assert_eq!(lr.encode_utf16().count() as u64, left_len - sub_off);
+                }
+                let right_len = total - offset;
+                for sub_off in 0..=right_len {
+                    let mut rl = right_fast.clone();
+                    let rr = utf16_split_in_place_with_len(&mut rl, right_len, sub_off);
+                    let mut rl_ref = right_fast.clone();
+                    let rr_ref = utf16_split_in_place(&mut rl_ref, sub_off);
+                    assert_eq!((rl.as_str(), rr.as_str()), (rl_ref.as_str(), rr_ref.as_str()));
+                    assert_eq!(rl.encode_utf16().count() as u64, sub_off);
+                    assert_eq!(rr.encode_utf16().count() as u64, right_len - sub_off);
+                }
+            }
+        }
+
+        // Capacity shrinking on large ASCII and non-ASCII reverse-scan splits.
+        let n = if cfg!(miri) { 1024 } else { 1 << 18 };
+        let mut big_ascii = "a".repeat(n);
+        let orig_cap = big_ascii.capacity();
+        let right = utf16_split_in_place_with_len(&mut big_ascii, n as u64, 1);
+        assert_eq!(big_ascii, "a");
+        assert_eq!(right.len(), n - 1);
+        assert!(big_ascii.capacity() < orig_cap / 2);
+
+        let prefix = "中".repeat(n / 4);
+        let mut big_rev = format!("{prefix}😀尾");
+        let total = big_rev.encode_utf16().count() as u64;
+        let right = utf16_split_in_place_with_len(&mut big_rev, total, total - 2);
+        assert_eq!(big_rev, format!("{prefix}\u{FFFD}"));
+        assert_eq!(right, "\u{FFFD}尾");
+        assert_eq!(big_rev.encode_utf16().count() as u64, total - 2);
+        assert_eq!(right.encode_utf16().count() as u64, 2);
+    }
+
+    #[test]
     #[allow(clippy::type_complexity)]
     fn missing_dependency_order() {
         let state = StateVector::from([(1, 10), (2, 5)]);
@@ -336,6 +779,7 @@ mod tests {
                     .map(|node| node.id)
             },
         )
+        .unwrap()
     }
 
     fn item(client: u64, clock: u64, origin_left: Option<Id>, origin_right: Option<Id>) -> ConflictItem {
@@ -344,6 +788,247 @@ mod tests {
             origin_left,
             origin_right,
         }
+    }
+
+    /// The scan as it was before its candidates went into [Scanned]: two
+    /// hash sets, filled before the decision and emptied when a candidate is
+    /// taken.
+    fn legacy_conflict_left(
+        this: ConflictItem,
+        mut left: Option<usize>,
+        mut conflict: Option<usize>,
+        right: Option<usize>,
+        nodes: &[ConflictNode],
+    ) -> Option<usize> {
+        use std::collections::HashSet;
+        let owner_of = |id: Id| {
+            nodes
+                .iter()
+                .find(|node| {
+                    node.id.client == id.client && node.id.clock <= id.clock && id.clock < node.id.clock + node.len
+                })
+                .map(|node| node.id)
+        };
+        let mut conflicting = HashSet::new();
+        let mut before_origin = HashSet::new();
+        while let Some(current) = conflict {
+            if right == Some(current) {
+                break;
+            }
+            let Some(candidate) = nodes.get(current) else {
+                break;
+            };
+            before_origin.insert(candidate.id);
+            conflicting.insert(candidate.id);
+            let take = match decide_conflict_step(
+                this.id.client,
+                this.origin_left.map(core_id),
+                this.origin_right.map(core_id),
+                candidate.id.client,
+                candidate.origin_left.map(core_id),
+                candidate.origin_right.map(core_id),
+            ) {
+                ConflictDecision::Step(ScanStep::Stop) => break,
+                ConflictDecision::Step(ScanStep::Take) => true,
+                ConflictDecision::Step(ScanStep::Skip) => false,
+                ConflictDecision::Owner(candidate_left) => {
+                    let Some(owner) = owner_of(Id::new(candidate_left.client, candidate_left.clock)) else {
+                        break;
+                    };
+                    let in_before = before_origin.contains(&owner);
+                    match decide_owner_step(in_before, in_before && conflicting.contains(&owner)) {
+                        ScanStep::Stop => break,
+                        ScanStep::Take => true,
+                        ScanStep::Skip => false,
+                    }
+                }
+            };
+            if take {
+                left = Some(current);
+                conflicting.clear();
+            }
+            conflict = candidate.right;
+        }
+        left
+    }
+
+    #[test]
+    fn conflict_scan_agrees_with_the_scan_on_hash_sets() {
+        // chains of candidates with origins all over the place: before the
+        // chain, inside it (also inside a struct, and on the candidate
+        // itself), after it, and nowhere. An origin among the last
+        // candidates is found by hand, one further back through the table
+        // of the list.
+        let mut state = 0x9E37_79B9_7F4A_7C15u64;
+        let mut below = move |n: u64| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state % n
+        };
+        let rounds = if cfg!(miri) { 60 } else { 6_000 };
+        let mut asked_the_table = 0;
+        for round in 0..rounds {
+            let len = match round % 4 {
+                0 => 1 + below(6),
+                1 => 10 + below(12),
+                2 => 17 + below(40),
+                _ => 1 + below(120),
+            } as usize;
+            let clients = 1 + below(5);
+            let mut clocks = [0u64; 8];
+            let mut nodes: Vec<ConflictNode> = Vec::with_capacity(len);
+            for index in 0..len {
+                let client = 1 + below(clients);
+                let node_len = 1 + below(3);
+                let clock = clocks[client as usize];
+                clocks[client as usize] += node_len;
+                let origin = |below: &mut dyn FnMut(u64) -> u64, nodes: &[ConflictNode]| match below(10) {
+                    0 => None,
+                    // the struct before the chain
+                    1 | 2 => Some(Id::new(9, 0)),
+                    // a struct that is nowhere
+                    3 => Some(Id::new(8, 77)),
+                    // itself or a later clock of its client
+                    4 => Some(Id::new(client, clock + below(4))),
+                    // a clock of an earlier candidate, maybe inside it
+                    _ if !nodes.is_empty() => {
+                        let other = &nodes[below(nodes.len() as u64) as usize];
+                        Some(Id::new(other.id.client, other.id.clock + below(other.len)))
+                    }
+                    _ => Some(Id::new(9, 0)),
+                };
+                let origin_left = origin(&mut below, &nodes);
+                let origin_right = origin(&mut below, &nodes);
+                nodes.push(ConflictNode {
+                    id: Id::new(client, clock),
+                    len: node_len,
+                    origin_left,
+                    origin_right,
+                    right: (index + 1 < len).then_some(index + 1),
+                });
+            }
+            for this_client in [0, 2, 3, 7] {
+                for origin_left in [None, Some(Id::new(9, 0)), Some(nodes[0].id)] {
+                    for origin_right in [None, Some(Id::new(9, 0)), Some(nodes[len / 2].id)] {
+                        let right = match below(4) {
+                            0 => Some(below(len as u64) as usize),
+                            _ => None,
+                        };
+                        let this = item(this_client, 1_000, origin_left, origin_right);
+                        let expected = legacy_conflict_left(this, None, Some(0), right, &nodes);
+                        assert_eq!(
+                            conflict_left(this, None, Some(0), right, &nodes),
+                            expected,
+                            "round {round}, client {this_client}, origins {origin_left:?} {origin_right:?}, right \
+                             {right:?}, nodes {nodes:?}"
+                        );
+                    }
+                }
+            }
+            // how often a scan has to look further back than by hand
+            let mut scanned = Scanned::default();
+            for node in &nodes {
+                assert!(scanned.push(core_id(node.id)));
+            }
+            // (the first candidate is where a list that answered nothing
+            // yet looks first)
+            assert_eq!(scanned.find(core_id(nodes[0].id)), (true, true));
+            assert!(!scanned.order.is_indexed());
+            assert_eq!(scanned.find(core_id(nodes[1.min(len - 1)].id)), (true, true));
+            asked_the_table += usize::from(scanned.order.is_indexed());
+        }
+        assert!(asked_the_table * 4 > rounds, "long chains are part of the test");
+    }
+
+    #[test]
+    fn scanned_candidates_answer_alike_by_hand_and_through_the_table() {
+        use y_octo_core::id_order::RECENT;
+        let id = |clock: u64| IdCore {
+            client: clock % 3,
+            clock,
+        };
+        for count in [0usize, 1, 5, RECENT, RECENT + 1, 100] {
+            for take_at in [None, Some(0), Some(count / 2), Some(count.saturating_sub(1))] {
+                let mut scanned = Scanned::default();
+                let mut conflicting_from = 0;
+                for at in 0..count {
+                    assert!(scanned.push(id(at as u64)));
+                    if take_at == Some(at) {
+                        scanned.take();
+                        conflicting_from = at + 1;
+                    }
+                }
+                // the first question for a candidate far back makes the table
+                for round in 0..2 {
+                    for at in 0..count + 3 {
+                        let expected = (at < count, at < count && at >= conflicting_from);
+                        assert_eq!(
+                            scanned.find(id(at as u64)),
+                            expected,
+                            "{count} candidates, round {round}"
+                        );
+                    }
+                    // one more candidate in the second round
+                    assert_eq!(scanned.order.is_indexed(), count + round as usize > RECENT);
+                    // and the scan goes on
+                    assert!(scanned.push(id(1_000 + round)));
+                    assert_eq!(scanned.find(id(1_000 + round)), (true, true));
+                    scanned.take();
+                    assert_eq!(scanned.find(id(1_000 + round)), (true, false));
+                    conflicting_from = usize::MAX;
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_scan_whose_list_is_full_ends_with_an_error() {
+        // five concurrent inserts at one place by smaller clients: a scan
+        // for a sixth walks all of them
+        let nodes: Vec<ConflictNode> = (0..5)
+            .map(|at| ConflictNode {
+                id: Id::new(at as u64 + 1, 0),
+                len: 1,
+                origin_left: None,
+                origin_right: None,
+                right: (at + 1 < 5).then_some(at + 1),
+            })
+            .collect();
+        let scan = |limit: Option<usize>, right: Option<usize>| {
+            scan_conflict_left(
+                ScanLimit { candidates: limit },
+                item(9, 0, None, None),
+                None,
+                Some(0),
+                right,
+                |&index| {
+                    nodes.get(index).map(|node| ConflictItem {
+                        id: node.id,
+                        origin_left: node.origin_left,
+                        origin_right: node.origin_right,
+                    })
+                },
+                |&index| nodes.get(index).and_then(|node| node.right),
+                |_| None,
+            )
+        };
+        assert_eq!(scan(None, None), Ok(Some(4)));
+        // a list that takes every candidate the scan meets changes nothing
+        assert_eq!(scan(Some(5), None), Ok(Some(4)));
+        assert_eq!(scan(Some(3), Some(3)), Ok(Some(2)));
+        // one candidate short: an error, not a neighbour found so far
+        for limit in 0..5 {
+            assert_eq!(
+                scan(Some(limit), None),
+                Err(JwstCodecError::IncompleteDocument(
+                    "the conflict scan holds too many candidates".into()
+                )),
+                "a list of {limit} candidates"
+            );
+        }
+        // the list is not asked past the right neighbour
+        assert_eq!(scan(Some(0), Some(0)), Ok(None));
     }
 
     #[test]
