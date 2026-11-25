@@ -4,7 +4,7 @@ use crate::{
     doc::{
         Carrier, DocStore, HashMap, TypeArena, TypeIdx, YType,
         types::{
-            content_any, item_at, list_insert, map, text,
+            content_any, item_at, list_insert, list_push, map, text,
             xml::{xml_hook_name, xml_tag_name},
         },
     },
@@ -297,6 +297,19 @@ pub(crate) fn resolve_target(store: &DocStore, target: &TypeTarget) -> JwstCodec
     Ok(ty)
 }
 
+#[inline]
+pub(crate) fn resolve_root(store: &DocStore, name: &str) -> JwstCodecResult<TypeIdx> {
+    let ty = store
+        .types
+        .get(name)
+        .copied()
+        .ok_or_else(|| JwstCodecError::RootStructNotFound(name.to_owned()))?;
+    if !is_type_alive(store, ty) {
+        return Err(JwstCodecError::InvalidParent);
+    }
+    Ok(ty)
+}
+
 // ---------------------------------------------------------------------------
 // Content read projection & unified atomic nested insertion
 
@@ -418,6 +431,7 @@ fn populate_child_type(store: &mut DocStore, child: TypeIdx, value: SessionValue
 pub(crate) enum InsertSlot {
     MapKey(String),
     ListIndex(u64),
+    ListPush,
 }
 
 fn mount_content(store: &mut DocStore, parent: TypeIdx, slot: InsertSlot, content: Content) -> JwstCodecResult {
@@ -429,6 +443,15 @@ fn mount_content(store: &mut DocStore, parent: TypeIdx, slot: InsertSlot, conten
         InsertSlot::ListIndex(index) => store.edit_type(parent, |store, ty| {
             solidify_array_kind(&mut store.type_arena[ty])?;
             list_insert(store, ty, index, content)
+        }),
+        InsertSlot::ListPush => store.edit_type(parent, |store, ty| {
+            solidify_array_kind(&mut store.type_arena[ty])?;
+            if store.type_arena[ty].kind() == YTypeKind::Array {
+                list_push(store, ty, content)
+            } else {
+                let len = store.type_arena[ty].len;
+                list_insert(store, ty, len, content)
+            }
         }),
     }
 }
@@ -446,6 +469,7 @@ fn check_slot(store: &DocStore, parent: TypeIdx, slot: &InsertSlot) -> JwstCodec
             }
             Ok(())
         }
+        InsertSlot::ListPush => check_array_read_kind(ty),
     }
 }
 

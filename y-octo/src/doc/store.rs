@@ -21,6 +21,24 @@ use crate::{
 
 pub type ChangedTypeRefs = HashMap<TypeIdx, Vec<SmolStr>>;
 
+pub(crate) const COLLECTOR_REUSE_MAX_CAP: usize = 64;
+
+pub(crate) fn clear_or_reset_changed(changed: &mut ChangedTypeRefs, max_cap: usize) {
+    if changed.capacity() <= max_cap {
+        changed.clear();
+    } else {
+        *changed = ChangedTypeRefs::default();
+    }
+}
+
+pub(crate) fn clear_or_reset_vec<T>(vec: &mut Vec<T>, max_cap: usize) {
+    if vec.capacity() <= max_cap {
+        vec.clear();
+    } else {
+        drop(mem::take(vec));
+    }
+}
+
 /// What one transaction changed, collected by the store's mutation paths.
 #[derive(Debug, Default)]
 pub(crate) struct Collector {
@@ -354,7 +372,7 @@ impl DocStore {
         ) else {
             return Err(JwstCodecError::ItemSplitNotSupport);
         };
-        let content = item.content.split_in_place(diff)?;
+        let content = item.content.split_in_place_with_len(item.len, diff)?;
         let len = plan.right_len;
         item.len = diff;
         let id = Id::new(plan.right_id.client, plan.right_id.clock);
@@ -971,9 +989,15 @@ impl DocStore {
     }
 
     pub fn delete_item(&mut self, idx: ItemIdx, parent: Option<TypeIdx>) {
-        let mut deleted = HashMap::new();
-        self.delete_item_inner(idx, parent, &mut deleted);
-        self.add_deleted(deleted);
+        let Some((id, len, nested)) = self.delete_one(idx, parent) else {
+            return;
+        };
+        self.collector.deleted.add(id.client, id.clock, len);
+        if let Some(ty) = nested {
+            let mut deleted = HashMap::new();
+            self.delete_subtree(ty, &mut deleted);
+            self.add_deleted(deleted);
+        }
     }
 
     fn add_deleted(&mut self, ranges: HashMap<Client, Vec<Range<u64>>>) {
@@ -988,9 +1012,16 @@ impl DocStore {
         parent: Option<TypeIdx>,
         deleted: &mut HashMap<Client, Vec<Range<Clock>>>,
     ) {
-        let Some(ty) = self.delete_one(idx, parent, deleted) else {
+        let Some((id, len, nested)) = self.delete_one(idx, parent) else {
             return;
         };
+        deleted.entry(id.client).or_default().push(id.clock..id.clock + len);
+        if let Some(ty) = nested {
+            self.delete_subtree(ty, deleted);
+        }
+    }
+
+    fn delete_subtree(&mut self, ty: TypeIdx, deleted: &mut HashMap<Client, Vec<Range<Clock>>>) {
         let mut stack = vec![DeleteFrame::new(&self.type_arena, ty)];
         while let Some(frame) = stack.last_mut() {
             let ty = frame.ty;
@@ -1017,18 +1048,16 @@ impl DocStore {
             let item = self.type_arena.items.get(child).expect("child");
             if item.deleted() {
                 self.collector.merges.push(item.id);
-            } else if let Some(nested) = self.delete_one(child, Some(ty), deleted) {
-                stack.push(DeleteFrame::new(&self.type_arena, nested));
+            } else if let Some((id, len, nested)) = self.delete_one(child, Some(ty)) {
+                deleted.entry(id.client).or_default().push(id.clock..id.clock + len);
+                if let Some(nested) = nested {
+                    stack.push(DeleteFrame::new(&self.type_arena, nested));
+                }
             }
         }
     }
 
-    fn delete_one(
-        &mut self,
-        idx: ItemIdx,
-        parent: Option<TypeIdx>,
-        deleted: &mut HashMap<Client, Vec<Range<Clock>>>,
-    ) -> Option<TypeIdx> {
+    fn delete_one(&mut self, idx: ItemIdx, parent: Option<TypeIdx>) -> Option<(Id, Clock, Option<TypeIdx>)> {
         let item = self.type_arena.items.get_mut(idx).expect("stored item");
         if !item.delete() {
             return None;
@@ -1041,7 +1070,6 @@ impl DocStore {
         debug_assert!(matches!(blocks.kind_at(pos), BlockKind::Item(i) | BlockKind::DeletedItem(i) if i == idx));
         blocks.mark_deleted(pos).expect("the block of an item");
         self.has_deleted_structs = true;
-        deleted.entry(id.client).or_default().push(id.clock..id.clock + len);
         let owner = item.parent;
         let visible = item.parent_sub.is_none() && item.countable();
         if let Some(owner) = owner {
@@ -1060,13 +1088,16 @@ impl DocStore {
             }
             _ => None,
         };
-        if visible
-            && let Some(ty) = parent.or(owner)
-            && self.type_arena[ty].len != 0
-        {
-            self.type_arena[ty].len -= len;
+        if let Some(ty) = parent.or(owner) {
+            let container = &mut self.type_arena[ty];
+            if visible && container.len != 0 {
+                container.len -= len;
+            }
+            if let Some(markers) = &mut container.markers {
+                markers.mark_unindexed();
+            }
         }
-        nested
+        Some((id, len, nested))
     }
 
     pub fn delete_range(&mut self, client: Client, range: Range<Clock>) -> JwstCodecResult {
@@ -1156,17 +1187,47 @@ impl DocStore {
             encoder.write_var_u64(clock)?;
             let first = nodes.node(client, start).expect("first block");
             let offset = clock - first.clock();
-            if offset == 0 {
-                first.write(&self.type_arena, encoder)?;
-            } else {
-                WireStruct::from_node(&self.type_arena, &first)?
-                    .split_at(offset)?
-                    .1
-                    .write(encoder)?;
-            }
+            first.write_from(&self.type_arena, offset, encoder)?;
             for node in nodes.nodes_from(client, start + 1) {
                 node.write(&self.type_arena, encoder)?;
             }
+        }
+        Ok(())
+    }
+
+    /// Single-client variant of [`DocStore::write_structs_since`] for local
+    /// commits where only `client` may have advanced from `before_clock` to
+    /// `after_clock`.
+    pub(crate) fn write_structs_since_local<W: CrdtWriter>(
+        &self,
+        client: Client,
+        before_clock: Clock,
+        after_clock: Clock,
+        encoder: &mut W,
+    ) -> JwstCodecResult {
+        if after_clock <= before_clock {
+            return encoder.write_var_u64(0);
+        }
+        let Some(nodes) = self.items.get(&client) else {
+            return encoder.write_var_u64(0);
+        };
+        let Some(first_clock) = nodes.first_clock() else {
+            return encoder.write_var_u64(0);
+        };
+        let clock = before_clock.max(first_clock);
+        let Some(start) = nodes.find(clock) else {
+            return encoder.write_var_u64(0);
+        };
+        let count = nodes.len() - start;
+        encoder.write_var_u64(1)?;
+        encoder.write_var_u64(count as u64)?;
+        encoder.write_var_u64(client)?;
+        encoder.write_var_u64(clock)?;
+        let first = nodes.node(client, start).expect("first block");
+        let offset = clock - first.clock();
+        first.write_from(&self.type_arena, offset, encoder)?;
+        for node in nodes.nodes_from(client, start + 1) {
+            node.write(&self.type_arena, encoder)?;
         }
         Ok(())
     }
@@ -1285,6 +1346,39 @@ impl DocStore {
         delete_set
     }
 
+    pub(crate) fn finish_item_space(&mut self) {
+        if let Some(moved) = self.type_arena.items.finish() {
+            for blocks in self.items.values_mut() {
+                blocks.remap(&moved);
+            }
+            self.type_arena.remap_items(&moved);
+        }
+    }
+
+    fn optimize_with(&mut self, gc: bool, make_continuous: impl FnOnce(&mut Self)) {
+        let mut deleted = (!self.collector.deleted.is_empty()).then(|| mem::take(&mut self.collector.deleted));
+
+        if gc && let Some(deleted) = &deleted {
+            self.gc_delete_set(deleted);
+        }
+        // includes the children GC just replaced
+        let mut merges = (!self.collector.merges.is_empty()).then(|| mem::take(&mut self.collector.merges));
+        if let Some(deleted) = &mut deleted {
+            self.merge_delete_set(deleted);
+            deleted.clear_or_reset(COLLECTOR_REUSE_MAX_CAP);
+            self.collector.deleted = mem::take(deleted);
+        }
+        make_continuous(self);
+        if let Some(merges) = &mut merges {
+            self.merge_split_points(merges);
+            if merges.capacity() <= COLLECTOR_REUSE_MAX_CAP {
+                merges.clear();
+                self.collector.merges = mem::take(merges);
+            }
+        }
+        self.finish_item_space();
+    }
+
     /// Garbage-collects and merges what changed since the last call, after
     /// Yjs v13.6.33 `cleanupTransactions`: GC of the ranges deleted since
     /// then (`tryGcDeleteSet`), merge around them (`tryMergeDeleteSet`),
@@ -1292,22 +1386,18 @@ impl DocStore {
     /// recorded split points (`_mergeStructs`). The cost follows the size of
     /// the change, not of the document.
     pub fn optimize(&mut self, gc: bool, state: StateVector) {
-        let deleted = mem::take(&mut self.collector.deleted);
+        self.optimize_with(gc, |store| store.make_continuous(state));
+    }
 
-        if gc {
-            self.gc_delete_set(&deleted);
-        }
-        // includes the children GC just replaced
-        let merges = mem::take(&mut self.collector.merges);
-        self.merge_delete_set(&deleted);
-        self.make_continuous(state);
-        self.merge_split_points(&merges);
-        if let Some(moved) = self.type_arena.items.finish() {
-            for blocks in self.items.values_mut() {
-                blocks.remap(&moved);
-            }
-            self.type_arena.remap_items(&moved);
-        }
+    /// Local fast-path variant of [`DocStore::optimize`] for single-client
+    /// implicit transactions: avoids allocating `StateVector`s and reuses
+    /// small `Collector` buffers in place.
+    pub(crate) fn optimize_local(&mut self, gc: bool, client: Client, after_clock: Clock) {
+        self.optimize_with(gc, |store| store.make_continuous_local(client, after_clock));
+        clear_or_reset_changed(&mut self.collector.changed, COLLECTOR_REUSE_MAX_CAP);
+        clear_or_reset_vec(&mut self.collector.subdocs_added, COLLECTOR_REUSE_MAX_CAP);
+        clear_or_reset_vec(&mut self.collector.subdocs_removed, COLLECTOR_REUSE_MAX_CAP);
+        debug_assert!(self.collector.is_empty());
     }
 
     /// Full GC and merge over the whole delete set and every struct.
@@ -1495,6 +1585,27 @@ impl DocStore {
         self.last_optimized_state = state;
     }
 
+    /// Single-client variant of [`DocStore::make_continuous`] for local
+    /// implicit transactions.
+    fn make_continuous_local(&mut self, client: Client, after_clock: Clock) {
+        let before_state = self.last_optimized_state.get(&client);
+        if before_state == after_clock {
+            return;
+        }
+        if let Some(nodes) = self.items.get_mut(&client)
+            && nodes.len() != 0
+        {
+            let first_change = nodes.find_recent(before_state).unwrap_or(1).max(1);
+            let mut idx = nodes.len() - 1;
+            while idx > 0 && idx >= first_change {
+                idx = idx.saturating_sub(Self::merge_with_lefts(&mut self.type_arena, nodes, idx) + 1);
+            }
+        }
+        if after_clock != 0 {
+            self.last_optimized_state.insert(client, after_clock);
+        }
+    }
+
     /// Merges recorded split points with their neighbors (Yjs
     /// `_mergeStructs`).
     fn merge_split_points(&mut self, merges: &[Id]) {
@@ -1517,6 +1628,10 @@ impl DocStore {
 
     /// Yjs `tryToMergeWithLefts`: merges `nodes[idx]` into its left
     /// neighbors as far as possible and returns how many were merged.
+    ///
+    /// Scans left first to find the full mergeable span `pos..=idx`, then
+    /// merges left-to-right with a single `reserve` and O(80) marker update
+    /// so batch commits are O(total bytes) instead of Θ(N²).
     fn merge_with_lefts(types: &mut TypeArena, nodes: &mut ClientBlocks, idx: usize) -> usize {
         let mut pos = idx;
         {
@@ -1528,7 +1643,7 @@ impl DocStore {
                     (BlockKind::Gc, BlockKind::Gc) | (BlockKind::Skip, BlockKind::Skip) => {}
                     (BlockKind::Item(l), BlockKind::Item(r))
                     | (BlockKind::DeletedItem(l), BlockKind::DeletedItem(r)) => {
-                        if !Self::merge_items(types, l, r) {
+                        if !Self::can_merge_pair(types, l, r) {
                             break;
                         }
                     }
@@ -1538,18 +1653,35 @@ impl DocStore {
                 pos -= 1;
             }
         }
-        if pos < idx {
-            nodes
-                .merge_range(pos, idx)
-                .expect("neighbours of the same kind inside the timeline");
+        if pos == idx {
+            return 0;
         }
+        {
+            let kinds = nodes.kinds();
+            match kinds.at(pos) {
+                BlockKind::Gc | BlockKind::Skip => {}
+                BlockKind::Item(head) | BlockKind::DeletedItem(head) => {
+                    if idx - pos == 1 {
+                        let right = match kinds.at(idx) {
+                            BlockKind::Item(r) | BlockKind::DeletedItem(r) => r,
+                            _ => unreachable!(),
+                        };
+                        Self::merge_two_items(types, head, right);
+                    } else {
+                        Self::merge_item_range(types, &kinds, pos, idx, head);
+                    }
+                }
+            }
+        }
+        nodes
+            .merge_range(pos, idx)
+            .expect("neighbours of the same kind inside the timeline");
         idx - pos
     }
 
-    fn merge_items(types: &mut TypeArena, l: ItemIdx, r: ItemIdx) -> bool {
-        let parent = types.items.get(l).expect("stored item").parent;
-        let merge_strings = parent.is_some_and(|t| matches!(types[t].kind(), YTypeKind::Text | YTypeKind::XMLText));
-        let (left, right) = types.items.get_two_mut(l, r).expect("distinct live neighbors");
+    fn can_merge_pair(types: &TypeArena, l: ItemIdx, r: ItemIdx) -> bool {
+        let left = types.items.get(l).expect("stored item");
+        let right = types.items.get(r).expect("stored item");
         // `right` follows `left` in the list and continues it
         // (`can_merge_items` of `y-octo-core`, the conditions
         // `YataStoreCore::merge_adjacent` merges on), and both are in one
@@ -1576,13 +1708,29 @@ impl DocStore {
         {
             return false;
         }
-        let shift = if left.indexable() { -(left.len as i64) } else { 0 };
+        match (&left.content, &right.content) {
+            (Content::Deleted(_), Content::Deleted(_))
+            | (Content::Json(_), Content::Json(_))
+            | (Content::Any(_), Content::Any(_)) => true,
+            (Content::String(_), Content::String(_)) => left
+                .parent
+                .is_some_and(|t| matches!(types[t].kind(), YTypeKind::Text | YTypeKind::XMLText)),
+            _ => false,
+        }
+    }
+
+    /// Merges two items already validated by [`Self::can_merge_pair`].
+    fn merge_two_items(types: &mut TypeArena, l: ItemIdx, r: ItemIdx) {
+        let (left, right) = types.items.get_two_mut(l, r).expect("distinct live neighbors");
+        let parent = left.parent;
+        let left_indexable = left.indexable();
+        let shift = if left_indexable { -(left.len as i64) } else { 0 };
         match (&mut left.content, &mut right.content) {
             (Content::Deleted(a), Content::Deleted(b)) => *a += *b,
             (Content::Json(a), Content::Json(b)) => a.append(b),
             (Content::Any(a), Content::Any(b)) => a.append(b),
-            (Content::String(a), Content::String(b)) if merge_strings => a.push_str(b),
-            _ => return false,
+            (Content::String(a), Content::String(b)) => a.push_str(b),
+            _ => unreachable!("validated by can_merge_pair"),
         }
         if right.keep() {
             left.flags.set_keep();
@@ -1597,7 +1745,7 @@ impl DocStore {
         if let Some(parent) = parent {
             let parent = &mut types[parent];
             if let Some(markers) = &mut parent.markers {
-                markers.replace_marker(Some(r), Some(l), shift);
+                markers.replace_marker(Some(r), Some(l), shift, left_indexable);
             }
             if let Some(key) = key
                 && parent.map_get(&key) == Some(&Some(r))
@@ -1606,7 +1754,123 @@ impl DocStore {
             }
         }
         types.items.retire(r);
-        true
+    }
+
+    /// Merges a validated contiguous span `pos..=idx` (`idx - pos >= 2`) into
+    /// `head` from left to right with a single content `reserve` and a single
+    /// O(80) marker range pass.
+    fn merge_item_range(
+        types: &mut TypeArena,
+        kinds: &client_blocks::Kinds<'_>,
+        pos: usize,
+        idx: usize,
+        head: ItemIdx,
+    ) {
+        let head_item = types.items.get(head).expect("stored item");
+        let head_id = head_item.id;
+        let head_indexable = head_item.indexable();
+        let parent = head_item.parent;
+        let parent_sub = head_item.parent_sub.clone();
+
+        let mut total_extra_len = 0u64;
+        let mut total_extra_bytes = 0usize;
+        let mut total_extra_elems = 0usize;
+        let mut any_keep = false;
+        for k in (pos + 1)..=idx {
+            let item_idx = match kinds.at(k) {
+                BlockKind::Item(i) | BlockKind::DeletedItem(i) => i,
+                _ => unreachable!(),
+            };
+            let item = types.items.get(item_idx).expect("stored item");
+            total_extra_len += item.len;
+            any_keep |= item.keep();
+            match &item.content {
+                Content::String(s) => total_extra_bytes += s.len(),
+                Content::Any(v) => total_extra_elems += v.len(),
+                Content::Json(v) => total_extra_elems += v.len(),
+                Content::Deleted(_) => {}
+                _ => unreachable!("validated by can_merge_pair"),
+            }
+        }
+        let last_idx = match kinds.at(idx) {
+            BlockKind::Item(i) | BlockKind::DeletedItem(i) => i,
+            _ => unreachable!(),
+        };
+        let last_item = types.items.get(last_idx).expect("stored item");
+        let final_right = last_item.right;
+        let end_clock = last_item.id.clock + last_item.len;
+
+        match &mut types.items.get_mut(head).expect("stored item").content {
+            Content::String(s) => s.reserve(total_extra_bytes),
+            Content::Any(v) => v.reserve(total_extra_elems),
+            Content::Json(v) => v.reserve(total_extra_elems),
+            Content::Deleted(d) => *d += total_extra_len,
+            _ => unreachable!("validated by can_merge_pair"),
+        }
+
+        if total_extra_bytes > 0 || total_extra_elems > 0 {
+            for k in (pos + 1)..=idx {
+                let item_idx = match kinds.at(k) {
+                    BlockKind::Item(i) | BlockKind::DeletedItem(i) => i,
+                    _ => unreachable!(),
+                };
+                let (h, item) = types.items.get_two_mut(head, item_idx).expect("distinct live items");
+                match (&mut h.content, &mut item.content) {
+                    (Content::String(a), Content::String(b)) => a.push_str(b),
+                    (Content::Any(a), Content::Any(b)) => a.append(b),
+                    (Content::Json(a), Content::Json(b)) => a.append(b),
+                    _ => unreachable!("validated by can_merge_pair"),
+                }
+            }
+        }
+
+        {
+            let h = types.items.get_mut(head).expect("stored item");
+            h.len += total_extra_len;
+            if any_keep {
+                h.flags.set_keep();
+            }
+            h.right = final_right;
+        }
+        if let Some(next) = final_right {
+            types.items.get_mut(next).expect("neighbor").left = Some(head);
+        }
+
+        if let Some(parent_ty) = parent {
+            if let Some(key) = parent_sub {
+                let is_in_merged_tail = types[parent_ty]
+                    .map_get(&key)
+                    .and_then(|r| *r)
+                    .and_then(|i| types.items.get(i))
+                    .is_some_and(|item| {
+                        item.id.client == head_id.client && item.id.clock > head_id.clock && item.id.clock < end_clock
+                    });
+                if is_in_merged_tail {
+                    types[parent_ty].map_set(key, Some(head));
+                }
+            }
+            let (parent_ref, items) = types.type_and_items(parent_ty);
+            if let Some(markers) = &mut parent_ref.markers
+                && !markers.is_empty()
+            {
+                markers.replace_marker_range(
+                    items,
+                    head_id.client,
+                    head_id.clock,
+                    end_clock,
+                    Some(head),
+                    head_indexable,
+                );
+            }
+        }
+
+        for k in (pos + 1)..=idx {
+            let item_idx = match kinds.at(k) {
+                BlockKind::Item(i) | BlockKind::DeletedItem(i) => i,
+                _ => unreachable!(),
+            };
+            types.items.retire(item_idx);
+        }
     }
 
     pub fn deep_compare(&self, other: &Self) -> bool {
@@ -2700,5 +2964,156 @@ mod tests {
         store.self_check().unwrap();
         drop(store);
         assert_eq!(target.encode_update_v1().unwrap(), source.encode_update_v1().unwrap());
+    }
+
+    #[test]
+    #[cfg_attr(loom, ignore)]
+    fn delete_item_leaf_fast_path_and_nested_subtree_and_marker_flag() {
+        // Leaf deletion + nested Content::Type subtree deletion
+        let doc = DocOptions::new().with_client_id(1).auto_gc(false).build();
+        let mut root_arr = doc.get_or_create_array("arr").unwrap();
+        let mut nested_text = doc.create_text().unwrap();
+        let mut nested_map = doc.create_map().unwrap();
+        nested_text.insert(0, "hello").unwrap();
+        nested_map.insert("k".into(), "v").unwrap();
+        root_arr.push(1i32).unwrap();
+        root_arr.push(nested_text.clone()).unwrap();
+        root_arr.push(nested_map.clone()).unwrap();
+
+        // Leaf remove
+        root_arr.remove(0, 1).unwrap();
+        assert_eq!(root_arr.len(), 2);
+        doc.store.read().unwrap().self_check().unwrap();
+
+        // Nested subtree remove (Content::Type)
+        root_arr.remove(0, 2).unwrap();
+        assert_eq!(root_arr.len(), 0);
+        assert_eq!(nested_text.len(), 0);
+        assert!(nested_map.is_empty());
+        doc.store.read().unwrap().self_check().unwrap();
+
+        // Deleting an item via delete_range / undo must mark markers as
+        // may_have_unindexed so subsequent inserts repair markers pointing at
+        // tombstones without hitting debug_assert or stale indices.
+        let doc2 = Doc::with_client(1);
+        let mut text = doc2.get_or_create_text("t").unwrap();
+        let um = UndoManager::<()>::new(&doc2, [UndoScope::from(&text)], UndoOptions::default()).unwrap();
+        text.insert(0, "aaaaabbbbbccccc").unwrap();
+        um.stop_capturing().unwrap();
+        // Create markers inside the text
+        text.insert(5, "X").unwrap();
+        text.insert(11, "Y").unwrap();
+        um.stop_capturing().unwrap();
+        // Undo deletes Y and X, then insert again to trigger marker repair
+        assert!(um.undo().unwrap().is_some());
+        text.insert(6, "Z").unwrap();
+        assert_eq!(text.to_string(), "aaaaaXZbbbbbccccc");
+        doc2.store.read().unwrap().self_check().unwrap();
+    }
+
+    #[test]
+    #[cfg_attr(loom, ignore)]
+    fn merge_with_lefts_range_handles_all_contents_keep_map_and_markers() {
+        // 1. String + markers in head / middle / tail + shift-to-zero eviction
+        let doc = Doc::with_client(1);
+        let text = doc.get_or_create_text("t").unwrap();
+        doc.transact_mut(None, |tx| {
+            let mut w = tx.text(&text)?;
+            // Insert 60 separate chunks in one transaction so they stay
+            // unmerged until commit.
+            for i in 0..60u64 {
+                w.insert(i * 2, "ab")?;
+            }
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(text.len(), 120);
+        assert_eq!(doc.store.read().unwrap().items[&1].len(), 1);
+        doc.store.read().unwrap().self_check().unwrap();
+
+        // 2. Any (Array) range merge
+        let arr_doc = Doc::with_client(1);
+        let arr = arr_doc.get_or_create_array("a").unwrap();
+        arr_doc
+            .transact_mut(None, |tx| {
+                let mut w = tx.array(&arr)?;
+                for i in 0..20i32 {
+                    w.push(i)?;
+                }
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(arr.len(), 20);
+        assert_eq!(arr_doc.store.read().unwrap().items[&1].len(), 1);
+        for i in 0..20u64 {
+            assert_eq!(arr.get(i), Some(Value::from(i as i32)));
+        }
+        arr_doc.store.read().unwrap().self_check().unwrap();
+
+        // 3. Deleted + mixed keep flag + map parent_sub winner in merged tail
+        let map_doc = DocOptions::new().with_client_id(1).auto_gc(false).build();
+        let map = map_doc.get_or_create_map("m").unwrap();
+        map_doc
+            .transact_mut(None, |tx| {
+                let mut w = tx.map(&map)?;
+                for i in 0..10i32 {
+                    w.insert("k".into(), i)?;
+                }
+                w.remove("k");
+                // Set keep on a middle item (clock 5) before commit merges all
+                // 10 tombstones
+                let mid = tx.store_mut().get_node((1, 5)).unwrap().as_item().unwrap();
+                tx.store_mut().type_arena.items.get_mut(mid).unwrap().flags.set_keep();
+                Ok(())
+            })
+            .unwrap();
+        {
+            let store = map_doc.store.read().unwrap();
+            assert_eq!(store.items[&1].len(), 1);
+            let head_node = store.items[&1].node(1, 0).unwrap();
+            assert_eq!(head_node.len(), 10);
+            let head_idx = head_node.as_item().unwrap();
+            assert!(store.type_arena.items.get(head_idx).unwrap().keep());
+            let map_ty = map.0.id.unwrap();
+            assert_eq!(store.type_arena[map_ty].map_get("k"), Some(&Some(head_idx)));
+            store.self_check().unwrap();
+        }
+
+        // 4. Content::Json range merge directly on DocStore
+        let mut store = DocStore::with_client(1);
+        let ty = store.get_or_create_type("json_list").unwrap();
+        let mut left = None;
+        for i in 0..5u64 {
+            let item = store.create_item(Content::Json(vec![Some(format!("{i}"))]), left, None, Some(ty), None);
+            left = store.integrate_item(item, 0, Some(ty)).unwrap();
+        }
+        store.make_continuous(store.get_state_vector());
+        assert_eq!(store.items[&1].len(), 1);
+        let merged = store.items[&1].node(1, 0).unwrap();
+        assert_eq!(merged.len(), 5);
+        assert_eq!(
+            merged.item(&store.type_arena).content,
+            Content::Json((0..5).map(|i| Some(format!("{i}"))).collect())
+        );
+        store.self_check().unwrap();
+    }
+
+    #[test]
+    #[cfg_attr(loom, ignore)]
+    fn merge_with_lefts_batch_100k_append_linear() {
+        let n = if cfg!(miri) { 100 } else { 100_000 };
+        let doc = Doc::with_client(1);
+        let text = doc.get_or_create_text("t").unwrap();
+        doc.transact_mut(None, |tx| {
+            let mut w = tx.text(&text)?;
+            for i in 0..n {
+                w.insert(i, "a")?;
+            }
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(text.len(), n);
+        assert_eq!(doc.store.read().unwrap().items[&1].len(), 1);
+        doc.store.read().unwrap().self_check().unwrap();
     }
 }

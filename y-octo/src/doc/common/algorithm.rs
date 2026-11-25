@@ -64,6 +64,55 @@ pub(crate) fn utf16_slice(value: &str, offset: u64, len: u64) -> Cow<'_, str> {
     }
 }
 
+/// Returns the suffix of `value` starting at UTF-16 code-unit `offset`, given
+/// the precomputed `total_utf16_len` of `value`. Matches
+/// `utf16_slice(value, offset, u64::MAX)` on surrogate-pair boundaries by
+/// prefixing `U+FFFD` when `offset` splits a 4-byte scalar.
+///
+/// Uses an O(1) ASCII fast path when `total_utf16_len == value.len() as u64`,
+/// and scans from the closer end (reverse when `offset > total_utf16_len / 2`,
+/// forward otherwise) so sequential tail encoding is O(tail) instead of O(N).
+pub(crate) fn utf16_tail(value: &str, total_utf16_len: u64, offset: u64) -> Cow<'_, str> {
+    if offset == 0 {
+        return Cow::Borrowed(value);
+    }
+    if offset >= total_utf16_len {
+        return Cow::Borrowed(&value[value.len()..]);
+    }
+    if total_utf16_len == value.len() as u64 {
+        let off = usize::try_from(offset).expect("offset < value.len()");
+        return Cow::Borrowed(&value[off..]);
+    }
+    if offset > total_utf16_len / 2 {
+        let rem = total_utf16_len - offset;
+        let mut seen = 0u64;
+        for (byte_idx, ch) in value.char_indices().rev() {
+            seen += ch.len_utf16() as u64;
+            if seen == rem {
+                return Cow::Borrowed(&value[byte_idx..]);
+            }
+            if seen > rem {
+                let tail = &value[byte_idx + ch.len_utf8()..];
+                let mut owned = String::with_capacity('\u{FFFD}'.len_utf8() + tail.len());
+                owned.push('\u{FFFD}');
+                owned.push_str(tail);
+                return Cow::Owned(owned);
+            }
+        }
+        return Cow::Borrowed(value);
+    }
+    let at = utf16_split_byte_offset(value.as_bytes(), offset);
+    if at.split_surrogate {
+        let tail = &value[at.end..];
+        let mut owned = String::with_capacity('\u{FFFD}'.len_utf8() + tail.len());
+        owned.push('\u{FFFD}');
+        owned.push_str(tail);
+        Cow::Owned(owned)
+    } else {
+        Cow::Borrowed(&value[at.start..])
+    }
+}
+
 /// Split `value` in place at UTF-16 code-unit `offset`, returning the right
 /// half. Matches [`utf16_slice`] on surrogate-pair boundaries by replacing each
 /// retained half with `U+FFFD`.
@@ -80,8 +129,63 @@ pub(crate) fn utf16_split_in_place(value: &mut String, offset: u64) -> String {
     } else {
         value.split_off(at.start)
     };
-    value.shrink_to_fit();
+    if value.capacity() > value.len().saturating_mul(2).max(64) {
+        value.shrink_to_fit();
+    }
     right
+}
+
+/// Split `value` in place at UTF-16 code-unit `offset` using the precomputed
+/// `total_utf16_len` of `value`, returning the right half.
+///
+/// Matches [`utf16_split_in_place`] and [`utf16_slice`] on every boundary
+/// including surrogate pairs, with an O(1) ASCII fast path when
+/// `total_utf16_len == value.len() as u64` and a reverse scan when
+/// `offset > total_utf16_len / 2`.
+pub(crate) fn utf16_split_in_place_with_len(value: &mut String, total_utf16_len: u64, offset: u64) -> String {
+    debug_assert!(total_utf16_len <= value.len() as u64);
+    if offset == 0 {
+        return std::mem::take(value);
+    }
+    if offset >= total_utf16_len {
+        return String::new();
+    }
+    if total_utf16_len == value.len() as u64 {
+        let off = usize::try_from(offset).expect("offset < value.len()");
+        let right = value.split_off(off);
+        if value.capacity() > value.len().saturating_mul(2).max(64) {
+            value.shrink_to_fit();
+        }
+        return right;
+    }
+    if offset > total_utf16_len / 2 {
+        let rem = total_utf16_len - offset;
+        let mut seen = 0u64;
+        for (byte_idx, ch) in value.char_indices().rev() {
+            seen += ch.len_utf16() as u64;
+            if seen == rem {
+                let right = value.split_off(byte_idx);
+                if value.capacity() > value.len().saturating_mul(2).max(64) {
+                    value.shrink_to_fit();
+                }
+                return right;
+            }
+            if seen > rem {
+                let tail = &value[byte_idx + ch.len_utf8()..];
+                let mut right = String::with_capacity('\u{FFFD}'.len_utf8() + tail.len());
+                right.push('\u{FFFD}');
+                right.push_str(tail);
+                value.truncate(byte_idx);
+                value.push('\u{FFFD}');
+                if value.capacity() > value.len().saturating_mul(2).max(64) {
+                    value.shrink_to_fit();
+                }
+                return right;
+            }
+        }
+        return std::mem::take(value);
+    }
+    utf16_split_in_place(value, offset)
 }
 
 pub(crate) struct Utf16Slices<'a> {
@@ -484,6 +588,132 @@ mod tests {
         assert_eq!(big_surrogate, "a\u{FFFD}");
         assert!(right.starts_with("\u{FFFD}b"));
         assert!(big_surrogate.capacity() < orig_surrogate_cap / 2);
+    }
+
+    #[test]
+    fn utf16_tail_matches_utf16_slice_exhaustively() {
+        let samples = [
+            "",
+            "a",
+            "abcdef",
+            "hello world 0123456789",
+            "中文测试",
+            "Привет мир",
+            "😀",
+            "a😀b",
+            "😀🎉🚀",
+            "a😀😀b",
+            "中😀文🎉Привет𝕳𝖊𝖑𝖑𝖔!",
+            "𝕳a𝕴b𝕵",
+        ];
+        for s in samples {
+            let total = s.encode_utf16().count() as u64;
+            for offset in 0..=total + 2 {
+                let got = utf16_tail(s, total, offset);
+                let expected = utf16_slice(s, offset, u64::MAX);
+                assert_eq!(got, expected, "s={s:?} total={total} offset={offset}");
+                assert_eq!(
+                    matches!(got, Cow::Borrowed(_)),
+                    matches!(expected, Cow::Borrowed(_)),
+                    "Cow variant mismatch for s={s:?} offset={offset}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn utf16_split_in_place_with_len_matches_exhaustively() {
+        let samples = [
+            "",
+            "a",
+            "abcdef",
+            "hello world 0123456789",
+            "café naïve résumé",
+            "Привет мир",
+            "中文测试日本語",
+            "😀",
+            "a😀b",
+            "😀🎉🚀",
+            "a😀😀b",
+            "中😀文🎉Привет𝕳𝖊𝖑𝖑𝖔!",
+            "𝕳a𝕴b𝕵",
+        ];
+        for s in samples {
+            let total = s.encode_utf16().count() as u64;
+            for offset in 0..=total {
+                let mut left_fast = s.to_string();
+                let right_fast = utf16_split_in_place_with_len(&mut left_fast, total, offset);
+
+                let mut left_ref = s.to_string();
+                let right_ref = utf16_split_in_place(&mut left_ref, offset);
+
+                let slice_left = utf16_slice(s, 0, offset);
+                let slice_right = utf16_slice(s, offset, u64::MAX);
+
+                assert_eq!(
+                    (left_fast.as_str(), right_fast.as_str()),
+                    (left_ref.as_str(), right_ref.as_str()),
+                    "split_in_place mismatch for s={s:?} total={total} offset={offset}"
+                );
+                assert_eq!(
+                    (left_fast.as_str(), right_fast.as_str()),
+                    (slice_left.as_ref(), slice_right.as_ref()),
+                    "utf16_slice mismatch for s={s:?} total={total} offset={offset}"
+                );
+                assert_eq!(
+                    left_fast.encode_utf16().count() as u64,
+                    offset,
+                    "left utf16 len invariant broken for s={s:?} offset={offset}"
+                );
+                assert_eq!(
+                    right_fast.encode_utf16().count() as u64,
+                    total - offset,
+                    "right utf16 len invariant broken for s={s:?} offset={offset}"
+                );
+
+                // Secondary split on both halves (crucial after splitting a
+                // surrogate pair where U+FFFD is 3 UTF-8 bytes / 1 UTF-16 code
+                // unit).
+                let left_len = offset;
+                for sub_off in 0..=left_len {
+                    let mut ll = left_fast.clone();
+                    let lr = utf16_split_in_place_with_len(&mut ll, left_len, sub_off);
+                    let mut ll_ref = left_fast.clone();
+                    let lr_ref = utf16_split_in_place(&mut ll_ref, sub_off);
+                    assert_eq!((ll.as_str(), lr.as_str()), (ll_ref.as_str(), lr_ref.as_str()));
+                    assert_eq!(ll.encode_utf16().count() as u64, sub_off);
+                    assert_eq!(lr.encode_utf16().count() as u64, left_len - sub_off);
+                }
+                let right_len = total - offset;
+                for sub_off in 0..=right_len {
+                    let mut rl = right_fast.clone();
+                    let rr = utf16_split_in_place_with_len(&mut rl, right_len, sub_off);
+                    let mut rl_ref = right_fast.clone();
+                    let rr_ref = utf16_split_in_place(&mut rl_ref, sub_off);
+                    assert_eq!((rl.as_str(), rr.as_str()), (rl_ref.as_str(), rr_ref.as_str()));
+                    assert_eq!(rl.encode_utf16().count() as u64, sub_off);
+                    assert_eq!(rr.encode_utf16().count() as u64, right_len - sub_off);
+                }
+            }
+        }
+
+        // Capacity shrinking on large ASCII and non-ASCII reverse-scan splits.
+        let n = if cfg!(miri) { 1024 } else { 1 << 18 };
+        let mut big_ascii = "a".repeat(n);
+        let orig_cap = big_ascii.capacity();
+        let right = utf16_split_in_place_with_len(&mut big_ascii, n as u64, 1);
+        assert_eq!(big_ascii, "a");
+        assert_eq!(right.len(), n - 1);
+        assert!(big_ascii.capacity() < orig_cap / 2);
+
+        let prefix = "中".repeat(n / 4);
+        let mut big_rev = format!("{prefix}😀尾");
+        let total = big_rev.encode_utf16().count() as u64;
+        let right = utf16_split_in_place_with_len(&mut big_rev, total, total - 2);
+        assert_eq!(big_rev, format!("{prefix}\u{FFFD}"));
+        assert_eq!(right, "\u{FFFD}尾");
+        assert_eq!(big_rev.encode_utf16().count() as u64, total - 2);
+        assert_eq!(right.encode_utf16().count() as u64, 2);
     }
 
     #[test]

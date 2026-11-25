@@ -956,6 +956,200 @@ for (const version of ["yjs-13-6-21", "yjs-13-6-33"]) {
     sTrim.free();
   }
 
+  // 15. Direct scalar root textRemove, root & item readTextLen, in_buf cache across
+  //     memory.grow + high-water auto-trim, and > 0xffffffff fallback
+  {
+    const s = new api.DocSession(1501, "p2-fastpaths", { undo: "disabled" });
+    const tRoot = { Identity: s.ensureRoot("txt", "Text") };
+    const mRoot = { Identity: s.ensureRoot("mp", "Map") };
+
+    assert.equal(s.readTextLen(tRoot), 0);
+    const c1 = s.textInsert(tRoot, 0, "hello😀world");
+    assert.ok(c1);
+    assert.equal(s.readTextLen(tRoot), 12);
+
+    // Root textRemove fast path
+    const c2 = s.textRemove(tRoot, 5, 2);
+    assert.ok(c2);
+    assert.equal(s.readTextLen(tRoot), 10);
+    assert.equal(s.readTextString(tRoot), "helloworld");
+    assert.equal(s.textRemove(tRoot, 0, 0), null);
+
+    // Nested Text item readTextLen fast path
+    s.mapSet(mRoot, "nestedText", { Text: [{ insert: "abc🎉" }] });
+    const nestedId = s.getMapValue(mRoot, "nestedText").Text;
+    const nestedTarget = { Identity: nestedId };
+    assert.equal(s.readTextLen(nestedTarget), 5);
+    s.textRemove(nestedTarget, 3, 2);
+    assert.equal(s.readTextLen(nestedTarget), 3);
+
+    // Invalid root / item errors
+    assert.throws(() => s.readTextLen({ Identity: { Root: "missing" } }));
+    assert.throws(() => s.textRemove({ Identity: { Root: "missing" } }, 0, 1));
+    assert.throws(() =>
+      s.readTextLen({ Identity: { Item: { client: 9999, clock: 99 } } }),
+    );
+    assert.throws(() => s.readTextLen(mRoot));
+
+    // > 0xffffffff index/len must fall back to tape (not truncate to u32)
+    const overU32 = 0x100000000;
+    assert.throws(() => s.textInsert(tRoot, overU32, "x"));
+    assert.throws(() => s.textRemove(tRoot, overU32, 1));
+    const tmpRoot = { Identity: s.ensureRoot("tmpOverU32", "Text") };
+    s.textInsert(tmpRoot, 0, "abc");
+    // If overU32 were truncated to u32 (0), this would be a no-op; tape fallback deletes all 3 chars.
+    assert.ok(s.textRemove(tmpRoot, 0, overU32));
+    assert.equal(s.readTextLen(tmpRoot), 0);
+
+    // High-water > 4 MiB payload triggering memory.grow, followed by intermediate 512 KiB
+    // and then small direct scalar root calls (must refresh inPtr and auto-trim safely)
+    const big = new Uint8Array(4 * 1024 * 1024 + 8192);
+    big[0] = 7;
+    s.mapSet(mRoot, "big", { Any: big });
+    const mid = new Uint8Array(512 * 1024);
+    s.mapSet(mRoot, "mid", { Any: mid });
+    assert.equal(s.readTextLen(tRoot), 10);
+    assert.ok(s.textInsert(tRoot, 10, "!"));
+    assert.equal(s.readTextLen(tRoot), 11);
+    assert.ok(s.textRemove(tRoot, 10, 1));
+    assert.equal(s.readTextLen(tRoot), 10);
+
+    // Verify Yjs convergence
+    const ydoc = new Y.Doc();
+    Y.applyUpdate(ydoc, s.encodeUpdateV1());
+    assert.equal(ydoc.getText("txt").toString(), "helloworld");
+    assert.equal(ydoc.getMap("mp").get("nestedText").toString(), "abc");
+    s.free();
+  }
+
+  // 16. R2 regressions: own Path + inherited Identity, Proxy _handle reentrancy,
+  //     pseudo-string deferred trimScratch, scalar >4 MiB -> 512 KiB -> small inHighWater,
+  //     negative index/len RangeError, and legacy ABI v1 fallback without new exports
+  {
+    const s = new api.DocSession(1601, "p2-r2-regressions", {
+      undo: "disabled",
+    });
+    const mRoot = { Identity: s.ensureRoot("mp", "Map") };
+    const tOther = { Identity: s.ensureRoot("other", "Text") };
+    s.textInsert(tOther, 0, "OTHER");
+    s.mapSet(mRoot, "sub", { Text: [{ insert: "path-text" }] });
+
+    // (a) Own Path + prototype-inherited Identity must hit Path, never inherited Identity
+    const protoWithIdentity = { Identity: { Root: "other" } };
+    const pathTarget = Object.assign(Object.create(protoWithIdentity), {
+      Path: { root: "mp", segments: [{ Key: "sub" }] },
+    });
+    assert.equal(s.readTextLen(pathTarget), 9);
+    s.textInsert(pathTarget, 9, "!");
+    assert.equal(s.readTextLen(pathTarget), 10);
+    s.textRemove(pathTarget, 0, 5);
+    assert.equal(s.readTextString(pathTarget), "text!");
+    assert.equal(s.readTextString(tOther), "OTHER");
+
+    // (b) Proxy-wrapped session where reading `_handle` reenters readTextLen on another root
+    const tA = { Identity: s.ensureRoot("rootA", "Text") };
+    const tB = { Identity: s.ensureRoot("rootB", "Text") };
+    s.textInsert(tA, 0, "aaaa");
+    s.textInsert(tB, 0, "bbbbbbbbbb"); // len 10
+    let reentryGuard = false;
+    const proxied = new Proxy(s, {
+      get(target, prop, receiver) {
+        if (prop === "_handle" && !reentryGuard) {
+          reentryGuard = true;
+          try {
+            assert.equal(target.readTextLen(tB), 10);
+          } finally {
+            reentryGuard = false;
+          }
+          return target._handle;
+        }
+        const val = Reflect.get(target, prop, target);
+        return typeof val === "function" ? val.bind(receiver) : val;
+      },
+    });
+    assert.equal(proxied.readTextLen(tA), 4);
+    proxied.textInsert(tA, 4, "cc");
+    assert.equal(s.readTextString(tA), "aaaacc");
+    assert.equal(s.readTextString(tB), "bbbbbbbbbb");
+    proxied.textRemove(tA, 4, 2);
+    assert.equal(s.readTextString(tA), "aaaa");
+    assert.equal(s.readTextString(tB), "bbbbbbbbbb");
+
+    // (c) Pseudo-string calling api.trimScratch() during writeUtf8Raw must defer trim
+    const pseudoStr = {
+      length: 8,
+      charCodeAt(i) {
+        if (i === 0) api.trimScratch();
+        return 0x5a; // 'Z'
+      },
+    };
+    const tPseudo = { Identity: s.ensureRoot("pseudo", "Text") };
+    assert.ok(s.textInsert(tPseudo, 0, pseudoStr));
+    assert.equal(s.readTextString(tPseudo), "ZZZZZZZZ");
+
+    // (d) True scalar textInsert > 4 MiB -> 512 KiB -> small scalar read/insert/remove
+    const tBig = { Identity: s.ensureRoot("bigScalar", "Text") };
+    const big4M = "a".repeat(4 * 1024 * 1024 + 4096);
+    const mid512K = "b".repeat(512 * 1024);
+    assert.ok(s.textInsert(tBig, 0, big4M));
+    assert.ok(s.textInsert(tBig, big4M.length, mid512K));
+    const expectedBigLen = big4M.length + mid512K.length;
+    assert.equal(s.readTextLen(tBig), expectedBigLen);
+    assert.ok(s.textInsert(tBig, expectedBigLen, "c"));
+    assert.equal(s.readTextLen(tBig), expectedBigLen + 1);
+    assert.ok(s.textRemove(tBig, expectedBigLen, 1));
+    assert.equal(s.readTextLen(tBig), expectedBigLen);
+
+    // (e) Negative index / len must throw RangeError without mutating document
+    assert.throws(() => s.textInsert(tA, -1, "x"), RangeError);
+    assert.throws(() => s.textInsert(tA, -0.5, "x"), RangeError);
+    assert.throws(() => s.textRemove(tA, -1, 1), RangeError);
+    assert.throws(() => s.textRemove(tA, -0.5, 1), RangeError);
+    assert.throws(() => s.textRemove(tA, 0, -1), RangeError);
+    assert.throws(() => s.textRemove(tA, 0, -0.5), RangeError);
+    assert.equal(s.readTextString(tA), "aaaa");
+
+    s.free();
+
+    // (f) Emulate legacy ABI v1 .wasm missing the 3 new scalar exports
+    const origInstantiate = WebAssembly.instantiate;
+    let legacyApi;
+    try {
+      WebAssembly.instantiate = async (mod, imports) => {
+        const inst = await origInstantiate(mod, imports);
+        const filtered = {};
+        for (const [k, v] of Object.entries(inst.exports)) {
+          if (
+            k === "session_text_len_root" ||
+            k === "session_text_len_id" ||
+            k === "session_text_remove_root"
+          ) {
+            continue;
+          }
+          filtered[k] = v;
+        }
+        return { exports: filtered };
+      };
+      legacyApi = await loadYOctoWasm(wasmBytes);
+    } finally {
+      WebAssembly.instantiate = origInstantiate;
+    }
+    const ls = new legacyApi.DocSession(1602, "legacy-abi-v1", {
+      undo: "disabled",
+    });
+    const lt = { Identity: ls.ensureRoot("txt", "Text") };
+    const lm = { Identity: ls.ensureRoot("mp", "Map") };
+    ls.textInsert(lt, 0, "hello😀");
+    assert.equal(ls.readTextLen(lt), 7);
+    assert.ok(ls.textRemove(lt, 5, 2));
+    assert.equal(ls.readTextLen(lt), 5);
+    assert.equal(ls.readTextString(lt), "hello");
+    ls.mapSet(lm, "nested", { Text: [{ insert: "xyz" }] });
+    const lNested = { Identity: ls.getMapValue(lm, "nested").Text };
+    assert.equal(ls.readTextLen(lNested), 3);
+    ls.free();
+  }
+
   console.log(
     `y-octo-wasm interop passed against ${version} + y-protocols@1.0.6`,
   );

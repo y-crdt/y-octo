@@ -87,6 +87,28 @@ impl Node {
             }
         }
     }
+
+    /// Writes the suffix of this node starting at `offset` without cloning the
+    /// full struct or string content.
+    pub fn write_from<W: CrdtWriter>(&self, types: &TypeArena, offset: u64, writer: &mut W) -> JwstCodecResult {
+        if offset == 0 {
+            return self.write(types, writer);
+        }
+        if offset >= self.len {
+            return Err(JwstCodecError::ContentSplitNotSupport(offset));
+        }
+        match self.as_item() {
+            Some(idx) => types
+                .items
+                .get(idx)
+                .expect("stored item")
+                .write_from(types, offset, writer),
+            None => {
+                writer.write_info(if self.is_skip() { 10 } else { 0 })?;
+                writer.write_var_u64(self.len - offset)
+            }
+        }
+    }
 }
 #[cfg(test)]
 mod tests {
@@ -223,6 +245,161 @@ mod tests {
                 assert_eq!(&WireStruct::from_node(&types, &info).unwrap(), decoded);
             }
         });
+    }
+
+    #[test]
+    fn node_write_from_matches_wire_struct_split_at_byte_for_byte() {
+        let mut types = TypeArena::default();
+        let root = types
+            .alloc(YType::new_root(YTypeKind::Map, None, "root".into()))
+            .unwrap();
+        let nested_ty = types.alloc(YType::new(YTypeKind::Array, None)).unwrap();
+
+        // Gc and Skip nodes
+        for node in [Node::new_gc(Id::new(1, 5), 10), Node::new_skip(Id::new(2, 7), 10)] {
+            for offset in 0..node.len() {
+                let mut direct = RawEncoder::default();
+                node.write_from(&types, offset, &mut direct).unwrap();
+                let mut via_wire = RawEncoder::default();
+                let wire = WireStruct::from_node(&types, &node).unwrap();
+                if offset == 0 {
+                    wire.write(&mut via_wire).unwrap();
+                } else {
+                    wire.split_at(offset).unwrap().1.write(&mut via_wire).unwrap();
+                }
+                assert_eq!(direct.into_inner(), via_wire.into_inner());
+            }
+        }
+
+        // Splittable Item variants across origin_left / origin_right /
+        // parent_sub combinations
+        let contents = [
+            Content::Deleted(6),
+            Content::Json(vec![None, Some("a".into()), Some("b".into()), None]),
+            Content::Any(vec![Any::Integer(1), Any::String("hi".into()), Any::True, Any::Null]),
+            Content::String("abcdef".into()),
+            Content::String("中文Привет".into()),
+            Content::String("a😀中🎉b".into()),
+        ];
+
+        for content in contents {
+            for origin_left in [None, Some(Id::new(8, 1))] {
+                for origin_right in [None, Some(Id::new(9, 42))] {
+                    for parent_sub in [None, Some(SmolStr::new_inline("sub"))] {
+                        let item = ItemBuilder::new()
+                            .id(Id::new(3, 10))
+                            .left_id(origin_left)
+                            .right_id(origin_right)
+                            .parent(Some(root))
+                            .parent_sub(parent_sub.clone())
+                            .content(content.clone())
+                            .build();
+                        let node = Node::store_item(&mut types, item);
+                        for offset in 0..node.len() {
+                            let mut direct = RawEncoder::default();
+                            node.write_from(&types, offset, &mut direct).unwrap();
+                            let mut via_wire = RawEncoder::default();
+                            let wire = WireStruct::from_node(&types, &node).unwrap();
+                            if offset == 0 {
+                                wire.write(&mut via_wire).unwrap();
+                            } else {
+                                wire.split_at(offset).unwrap().1.write(&mut via_wire).unwrap();
+                            }
+                            assert_eq!(
+                                direct.into_inner(),
+                                via_wire.into_inner(),
+                                "mismatch for content={content:?} left={origin_left:?} right={origin_right:?} \
+                                 sub={parent_sub:?} offset={offset}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        // Unsplittable Item variants return ContentSplitNotSupport
+        for content in [
+            Content::Binary(vec![1, 2, 3]),
+            Content::Embed(Box::new(Any::True)),
+            Content::format("bold".into(), Any::True),
+            Content::Type(nested_ty),
+            Content::doc("guid".into(), Any::Null),
+        ] {
+            let item = ItemBuilder::new()
+                .id(Id::new(4, 0))
+                .parent(Some(root))
+                .content(content)
+                .build();
+            let mut enc = RawEncoder::default();
+            assert_eq!(
+                item.write_from(&types, 1, &mut enc),
+                Err(JwstCodecError::ContentSplitNotSupport(1))
+            );
+        }
+    }
+
+    #[test]
+    fn node_and_item_write_from_reject_out_of_bounds_offset() {
+        let mut types = TypeArena::default();
+        let root = types
+            .alloc(YType::new_root(YTypeKind::Map, None, "root".into()))
+            .unwrap();
+
+        let nodes = vec![
+            Node::new_gc(Id::new(1, 0), 4),
+            Node::new_skip(Id::new(2, 0), 4),
+            Node::store_item(
+                &mut types,
+                ItemBuilder::new()
+                    .id(Id::new(3, 0))
+                    .parent(Some(root))
+                    .content(Content::Deleted(4))
+                    .build(),
+            ),
+            Node::store_item(
+                &mut types,
+                ItemBuilder::new()
+                    .id(Id::new(4, 0))
+                    .parent(Some(root))
+                    .content(Content::Json(vec![None, Some("a".into())]))
+                    .build(),
+            ),
+            Node::store_item(
+                &mut types,
+                ItemBuilder::new()
+                    .id(Id::new(5, 0))
+                    .parent(Some(root))
+                    .content(Content::Any(vec![Any::Integer(1), Any::Integer(2)]))
+                    .build(),
+            ),
+            Node::store_item(
+                &mut types,
+                ItemBuilder::new()
+                    .id(Id::new(6, 0))
+                    .parent(Some(root))
+                    .content(Content::String("a😀b".into()))
+                    .build(),
+            ),
+        ];
+
+        for node in nodes {
+            for offset in [node.len(), node.len() + 1] {
+                let mut enc = RawEncoder::default();
+                assert_eq!(
+                    node.write_from(&types, offset, &mut enc),
+                    Err(JwstCodecError::ContentSplitNotSupport(offset))
+                );
+                assert!(enc.into_inner().is_empty());
+                if let Some(idx) = node.as_item() {
+                    let mut item_enc = RawEncoder::default();
+                    assert_eq!(
+                        types.items.get(idx).unwrap().write_from(&types, offset, &mut item_enc),
+                        Err(JwstCodecError::ContentSplitNotSupport(offset))
+                    );
+                    assert!(item_enc.into_inner().is_empty());
+                }
+            }
+        }
     }
 
     #[cfg(not(loom))]

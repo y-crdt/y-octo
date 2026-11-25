@@ -873,3 +873,242 @@ fn subtree_subscriptions_follow_nested_changes() {
     assert_eq!(seen(&root_seen), vec![first, first + 1, first + 2, first + 4]);
     assert_eq!(seen(&text_seen), vec![first]);
 }
+
+#[test]
+fn transact_local_implicit_matches_transact_mut_hot_and_cold_paths() {
+    // 1. Hot path (no subscriber, no history_hook)
+    let implicit = Doc::with_client(1);
+    let explicit = Doc::with_client(1);
+    let mut t_imp = implicit.get_or_create_text("t").unwrap();
+    let t_exp = explicit.get_or_create_text("t").unwrap();
+
+    t_imp.insert(0, "hello").unwrap();
+    t_imp.insert(5, " world").unwrap();
+    t_imp.remove(5, 6).unwrap();
+
+    explicit
+        .transact_mut(None, |tx| tx.text(&t_exp)?.insert(0, "hello"))
+        .unwrap();
+    explicit
+        .transact_mut(None, |tx| tx.text(&t_exp)?.insert(5, " world"))
+        .unwrap();
+    explicit.transact_mut(None, |tx| tx.text(&t_exp)?.remove(5, 6)).unwrap();
+
+    assert_eq!(t_imp.to_string(), t_exp.to_string());
+    assert_eq!(
+        implicit.store.read().unwrap().commit_seq,
+        explicit.store.read().unwrap().commit_seq
+    );
+    assert_eq!(
+        implicit.store.read().unwrap().last_optimized_state,
+        explicit.store.read().unwrap().last_optimized_state
+    );
+    assert_eq!(
+        implicit.encode_update_v1().unwrap(),
+        explicit.encode_update_v1().unwrap()
+    );
+    assert!(implicit.store.read().unwrap().collector.is_empty());
+
+    // 2. Cold path with subscriber: first local edit on a doc that already
+    // has a remote client must NOT insert a spurious `0` key in before_state.
+    let remote = Doc::with_client(99);
+    remote.get_or_create_text("t").unwrap().insert(0, "r").unwrap();
+    let seed = remote.encode_update_v1().unwrap();
+
+    let mut sub_imp = Doc::with_client(2);
+    let mut sub_exp = Doc::with_client(2);
+    sub_imp.apply_update_from_binary_v1(&seed).unwrap();
+    sub_exp.apply_update_from_binary_v1(&seed).unwrap();
+
+    let (_s1, ev_imp) = record(&sub_imp);
+    let (_s2, ev_exp) = record(&sub_exp);
+
+    let mut ti = sub_imp.get_or_create_text("t").unwrap();
+    let te = sub_exp.get_or_create_text("t").unwrap();
+    ti.insert(1, "a").unwrap();
+    ti.insert(2, "b").unwrap();
+    sub_exp.transact_mut(None, |tx| tx.text(&te)?.insert(1, "a")).unwrap();
+    sub_exp.transact_mut(None, |tx| tx.text(&te)?.insert(2, "b")).unwrap();
+
+    let imp_events = take(&ev_imp);
+    let exp_events = take(&ev_exp);
+    assert_eq!(imp_events.len(), 2);
+    assert_eq!(exp_events.len(), 2);
+    // Crucial: first edit had before_clock == 0 for client 2, so key 2 must be
+    // absent.
+    assert!(!imp_events[0].before_state.contains_key(&2));
+    for (a, b) in imp_events.iter().zip(exp_events.iter()) {
+        assert_eq!(a.seq, b.seq);
+        assert_eq!(a.before_state, b.before_state);
+        assert_eq!(a.after_state, b.after_state);
+        assert_eq!(a.update, b.update);
+        assert_eq!(a.deleted, b.deleted);
+        assert_eq!(a.changed, b.changed);
+    }
+
+    // 3. Cold path with UndoManager (history_hook)
+    let undo_doc = Doc::with_client(3);
+    let mut ut = undo_doc.get_or_create_text("t").unwrap();
+    let um = UndoManager::<()>::new(&undo_doc, [UndoScope::from(&ut)], UndoOptions::default()).unwrap();
+    ut.insert(0, "abc").unwrap();
+    um.stop_capturing().unwrap();
+    ut.remove(1, 1).unwrap();
+    assert_eq!(ut.to_string(), "ac");
+    assert!(um.undo().unwrap().is_some());
+    assert_eq!(ut.to_string(), "abc");
+    assert!(um.undo().unwrap().is_some());
+    assert_eq!(ut.to_string(), "");
+    assert!(um.redo().unwrap().is_some());
+    assert_eq!(ut.to_string(), "abc");
+}
+
+#[test]
+fn transact_local_implicit_guards_preliminary_and_err_commit() {
+    // client_required rejection
+    let doc = Doc::with_client(1);
+    let mut text = doc.get_or_create_text("t").unwrap();
+    doc.store.write().unwrap().client_required = true;
+    assert_eq!(text.insert(0, "x"), Err(JwstCodecError::ClientIdRequired));
+    assert_eq!(doc.store.read().unwrap().commit_seq, 0);
+    doc.store.write().unwrap().client_required = false;
+
+    // OpenTransactionFrame rejection
+    doc.store.write().unwrap().collector.deleted.add(1, 0, 1);
+    assert_eq!(text.insert(0, "x"), Err(JwstCodecError::OpenTransactionFrame));
+    doc.store.write().unwrap().collector.deleted.clear();
+
+    // Preliminary type editing does not bump commit_seq, mounting does
+    let mut root_map = doc.get_or_create_map("root").unwrap();
+    let mut prelim = doc.create_text().unwrap();
+    prelim.insert(0, "staged").unwrap();
+    assert_eq!(doc.store.read().unwrap().commit_seq, 0);
+    assert!(doc.get_state_vector().is_empty());
+    root_map.insert("child".into(), prelim.clone()).unwrap();
+    assert_eq!(doc.store.read().unwrap().commit_seq, 1);
+    assert_eq!(prelim.to_string(), "staged");
+
+    // Closure returning Err after partial mutation still commits (matching
+    // transact_mut_with)
+    let seq_before = doc.store.read().unwrap().commit_seq;
+    let ty = text.0.id.unwrap();
+    let err: JwstCodecResult<()> = transact_local_implicit(&doc.store, |store| {
+        crate::doc::types::text::text_insert(store, ty, 0, "partial".into())?;
+        Err(JwstCodecError::Unexpected)
+    });
+    assert_eq!(err, Err(JwstCodecError::Unexpected));
+    assert_eq!(text.to_string(), "partial");
+    assert_eq!(doc.store.read().unwrap().commit_seq, seq_before + 1);
+    assert!(doc.store.read().unwrap().collector.is_empty());
+}
+
+#[test]
+fn transact_local_implicit_reclaims_retired_staging_slots_on_preliminary_mount() {
+    // 1. Under a 3-slot item limit, mounting a preliminary child array
+    // containing `7` into an unpublished parent array retires the old staging
+    // item; both implicit and explicit writes must finish_item_space() so
+    // appending `8` succeeds with occupied == 2.
+    for explicit in [false, true] {
+        let doc = Doc::with_client(1);
+        doc.store.write().unwrap().type_arena.items.set_limit(3);
+        let mut parent = doc.create_array().unwrap();
+        let mut child = doc.create_array().unwrap();
+        if explicit {
+            doc.transact_mut(None, |tx| tx.array(&child)?.push(7i32)).unwrap();
+            doc.transact_mut(None, |tx| tx.array(&parent)?.push(child.clone()))
+                .unwrap();
+            assert_eq!(doc.store.read().unwrap().type_arena.items.occupied(), 2);
+            doc.transact_mut(None, |tx| tx.array(&parent)?.push(8i32)).unwrap();
+        } else {
+            child.push(7i32).unwrap();
+            parent.push(child.clone()).unwrap();
+            assert_eq!(doc.store.read().unwrap().type_arena.items.occupied(), 2);
+            parent.push(8i32).unwrap();
+        }
+        assert_eq!(doc.store.read().unwrap().type_arena.items.occupied(), 3);
+        assert_eq!(parent.len(), 2);
+        assert_eq!(doc.store.read().unwrap().commit_seq, 0);
+        doc.store.read().unwrap().self_check().unwrap();
+    }
+
+    // 2. Wrapping 32 nested preliminary arrays under default limit must
+    // reclaim retired staging slots on every implicit step, matching explicit
+    // occupied == 33.
+    let run_wrap_32 = |explicit: bool| -> usize {
+        let doc = Doc::with_client(1);
+        let mut current = doc.create_array().unwrap();
+        if explicit {
+            doc.transact_mut(None, |tx| tx.array(&current)?.push(0i32)).unwrap();
+        } else {
+            current.push(0i32).unwrap();
+        }
+        for _ in 0..32 {
+            let mut next = doc.create_array().unwrap();
+            if explicit {
+                doc.transact_mut(None, |tx| tx.array(&next)?.push(current.clone()))
+                    .unwrap();
+            } else {
+                next.push(current.clone()).unwrap();
+            }
+            current = next;
+        }
+        let store = doc.store.read().unwrap();
+        store.self_check().unwrap();
+        store.type_arena.items.occupied()
+    };
+    let explicit_occ = run_wrap_32(true);
+    let implicit_occ = run_wrap_32(false);
+    assert_eq!(explicit_occ, 33);
+    assert_eq!(implicit_occ, 33);
+}
+
+#[test]
+fn transact_local_implicit_remote_only_delete_matches_transact_mut() {
+    let remote = Doc::with_client(99);
+    remote.get_or_create_text("t").unwrap().insert(0, "abc").unwrap();
+    let seed = remote.encode_update_v1().unwrap();
+
+    // Test both with subscriber (cold path) and without subscriber (hot path)
+    for with_sub in [false, true] {
+        let mut imp = Doc::with_client(2);
+        let mut exp = Doc::with_client(2);
+        imp.apply_update_from_binary_v1(&seed).unwrap();
+        exp.apply_update_from_binary_v1(&seed).unwrap();
+
+        let sub_imp = with_sub.then(|| record(&imp));
+        let sub_exp = with_sub.then(|| record(&exp));
+
+        let mut ti = imp.get_or_create_text("t").unwrap();
+        let te = exp.get_or_create_text("t").unwrap();
+        ti.remove(1, 1).unwrap();
+        exp.transact_mut(None, |tx| tx.text(&te)?.remove(1, 1)).unwrap();
+
+        assert_eq!(ti.to_string(), "ac");
+        assert_eq!(te.to_string(), "ac");
+        assert_eq!(
+            imp.store.read().unwrap().commit_seq,
+            exp.store.read().unwrap().commit_seq
+        );
+        assert_eq!(
+            imp.store.read().unwrap().last_optimized_state,
+            exp.store.read().unwrap().last_optimized_state
+        );
+        assert!(!imp.store.read().unwrap().last_optimized_state.contains_key(&2));
+        assert_eq!(imp.encode_update_v1().unwrap(), exp.encode_update_v1().unwrap());
+
+        if let (Some((_, ev_i)), Some((_, ev_e))) = (sub_imp, sub_exp) {
+            let ev_i = take(&ev_i);
+            let ev_e = take(&ev_e);
+            assert_eq!(ev_i.len(), 1);
+            assert_eq!(ev_e.len(), 1);
+            assert!(!ev_i[0].before_state.contains_key(&2));
+            assert!(!ev_i[0].after_state.contains_key(&2));
+            assert_eq!(ev_i[0].seq, ev_e[0].seq);
+            assert_eq!(ev_i[0].before_state, ev_e[0].before_state);
+            assert_eq!(ev_i[0].after_state, ev_e[0].after_state);
+            assert_eq!(ev_i[0].inserted, ev_e[0].inserted);
+            assert_eq!(ev_i[0].deleted, ev_e[0].deleted);
+            assert_eq!(ev_i[0].changed, ev_e[0].changed);
+            assert_eq!(ev_i[0].update, ev_e[0].update);
+        }
+    }
+}

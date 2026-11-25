@@ -237,6 +237,13 @@ impl Content {
             _ => Err(JwstCodecError::ContentSplitNotSupport(diff)),
         }
     }
+
+    pub(crate) fn split_in_place_with_len(&mut self, total_len: u64, diff: u64) -> JwstCodecResult<Self> {
+        match self {
+            Self::String(str) => Ok(Self::String(utf16_split_in_place_with_len(str, total_len, diff))),
+            _ => self.split_in_place(diff),
+        }
+    }
 }
 
 pub(crate) enum ParentInfo<'a> {

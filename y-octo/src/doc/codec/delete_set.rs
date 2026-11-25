@@ -158,6 +158,17 @@ impl DeleteSet {
     pub fn clear(&mut self) {
         self.clients.clear();
     }
+
+    /// Clears entries in place when the backing map capacity is within
+    /// `max_cap`, or resets to an empty map to avoid retaining oversized
+    /// buffers from occasional large transactions.
+    pub(crate) fn clear_or_reset(&mut self, max_cap: usize) {
+        if self.clients.capacity() <= max_cap {
+            self.clients.clear();
+        } else {
+            *self = Self::default();
+        }
+    }
 }
 
 impl<W: CrdtWriter> CrdtWrite<W> for DeleteSet {

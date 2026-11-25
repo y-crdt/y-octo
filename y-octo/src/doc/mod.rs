@@ -48,8 +48,8 @@ pub use transaction::{
     XMLFragmentWrite, XMLHookRead, XMLHookWrite, XMLTextRead, XMLTextWrite,
 };
 pub(crate) use transaction::{
-    CommitHook, EventHub, after_unlock, or_released, read_store, read_store_or_panic, transact_maintenance,
-    transact_mut_with, transact_mut_with_events, write_store,
+    CommitHook, EventHub, after_unlock, or_released, read_store, read_store_or_panic, transact_local_implicit,
+    transact_maintenance, transact_mut_with, transact_mut_with_events, write_store,
 };
 pub use types::*;
 pub use undo::{UndoItem, UndoManager, UndoOptions, UndoOrigin, UndoScope, UndoStack};
