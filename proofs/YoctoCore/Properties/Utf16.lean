@@ -624,40 +624,22 @@ theorem utf16_len_spec (bytes : Slice Std.U8) :
   simp only
   split_ifs with hlt
   · have hiLt : i.val < bytes.length := by scalar_tac
-    have hStepSpec : ∀ b : Std.U8,
-        (if b < 128#u8 then ok 1#usize
-         else if b < 224#u8 then ok 2#usize
-         else if b < 240#u8 then ok 3#usize
-         else ok 4#usize) ⦃ s => s.val = leadStep b ∧ 1 ≤ s.val ∧ s.val ≤ 4 ⦄ := by
-      intro b; simp only [leadStep]; split_ifs <;> simp [spec_ok] <;> scalar_tac
     step as ⟨b, hb⟩
-    step with hStepSpec b as ⟨s, hsEq, hs1, hs4⟩
-    step as ⟨rem, hrem⟩
     have hDropCons : bytes.val.drop i.val = b :: bytes.val.drop (i.val + 1) := by
       rw [hb]; exact List.drop_eq_getElem_cons hiLt
     have hDropLen : 1 + (bytes.val.drop (i.val + 1)).length = bytes.length - i.val := by
       simp [List.length_drop]; scalar_tac
-    by_cases hshort : rem < s
-    · simp only [hshort, ↓reduceIte, spec_ok]
-      have hLtLead : 1 + (bytes.val.drop (i.val + 1)).length < leadStep b := by scalar_tac
-      have hZero : utf16LenList (bytes.val.drop i.val) = 0 := by
-        rw [hDropCons, utf16LenList_cons, if_pos hLtLead]
-      omega
-    · simp only [hshort, ↓reduceIte]
-      have hNotLtLead : ¬ (1 + (bytes.val.drop (i.val + 1)).length < leadStep b) := by scalar_tac
-      have hUnitsSpec : (if s = 4#usize then ok 2#usize else ok 1#usize) ⦃ u =>
-          u.val = leadUnits b ∧ u.val ≤ s.val ⦄ := by
-        by_cases h4 : s = 4#usize
-        · have hs4v : s.val = 4 := congrArg UScalar.val h4
-          have hlb : leadStep b = 4 := hsEq.symm.trans hs4v
-          simp [h4, leadUnits, hlb, spec_ok]
-        · have hsNe4 : s.val ≠ 4 := fun h => h4 (UScalar.eq_of_val_eq h)
-          have hlb : leadStep b ≠ 4 := by omega
-          simp [h4, leadUnits, hlb, spec_ok]; omega
-      step with hUnitsSpec as ⟨units, huEq, huLe⟩
+    by_cases hascii : b < 128#u8
+    · -- a one-byte char: one byte, one unit
+      simp only [hascii, ↓reduceIte]
+      have hbv : b.val < 128 := by scalar_tac
+      have hls : leadStep b = 1 := by simp [leadStep, hbv]
+      have hlu : leadUnits b = 1 := by simp [leadUnits, hls]
       step as ⟨i2, hi2⟩
       step as ⟨count1, hcnt1⟩
       try simp only [spec_ok]
+      have hNotLtLead : ¬ (1 + (bytes.val.drop (i.val + 1)).length < leadStep b) := by
+        rw [hls]; omega
       have hDrop2 : (bytes.val.drop (i.val + 1)).drop (leadStep b - 1) = bytes.val.drop i2.val := by
         rw [List.drop_drop]
         congr 1
@@ -666,6 +648,43 @@ theorem utf16_len_spec (bytes : Slice Std.U8) :
           leadUnits b + utf16LenList (bytes.val.drop i2.val) := by
         rw [hDropCons, utf16LenList_cons, if_neg hNotLtLead, hDrop2]
       exact ⟨⟨by scalar_tac, by scalar_tac, by omega⟩, by scalar_tac⟩
+    · simp only [hascii, ↓reduceIte]
+      have hStepSpec :
+          (if b < 224#u8 then ok 2#usize
+           else if b < 240#u8 then ok 3#usize
+           else ok 4#usize) ⦃ s => s.val = leadStep b ∧ 1 ≤ s.val ∧ s.val ≤ 4 ⦄ := by
+        simp only [leadStep]; split_ifs <;> simp [spec_ok] <;> scalar_tac
+      step with hStepSpec as ⟨s, hsEq, hs1, hs4⟩
+      step as ⟨rem, hrem⟩
+      by_cases hshort : rem < s
+      · simp only [hshort, ↓reduceIte, spec_ok]
+        have hLtLead : 1 + (bytes.val.drop (i.val + 1)).length < leadStep b := by scalar_tac
+        have hZero : utf16LenList (bytes.val.drop i.val) = 0 := by
+          rw [hDropCons, utf16LenList_cons, if_pos hLtLead]
+        omega
+      · simp only [hshort, ↓reduceIte]
+        have hNotLtLead : ¬ (1 + (bytes.val.drop (i.val + 1)).length < leadStep b) := by scalar_tac
+        have hUnitsSpec : (if s = 4#usize then ok 2#usize else ok 1#usize) ⦃ u =>
+            u.val = leadUnits b ∧ u.val ≤ s.val ⦄ := by
+          by_cases h4 : s = 4#usize
+          · have hs4v : s.val = 4 := congrArg UScalar.val h4
+            have hlb : leadStep b = 4 := hsEq.symm.trans hs4v
+            simp [h4, leadUnits, hlb, spec_ok]
+          · have hsNe4 : s.val ≠ 4 := fun h => h4 (UScalar.eq_of_val_eq h)
+            have hlb : leadStep b ≠ 4 := by omega
+            simp [h4, leadUnits, hlb, spec_ok]; omega
+        step with hUnitsSpec as ⟨units, huEq, huLe⟩
+        step as ⟨i2, hi2⟩
+        step as ⟨count1, hcnt1⟩
+        try simp only [spec_ok]
+        have hDrop2 : (bytes.val.drop (i.val + 1)).drop (leadStep b - 1) = bytes.val.drop i2.val := by
+          rw [List.drop_drop]
+          congr 1
+          omega
+        have hUnfold : utf16LenList (bytes.val.drop i.val) =
+            leadUnits b + utf16LenList (bytes.val.drop i2.val) := by
+          rw [hDropCons, utf16LenList_cons, if_neg hNotLtLead, hDrop2]
+        exact ⟨⟨by scalar_tac, by scalar_tac, by omega⟩, by scalar_tac⟩
   · simp only [spec_ok]
     have hNil : bytes.val.drop i.val = [] := List.drop_eq_nil_of_le (by scalar_tac)
     rw [hNil, utf16LenList] at hSum
@@ -845,42 +864,29 @@ theorem utf16_split_byte_offset_total (bytes : Slice Std.U8) (target : Std.U64) 
     intro ⟨i, clock⟩ hiLen
     unfold utf16.utf16_split_byte_offset_loop.body
     simp only
-    split_ifs with hlt
-    · have hiLt : i.val < bytes.length := by scalar_tac
-      have hStepSpec : ∀ b : Std.U8,
-          (if b < 128#u8 then ok 1#usize
-           else if b < 224#u8 then ok 2#usize
-           else if b < 240#u8 then ok 3#usize
-           else ok 4#usize) ⦃ s => 1 ≤ s.val ∧ s.val ≤ 4 ⦄ := by
-        intro b; split_ifs <;> simp [spec_ok] <;> scalar_tac
+    -- not `split_ifs`: it would also split on `clock = u64::MAX`
+    by_cases hlt : i < Slice.len bytes
+    · simp only [hlt, ↓reduceIte]
+      have hiLt : i.val < bytes.length := by scalar_tac
+      have hU64Max : (core.num.U64.MAX : Std.U64).val = 2 ^ 64 - 1 := by decide
+      have hRMax : Std.U64.rMax = 2 ^ 64 - 1 := by decide
       step as ⟨b, _⟩
-      step with hStepSpec b as ⟨s, hs1, hs4⟩
-      step as ⟨rem, hrem⟩
-      by_cases hshort : rem < s
-      · simp only [hshort, ↓reduceIte, spec_ok]
-        exact ⟨Nat.le_refl _, by scalar_tac⟩
-      · simp only [hshort, ↓reduceIte]
-        have hUnitsSpec : (if s = 4#usize then ok 2#u64 else ok 1#u64) ⦃ u =>
-            1 ≤ u.val ∧ u.val ≤ 2 ⦄ := by
-          split_ifs <;> simp [spec_ok] <;> scalar_tac
-        step with hUnitsSpec as ⟨units, hu1, hu2⟩
-        have hU64Max : (core.num.U64.MAX : Std.U64).val = 2 ^ 64 - 1 := by decide
-        have hRMax : Std.U64.rMax = 2 ^ 64 - 1 := by decide
-        have hUnitsLeMax : units.val ≤ (core.num.U64.MAX : Std.U64).val := by rw [hU64Max]; omega
-        step as ⟨maxSub, hmaxSub⟩
-        have hMaxSubVal : maxSub.val = 2 ^ 64 - 1 - units.val := by rw [hmaxSub, hRMax]
-        by_cases hovf : clock > maxSub
-        · simp only [hovf, ↓reduceIte, spec_ok]
+      by_cases hascii : b < 128#u8
+      · -- a one-byte char
+        simp only [hascii, ↓reduceIte]
+        by_cases hmax : clock = core.num.U64.MAX
+        · rw [if_pos hmax]
+          simp only [spec_ok]
           exact ⟨Nat.le_refl _, by scalar_tac⟩
-        · simp only [hovf, ↓reduceIte]
-          have hNotGt : ¬ (maxSub.val < clock.val) := fun h => hovf h
-          have hClkLe : clock.val ≤ maxSub.val := Nat.le_of_not_lt hNotGt
-          have hSumLe : clock.val + units.val ≤ Std.U64.max := by
+        · rw [if_neg hmax]
+          have hClkNe : clock.val ≠ 2 ^ 64 - 1 := by
+            intro h
+            exact hmax (UScalar.eq_of_val_eq (h.trans hU64Max.symm))
+          have hSumLe : clock.val + 1 ≤ Std.U64.max := by
             have hU64m : Std.U64.max = 2 ^ 64 - 1 := by simp [Std.U64.max, U64.numBits]
+            have hle : clock.val ≤ Std.U64.max := by scalar_tac
             omega
           step as ⟨next_clock, _⟩
-          have hRemGe : s.val ≤ bytes.length - i.val := by scalar_tac
-          have hNextBound : i.val + s.val ≤ bytes.length := by omega
           by_cases hdone : target < next_clock
           · simp only [hdone, ↓reduceIte]
             step as ⟨i3, hi3⟩
@@ -890,7 +896,47 @@ theorem utf16_split_byte_offset_total (bytes : Slice Std.U8) (target : Std.U64) 
             step as ⟨i3, hi3⟩
             try simp only [spec_ok]
             exact ⟨by scalar_tac, by scalar_tac⟩
-    · simp only [spec_ok]
+      · simp only [hascii, ↓reduceIte]
+        have hStepSpec :
+            (if b < 224#u8 then ok 2#usize
+             else if b < 240#u8 then ok 3#usize
+             else ok 4#usize) ⦃ s => 1 ≤ s.val ∧ s.val ≤ 4 ⦄ := by
+          split_ifs <;> simp [spec_ok] <;> scalar_tac
+        step with hStepSpec as ⟨s, hs1, hs4⟩
+        step as ⟨rem, hrem⟩
+        by_cases hshort : rem < s
+        · simp only [hshort, ↓reduceIte, spec_ok]
+          exact ⟨Nat.le_refl _, by scalar_tac⟩
+        · simp only [hshort, ↓reduceIte]
+          have hUnitsSpec : (if s = 4#usize then ok 2#u64 else ok 1#u64) ⦃ u =>
+              1 ≤ u.val ∧ u.val ≤ 2 ⦄ := by
+            split_ifs <;> simp [spec_ok] <;> scalar_tac
+          step with hUnitsSpec as ⟨units, hu1, hu2⟩
+          have hUnitsLeMax : units.val ≤ (core.num.U64.MAX : Std.U64).val := by rw [hU64Max]; omega
+          step as ⟨maxSub, hmaxSub⟩
+          have hMaxSubVal : maxSub.val = 2 ^ 64 - 1 - units.val := by rw [hmaxSub, hRMax]
+          by_cases hovf : clock > maxSub
+          · simp only [hovf, ↓reduceIte, spec_ok]
+            exact ⟨Nat.le_refl _, by scalar_tac⟩
+          · simp only [hovf, ↓reduceIte]
+            have hNotGt : ¬ (maxSub.val < clock.val) := fun h => hovf h
+            have hClkLe : clock.val ≤ maxSub.val := Nat.le_of_not_lt hNotGt
+            have hSumLe : clock.val + units.val ≤ Std.U64.max := by
+              have hU64m : Std.U64.max = 2 ^ 64 - 1 := by simp [Std.U64.max, U64.numBits]
+              omega
+            step as ⟨next_clock, _⟩
+            have hRemGe : s.val ≤ bytes.length - i.val := by scalar_tac
+            have hNextBound : i.val + s.val ≤ bytes.length := by omega
+            by_cases hdone : target < next_clock
+            · simp only [hdone, ↓reduceIte]
+              step as ⟨i3, hi3⟩
+              try simp only [spec_ok]
+              exact ⟨by scalar_tac, by scalar_tac⟩
+            · simp only [hdone, ↓reduceIte]
+              step as ⟨i3, hi3⟩
+              try simp only [spec_ok]
+              exact ⟨by scalar_tac, by scalar_tac⟩
+    · simp only [hlt, ↓reduceIte, spec_ok]
       exact ⟨Nat.le_refl _, by scalar_tac⟩
   step with hLoop as ⟨s, e, b, hse, heb⟩
   try simp only [spec_ok]
@@ -942,17 +988,11 @@ theorem utf16_split_byte_offset_spec (bytes : Slice Std.U8) (target : Std.U64)
     intro ⟨i, clock⟩ ⟨hiLen, hPfxV, hDropV, hClk, hClkLeI, hClkLeT⟩
     unfold utf16.utf16_split_byte_offset_loop.body
     simp only
-    split_ifs with hlt
-    · have hiLt : i.val < bytes.length := by scalar_tac
-      have hStepSpec : ∀ b : Std.U8,
-          (if b < 128#u8 then ok 1#usize
-           else if b < 224#u8 then ok 2#usize
-           else if b < 240#u8 then ok 3#usize
-           else ok 4#usize) ⦃ s => s.val = leadStep b ∧ 1 ≤ s.val ∧ s.val ≤ 4 ⦄ := by
-        intro b; simp only [leadStep]; split_ifs <;> simp [spec_ok] <;> scalar_tac
+    -- not `split_ifs`: it would also split on `clock = u64::MAX`
+    by_cases hlt : i < Slice.len bytes
+    · simp only [hlt, ↓reduceIte]
+      have hiLt : i.val < bytes.length := by scalar_tac
       step as ⟨b, hb⟩
-      step with hStepSpec b as ⟨s, hsEq, hs1, hs4⟩
-      step as ⟨rem, hrem⟩
       have hBytesLen : (bytes : List Std.U8).length = bytes.length := rfl
       have hNeNil : bytes.val.drop i.val ≠ [] := by
         intro hNil
@@ -965,41 +1005,17 @@ theorem utf16_split_byte_offset_spec (bytes : Slice Std.U8) (target : Std.U64)
       have hFacts := valid_utf8_head_step_facts (bytes.val.drop i.val) hNeNil hDropV
       simp only [hHeadEq] at hFacts
       rcases hFacts with ⟨hStepLeDrop, hTakeScalarV, hDropScalarV, hScalarUnits⟩
-      have hNotShort : ¬ (rem < s) := by
+      have hStepLe : leadStep b ≤ bytes.length - i.val := by
         rw [List.length_drop, hBytesLen] at hStepLeDrop
-        scalar_tac
-      simp only [hNotShort, ↓reduceIte]
-      have hUnitsSpec : (if s = 4#usize then ok 2#u64 else ok 1#u64) ⦃ u =>
-          u.val = leadUnits b ∧ 1 ≤ u.val ∧ u.val ≤ 2 ⦄ := by
-        by_cases h4 : s = 4#usize
-        · have hs4v : s.val = 4 := congrArg UScalar.val h4
-          have hlb : leadStep b = 4 := hsEq.symm.trans hs4v
-          simp [h4, leadUnits, hlb, spec_ok]
-        · have hsNe4 : s.val ≠ 4 := fun h => h4 (UScalar.eq_of_val_eq h)
-          have hlb : leadStep b ≠ 4 := by omega
-          simp [h4, leadUnits, hlb, spec_ok]
-      step with hUnitsSpec as ⟨units, huEq, hu1, hu2⟩
+        exact hStepLeDrop
       have hU64Max : (core.num.U64.MAX : Std.U64).val = 2 ^ 64 - 1 := by decide
       have hRMax : Std.U64.rMax = 2 ^ 64 - 1 := by decide
-      have hUnitsLeMax : units.val ≤ (core.num.U64.MAX : Std.U64).val := by rw [hU64Max]; omega
-      step as ⟨maxSub, hmaxSub⟩
-      have hMaxSubVal : maxSub.val = 2 ^ 64 - 1 - units.val := by rw [hmaxSub, hRMax]
       have hUsizeLe64 : bytes.length ≤ 2 ^ 64 - 1 := by
         have hB1 : bytes.length ≤ Std.Usize.max := by scalar_tac
         have hB2 : Std.Usize.max ≤ 2 ^ 64 - 1 := by
           simp only [Std.Usize.max, Usize.numBits]
           cases System.Platform.numBits_eq <;> simp [*]
         omega
-      have hUnitsLeStep : units.val ≤ leadStep b := huEq ▸ leadUnits_le_leadStep b
-      have hNotOvf : ¬ (clock > maxSub) := by
-        have hLe : clock.val ≤ maxSub.val := by
-          rw [List.length_drop, hBytesLen] at hStepLeDrop
-          omega
-        intro hgt
-        have hgtv : clock.val > maxSub.val := hgt
-        omega
-      simp only [hNotOvf, ↓reduceIte]
-      step as ⟨next_clock, hnextClk⟩
       have hTakeNext : bytes.val.take (i.val + leadStep b) =
           bytes.val.take i.val ++ (bytes.val.drop i.val).take (leadStep b) := by
         rw [List.take_add]
@@ -1008,53 +1024,137 @@ theorem utf16_split_byte_offset_spec (bytes : Slice Std.U8) (target : Std.U64)
         exact isValidUtf8List_append_of_valid _ _ hPfxV hTakeScalarV
       have hNextDropV : isValidUtf8List (bytes.val.drop (i.val + leadStep b)) = true := by
         simpa [List.drop_drop, Nat.add_comm] using hDropScalarV
-      have hNextClkVal : next_clock.val = utf16LenList (bytes.val.take (i.val + leadStep b)) := by
-        rw [hnextClk, hClk, hTakeNext, utf16LenList_append_of_valid _ _ hPfxV, hScalarUnits, huEq]
-      by_cases hdone : target < next_clock
-      · simp only [hdone, ↓reduceIte]
-        step as ⟨i3, hi3⟩
-        try simp only [spec_ok]
-        dsimp only [post]
-        have hAllLen : utf16LenList bytes.val =
-            utf16LenList (bytes.val.take (i.val + leadStep b)) +
-            utf16LenList (bytes.val.drop (i.val + leadStep b)) := by
-          have hSplit := List.take_append_drop (i.val + leadStep b) bytes.val
-          calc utf16LenList bytes.val
-              = utf16LenList (bytes.val.take (i.val + leadStep b) ++ bytes.val.drop (i.val + leadStep b)) := by
-                rw [hSplit]
-            _ = _ := utf16LenList_append_of_valid _ _ hNextPfxV
-        have hNotLe : ¬ (utf16LenList bytes.val ≤ target.val) := by
-          have : target.val < next_clock.val := hdone
+      have hAllLen : utf16LenList bytes.val =
+          utf16LenList (bytes.val.take (i.val + leadStep b)) +
+          utf16LenList (bytes.val.drop (i.val + leadStep b)) := by
+        have hSplit := List.take_append_drop (i.val + leadStep b) bytes.val
+        calc utf16LenList bytes.val
+            = utf16LenList (bytes.val.take (i.val + leadStep b) ++ bytes.val.drop (i.val + leadStep b)) := by
+              rw [hSplit]
+          _ = _ := utf16LenList_append_of_valid _ _ hNextPfxV
+      have hc0LeT : utf16LenList (bytes.val.take i.val) ≤ target.val := by
+        rw [← hClk]; exact hClkLeT
+      by_cases hascii : b < 128#u8
+      · -- a one-byte char: one byte, one unit, never inside a pair
+        simp only [hascii, ↓reduceIte]
+        have hbv : b.val < 128 := by scalar_tac
+        have hls : leadStep b = 1 := by simp [leadStep, hbv]
+        have hlu : leadUnits b = 1 := by simp [leadUnits, hls]
+        have hNotMax : ¬ (clock = core.num.U64.MAX) := by
+          intro hEq
+          have hv : clock.val = 2 ^ 64 - 1 := by rw [hEq]; exact hU64Max
           omega
-        rw [if_neg hNotLe]
-        have hc0LeT : utf16LenList (bytes.val.take i.val) ≤ target.val := by
-          rw [← hClk]; exact hClkLeT
-        have hi3Step : i3.val = i.val + leadStep (bytes.val[i.val]'(by rw [hBytesLen]; exact hiLt)) := by
-          rw [hi3, hsEq, ← hb]
-        have hi3Le : i3.val ≤ bytes.length := by
-          rw [List.length_drop, hBytesLen] at hStepLeDrop
-          rw [hi3, hsEq]
+        rw [if_neg hNotMax]
+        have hSumLe : clock.val + 1 ≤ Std.U64.max := by
+          have hU64m : Std.U64.max = 2 ^ 64 - 1 := by simp [Std.U64.max, U64.numBits]
           omega
-        refine ⟨hiLt, ?_, hi3Step, hi3Le, hPfxV, hDropV, hc0LeT, ?_, ?_⟩
-        · rw [hi3]; omega
-        · have : target.val < next_clock.val := hdone
-          rw [← hb]
+        step as ⟨next_clock, hnextClk⟩
+        have hNextClkVal : next_clock.val = utf16LenList (bytes.val.take (i.val + leadStep b)) := by
+          rw [hnextClk, hClk, hTakeNext, utf16LenList_append_of_valid _ _ hPfxV, hScalarUnits, hlu]
+        by_cases hdone : target < next_clock
+        · simp only [hdone, ↓reduceIte]
+          step as ⟨i3, hi3⟩
+          try simp only [spec_ok]
+          dsimp only [post]
+          have hNotLe : ¬ (utf16LenList bytes.val ≤ target.val) := by
+            have : target.val < next_clock.val := hdone
+            omega
+          rw [if_neg hNotLe]
+          have hi3Step : i3.val = i.val + leadStep (bytes.val[i.val]'(by rw [hBytesLen]; exact hiLt)) := by
+            rw [hi3, ← hb, hls]
+          have hi3Le : i3.val ≤ bytes.length := by
+            rw [hi3]
+            omega
+          have hNotIn : ¬ (utf16LenList (bytes.val.take i.val) < target.val) := by
+            have : target.val < next_clock.val := hdone
+            omega
+          refine ⟨hiLt, ?_, hi3Step, hi3Le, hPfxV, hDropV, hc0LeT, ?_, ?_⟩
+          · rw [hi3]; omega
+          · have : target.val < next_clock.val := hdone
+            rw [← hb, hlu]
+            omega
+          · simp [hNotIn]
+        · simp only [hdone, ↓reduceIte]
+          step as ⟨i3, hi3⟩
+          try simp only [spec_ok, inv]
+          have hi3Val : i3.val = i.val + leadStep b := by rw [hls]; scalar_tac
+          refine ⟨⟨?_, ?_, ?_, ?_, ?_, ?_⟩, ?_⟩
+          · omega
+          · rw [hi3Val]; exact hNextPfxV
+          · rw [hi3Val]; exact hNextDropV
+          · rw [hi3Val]; exact hNextClkVal
+          · omega
+          · scalar_tac
+          · scalar_tac
+      · simp only [hascii, ↓reduceIte]
+        have hStepSpec :
+            (if b < 224#u8 then ok 2#usize
+             else if b < 240#u8 then ok 3#usize
+             else ok 4#usize) ⦃ s => s.val = leadStep b ∧ 1 ≤ s.val ∧ s.val ≤ 4 ⦄ := by
+          simp only [leadStep]; split_ifs <;> simp [spec_ok] <;> scalar_tac
+        step with hStepSpec as ⟨s, hsEq, hs1, hs4⟩
+        step as ⟨rem, hrem⟩
+        have hNotShort : ¬ (rem < s) := by
+          scalar_tac
+        simp only [hNotShort, ↓reduceIte]
+        have hUnitsSpec : (if s = 4#usize then ok 2#u64 else ok 1#u64) ⦃ u =>
+            u.val = leadUnits b ∧ 1 ≤ u.val ∧ u.val ≤ 2 ⦄ := by
+          by_cases h4 : s = 4#usize
+          · have hs4v : s.val = 4 := congrArg UScalar.val h4
+            have hlb : leadStep b = 4 := hsEq.symm.trans hs4v
+            simp [h4, leadUnits, hlb, spec_ok]
+          · have hsNe4 : s.val ≠ 4 := fun h => h4 (UScalar.eq_of_val_eq h)
+            have hlb : leadStep b ≠ 4 := by omega
+            simp [h4, leadUnits, hlb, spec_ok]
+        step with hUnitsSpec as ⟨units, huEq, hu1, hu2⟩
+        have hUnitsLeMax : units.val ≤ (core.num.U64.MAX : Std.U64).val := by rw [hU64Max]; omega
+        step as ⟨maxSub, hmaxSub⟩
+        have hMaxSubVal : maxSub.val = 2 ^ 64 - 1 - units.val := by rw [hmaxSub, hRMax]
+        have hUnitsLeStep : units.val ≤ leadStep b := huEq ▸ leadUnits_le_leadStep b
+        have hNotOvf : ¬ (clock > maxSub) := by
+          have hLe : clock.val ≤ maxSub.val := by
+            omega
+          intro hgt
+          have hgtv : clock.val > maxSub.val := hgt
           omega
-        · rw [← hClk]
-          simp [decide_eq_true_iff]
-      · simp only [hdone, ↓reduceIte]
-        step as ⟨i3, hi3⟩
-        try simp only [spec_ok, inv]
-        have hi3Val : i3.val = i.val + leadStep b := by scalar_tac
-        refine ⟨⟨?_, ?_, ?_, ?_, ?_, ?_⟩, ?_⟩
-        · rw [List.length_drop, hBytesLen] at hStepLeDrop; omega
-        · rw [hi3Val]; exact hNextPfxV
-        · rw [hi3Val]; exact hNextDropV
-        · rw [hi3Val]; exact hNextClkVal
-        · omega
-        · scalar_tac
-        · scalar_tac
-    · simp only [spec_ok]
+        simp only [hNotOvf, ↓reduceIte]
+        step as ⟨next_clock, hnextClk⟩
+        have hNextClkVal : next_clock.val = utf16LenList (bytes.val.take (i.val + leadStep b)) := by
+          rw [hnextClk, hClk, hTakeNext, utf16LenList_append_of_valid _ _ hPfxV, hScalarUnits, huEq]
+        by_cases hdone : target < next_clock
+        · simp only [hdone, ↓reduceIte]
+          step as ⟨i3, hi3⟩
+          try simp only [spec_ok]
+          dsimp only [post]
+          have hNotLe : ¬ (utf16LenList bytes.val ≤ target.val) := by
+            have : target.val < next_clock.val := hdone
+            omega
+          rw [if_neg hNotLe]
+          have hi3Step : i3.val = i.val + leadStep (bytes.val[i.val]'(by rw [hBytesLen]; exact hiLt)) := by
+            rw [hi3, hsEq, ← hb]
+          have hi3Le : i3.val ≤ bytes.length := by
+            rw [hi3, hsEq]
+            omega
+          refine ⟨hiLt, ?_, hi3Step, hi3Le, hPfxV, hDropV, hc0LeT, ?_, ?_⟩
+          · rw [hi3]; omega
+          · have : target.val < next_clock.val := hdone
+            rw [← hb]
+            omega
+          · rw [← hClk]
+            simp [decide_eq_true_iff]
+        · simp only [hdone, ↓reduceIte]
+          step as ⟨i3, hi3⟩
+          try simp only [spec_ok, inv]
+          have hi3Val : i3.val = i.val + leadStep b := by scalar_tac
+          refine ⟨⟨?_, ?_, ?_, ?_, ?_, ?_⟩, ?_⟩
+          · omega
+          · rw [hi3Val]; exact hNextPfxV
+          · rw [hi3Val]; exact hNextDropV
+          · rw [hi3Val]; exact hNextClkVal
+          · omega
+          · scalar_tac
+          · scalar_tac
+    · simp only [hlt, ↓reduceIte, spec_ok]
       dsimp only [post]
       have hFull : bytes.val.take i.val = bytes.val := by
         apply List.take_of_length_le

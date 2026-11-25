@@ -41,7 +41,7 @@ pub use relative_position::{AbsolutePosition, RelativePosition};
 use smol_str::SmolStr;
 #[cfg(any(test, feature = "debug"))]
 pub(crate) use store::BlockRef;
-pub(crate) use store::{BlockKind, ClientBlocks, DocStore, ItemIdx, ItemSpace};
+pub(crate) use store::{BlockKind, ClientBlocks, DocStore, ItemIdx, ItemSpace, Moved};
 pub use transaction::{
     ArrayRead, ArrayWrite, ChangedType, CommitEvent, CommitSummary, IncomingUpdate, MapRead, MapWrite, Origin,
     Subscription, TextRead, TextWrite, Transaction, TransactionMut, XMLElementRead, XMLElementWrite, XMLFragmentRead,

@@ -10,11 +10,15 @@ set_option maxHeartbeats 1000000
 
 namespace YoctoCore.Properties.DeleteSet
 
+/-- Canonical intervals for one client, in logical order across the ring wrap. -/
+def entryRanges (e : delete_set.DeleteSetEntry) : List order_range.ClockRange :=
+  OrderRange.toList e.range
+
 /-- Canonical invariant for `DeleteSetCore`: entries sorted strictly by client ID,
     each entry carrying a canonical non-empty `OrderRange`. -/
 def CanonicalList (l : List delete_set.DeleteSetEntry) : Prop :=
   (∀ (i : Nat) (hi : i < l.length),
-    OrderRange.Canonical (l[i]).range ∧ 0 < (l[i]).range.ranges.length) ∧
+    OrderRange.Canonical (l[i]).range ∧ 0 < (entryRanges (l[i])).length) ∧
   (∀ (i j : Nat) (hi : i < j) (hj : j < l.length),
     (l[i]).client.val < (l[j]).client.val)
 
@@ -24,7 +28,7 @@ def Canonical (ds : delete_set.DeleteSetCore) : Prop :=
 /-- Total number of `ClockRange` segments stored across all clients. -/
 def totalRangesList : List delete_set.DeleteSetEntry → Nat
   | [] => 0
-  | d :: rest => d.range.ranges.length + totalRangesList rest
+  | d :: rest => (entryRanges d).length + totalRangesList rest
 
 def totalRanges (ds : delete_set.DeleteSetCore) : Nat :=
   totalRangesList ds.entries.val
@@ -40,28 +44,28 @@ def mem (ds : delete_set.DeleteSetCore) (client clock : Std.U64) : Prop :=
 
 theorem totalRangesList_entry_le (l : List delete_set.DeleteSetEntry)
     (k : Nat) (hk : k < l.length) :
-    (l[k]).range.ranges.length ≤ totalRangesList l := by
+    (entryRanges (l[k])).length ≤ totalRangesList l := by
   induction l generalizing k with
   | nil => cases hk
   | cons hd tl ih =>
     cases k with
     | zero =>
-      change hd.range.ranges.length ≤ hd.range.ranges.length + totalRangesList tl
+      change (entryRanges hd).length ≤ (entryRanges hd).length + totalRangesList tl
       exact Nat.le_add_right _ _
     | succ m =>
-      have hSub : ((hd :: tl)[m + 1]'hk).range.ranges.length =
-          (tl[m]'(Nat.lt_of_succ_lt_succ hk)).range.ranges.length := rfl
+      have hSub : (entryRanges ((hd :: tl)[m + 1]'hk)).length =
+          (entryRanges (tl[m]'(Nat.lt_of_succ_lt_succ hk))).length := rfl
       rw [hSub, totalRangesList]
       exact Nat.le_trans (ih m (Nat.lt_of_succ_lt_succ hk)) (Nat.le_add_left _ _)
 
 theorem totalRangesList_length_le (l : List delete_set.DeleteSetEntry)
-    (hNonEmpty : ∀ (i : Nat) (hi : i < l.length), 0 < (l[i]).range.ranges.length) :
+    (hNonEmpty : ∀ (i : Nat) (hi : i < l.length), 0 < (entryRanges (l[i])).length) :
     l.length ≤ totalRangesList l := by
   induction l with
   | nil => simp [totalRangesList]
   | cons hd tl ih =>
-    have h0 : 0 < hd.range.ranges.length := hNonEmpty 0 (Nat.zero_lt_succ _)
-    have hTl : ∀ (i : Nat) (hi : i < tl.length), 0 < (tl[i]).range.ranges.length :=
+    have h0 : 0 < (entryRanges hd).length := hNonEmpty 0 (Nat.zero_lt_succ _)
+    have hTl : ∀ (i : Nat) (hi : i < tl.length), 0 < (entryRanges (tl[i])).length :=
       fun i hi => hNonEmpty (i + 1) (Nat.succ_lt_succ hi)
     have hRec := ih hTl
     have hLen : (hd :: tl).length = tl.length + 1 := rfl
@@ -70,8 +74,8 @@ theorem totalRangesList_length_le (l : List delete_set.DeleteSetEntry)
 
 theorem totalRangesList_setAt (l : List delete_set.DeleteSetEntry)
     (idx : Nat) (hIdx : idx < l.length) (e : delete_set.DeleteSetEntry) :
-    totalRangesList (l.set idx e) + (l[idx]).range.ranges.length =
-      totalRangesList l + e.range.ranges.length := by
+    totalRangesList (l.set idx e) + (entryRanges (l[idx])).length =
+      totalRangesList l + (entryRanges e).length := by
   induction l generalizing idx with
   | nil => cases hIdx
   | cons hd tl ih =>
@@ -84,7 +88,7 @@ theorem totalRangesList_setAt (l : List delete_set.DeleteSetEntry)
 
 theorem totalRangesList_insertIdx (l : List delete_set.DeleteSetEntry)
     (idx : Nat) (hIdx : idx ≤ l.length) (e : delete_set.DeleteSetEntry) :
-    totalRangesList (l.insertIdx idx e) = totalRangesList l + e.range.ranges.length := by
+    totalRangesList (l.insertIdx idx e) = totalRangesList l + (entryRanges e).length := by
   induction l generalizing idx with
   | nil =>
     have : idx = 0 := Nat.eq_zero_of_le_zero hIdx
@@ -196,17 +200,19 @@ theorem contains_spec (self : delete_set.DeleteSetCore) (client clock : Std.U64)
     · have := hFind.1 k hk hkl; rw [hck] at this; omega
     · have := hFind.2 k hk (by omega); rw [hck] at this; omega
 
-theorem insert_spec (self : delete_set.DeleteSetCore) (client start «end» : Std.U64)
+theorem try_insert_spec (self : delete_set.DeleteSetCore) (client start «end» : Std.U64)
     (hCan : Canonical self)
     (hCap : totalRanges self < Std.Usize.max) :
-    delete_set.DeleteSetCore.insert self client start «end» ⦃ ds' =>
-      Canonical ds' ∧
-      totalRanges ds' ≤ totalRanges self + 1 ∧
-      (∀ c clk, mem ds' c clk ↔
-        mem self c clk ∨ (c = client ∧ start.val ≤ clk.val ∧ clk.val < «end».val)) ⦄ := by
+    delete_set.DeleteSetCore.try_insert self client start «end» ⦃ (status, ds') =>
+      Canonical ds' ∧ totalRanges ds' ≤ totalRanges self + 1 ∧
+      match status with
+      | .Ok _ => ∀ c clk, mem ds' c clk ↔
+          mem self c clk ∨ (c = client ∧ start.val ≤ clk.val ∧ clk.val < «end».val)
+      | .Err e => e = CodecError.LimitExceeded ∧ ds' = self ∧
+          2^30 ≤ totalRanges self ⦄ := by
   have hLenBound : self.entries.length < Std.Usize.max :=
     Nat.lt_of_le_of_lt (totalRangesList_length_le self.entries.val (fun i hi => (hCan.1 i hi).2)) hCap
-  unfold delete_set.DeleteSetCore.insert
+  unfold delete_set.DeleteSetCore.try_insert
   split_ifs with hEmpty
   · simp only [spec_ok]
     refine ⟨hCan, Nat.le_succ _, fun c clk => ?_⟩
@@ -223,97 +229,98 @@ theorem insert_spec (self : delete_set.DeleteSetCore) (client start «end» : St
       step as ⟨dse, index_mut_back, hdse, hBack⟩
       have hOrCan : OrderRange.Canonical dse.range := by
         rw [hdse]; exact (hCan.1 idx.val hIdxLt).1
-      have hOrLen : 0 < dse.range.ranges.length := by
+      have hOrLen : 0 < (entryRanges dse).length := by
         rw [hdse]; exact (hCan.1 idx.val hIdxLt).2
-      have hOrCap : dse.range.ranges.length < Std.Usize.max := by
-        have := totalRangesList_entry_le self.entries.val idx.val hIdxLt
-        rw [← hdse] at this
-        exact Nat.lt_of_le_of_lt this hCap
-      step with OrderRange.insert_spec dse.range start «end» hOrCan hOrCap as ⟨or1, hor1Can, hor1Len, hor1Mem⟩
+      step with OrderRange.try_insert_semantics dse.range start «end» hOrCan as
+        ⟨status, or1, hor1Can, hor1Len, hResult⟩
       try simp only [spec_ok]
       have hSetVal : (index_mut_back { dse with range := or1 }).val =
           self.entries.val.set idx.val { dse with range := or1 } := by
         rw [hBack]
         simp [alloc.vec.Vec.set]
-      have hOr1NonEmpty : 0 < or1.ranges.length := by
-        have : ∃ c, OrderRange.inRanges or1 c := by
-          refine ⟨start, (hor1Mem start).2 (Or.inr ⟨le_refl _, hSE⟩)⟩
-        rcases this with ⟨c, k, hk, _⟩
-        exact Nat.lt_of_le_of_lt (Nat.zero_le k) hk
-      refine ⟨?_, ?_, fun c clk => ?_⟩
-      · constructor
-        · intro i hi
-          rw [hSetVal, List.length_set] at hi
-          by_cases hii : i = idx.val
-          · simp [hSetVal, hii, List.getElem_set_self, hor1Can, hOr1NonEmpty]
-          · simp [hSetVal, List.getElem_set_ne (Ne.symm hii)]
-            exact hCan.1 i hi
-        · intro i j hij hj
-          rw [hSetVal, List.length_set] at hj
-          have hClientVal : dse.client.val = (self.entries.val[idx.val]'hIdxLt).client.val :=
-            congrArg (fun e => e.client.val) hdse
-          by_cases hii : i = idx.val
-          · subst hii
-            simp only [hSetVal, List.getElem_set_self, List.getElem_set_ne (Nat.ne_of_gt hij).symm]
-            have := hCan.2 idx.val j hij hj
-            rw [hClientVal]
-            exact this
-          · by_cases hji : j = idx.val
-            · subst hji
-              simp only [hSetVal, List.getElem_set_ne (Ne.symm hii), List.getElem_set_self]
-              have := hCan.2 i idx.val hij hj
+      cases status with
+      | Err e =>
+        obtain ⟨he, hs, hfull⟩ := hResult
+        subst or1
+        have hsame : index_mut_back { dse with range := dse.range } = self.entries := by
+          apply alloc.vec.Vec.ext
+          rw [hBack, alloc.vec.Vec.set_val_eq, hdse]
+          exact List.set_getElem_self hIdxLt
+        rw [hsame]
+        have bound := totalRangesList_entry_le self.entries.val idx.val hIdxLt
+        rw [← hdse] at bound
+        change (OrderRange.toList dse.range).length ≤ totalRanges self at bound
+        rw [hfull] at bound
+        exact ⟨hCan, Nat.le_succ _, he, rfl, bound⟩
+      | Ok _ =>
+        have hor1Mem := hResult
+        have hOr1NonEmpty : 0 < (OrderRange.toList or1).length := by
+          have : ∃ c, OrderRange.inRanges or1 c := by
+            refine ⟨start, (hor1Mem start).2 (Or.inr ⟨le_refl _, hSE⟩)⟩
+          rcases this with ⟨c, k, hk, _⟩
+          exact Nat.lt_of_le_of_lt (Nat.zero_le k) hk
+        refine ⟨?_, ?_, fun c clk => ?_⟩
+        · constructor
+          · intro i hi
+            rw [hSetVal, List.length_set] at hi
+            by_cases hii : i = idx.val
+            · simp [hSetVal, hii, List.getElem_set_self, hor1Can, entryRanges, hOr1NonEmpty]
+            · simp [hSetVal, List.getElem_set_ne (Ne.symm hii)]
+              exact hCan.1 i hi
+          · intro i j hij hj
+            rw [hSetVal, List.length_set] at hj
+            have hClientVal : dse.client.val = (self.entries.val[idx.val]'hIdxLt).client.val :=
+              congrArg (fun e => e.client.val) hdse
+            by_cases hii : i = idx.val
+            · subst hii
+              simp only [hSetVal, List.getElem_set_self, List.getElem_set_ne (Nat.ne_of_gt hij).symm]
+              have := hCan.2 idx.val j hij hj
               rw [hClientVal]
               exact this
-            · simp only [hSetVal, List.getElem_set_ne (Ne.symm hii), List.getElem_set_ne (Ne.symm hji)]
-              exact hCan.2 i j hij hj
-      · have hTot := totalRangesList_setAt self.entries.val idx.val hIdxLt { dse with range := or1 }
-        simp only [totalRanges, hSetVal]
-        dsimp only at hTot
-        rw [← hdse] at hTot
-        omega
-      · simp only [mem, memList, hSetVal, List.length_set]
-        constructor
-        · rintro ⟨k, hk, hck, hin⟩
-          by_cases hki : k = idx.val
-          · subst hki
-            simp only [List.getElem_set_self] at hck hin
-            rw [hor1Mem clk] at hin
-            rcases hin with hinOld | hNew
-            · exact Or.inl ⟨idx.val, hIdxLt, by rw [hdse] at hck; exact hck, by rw [← hdse]; exact hinOld⟩
-            · rw [hdse, hKey] at hck
-              exact Or.inr ⟨hck.symm, hNew⟩
-          · simp only [List.getElem_set_ne (Ne.symm hki)] at hck hin
-            exact Or.inl ⟨k, hk, hck, hin⟩
-        · rintro (⟨k, hk, hck, hin⟩ | ⟨rfl, h1, h2⟩)
-          · by_cases hki : k = idx.val
+            · by_cases hji : j = idx.val
+              · subst hji
+                simp only [hSetVal, List.getElem_set_ne (Ne.symm hii), List.getElem_set_self]
+                have := hCan.2 i idx.val hij hj
+                rw [hClientVal]
+                exact this
+              · simp only [hSetVal, List.getElem_set_ne (Ne.symm hii), List.getElem_set_ne (Ne.symm hji)]
+                exact hCan.2 i j hij hj
+        · have hTot := totalRangesList_setAt self.entries.val idx.val hIdxLt { dse with range := or1 }
+          simp only [totalRanges, hSetVal]
+          rw [← hdse] at hTot
+          simp only [entryRanges] at hTot
+          omega
+        · simp only [mem, memList, hSetVal, List.length_set]
+          constructor
+          · rintro ⟨k, hk, hck, hin⟩
+            by_cases hki : k = idx.val
             · subst hki
-              refine ⟨idx.val, hIdxLt, ?_, ?_⟩
-              · simp only [List.getElem_set_self]; rw [hdse]; exact hck
-              · simp only [List.getElem_set_self]; rw [hor1Mem clk]; exact Or.inl (by rw [hdse]; exact hin)
-            · refine ⟨k, hk, ?_⟩
-              simp [List.getElem_set_ne (Ne.symm hki), hck, hin]
-          · refine ⟨idx.val, hIdxLt, ?_, ?_⟩
-            · simp [List.getElem_set_self, hdse, hKey]
-            · simp only [List.getElem_set_self]
-              exact (hor1Mem clk).2 (Or.inr ⟨h1, h2⟩)
+              simp only [List.getElem_set_self] at hck hin
+              rw [hor1Mem clk] at hin
+              rcases hin with hinOld | hNew
+              · exact Or.inl ⟨idx.val, hIdxLt, by rw [hdse] at hck; exact hck, by rw [← hdse]; exact hinOld⟩
+              · rw [hdse, hKey] at hck
+                exact Or.inr ⟨hck.symm, hNew⟩
+            · simp only [List.getElem_set_ne (Ne.symm hki)] at hck hin
+              exact Or.inl ⟨k, hk, hck, hin⟩
+          · rintro (⟨k, hk, hck, hin⟩ | ⟨rfl, h1, h2⟩)
+            · by_cases hki : k = idx.val
+              · subst hki
+                refine ⟨idx.val, hIdxLt, ?_, ?_⟩
+                · simp only [List.getElem_set_self]; rw [hdse]; exact hck
+                · simp only [List.getElem_set_self]; rw [hor1Mem clk]; exact Or.inl (by rw [hdse]; exact hin)
+              · refine ⟨k, hk, ?_⟩
+                simp [List.getElem_set_ne (Ne.symm hki), hck, hin]
+            · refine ⟨idx.val, hIdxLt, ?_, ?_⟩
+              · simp [List.getElem_set_self, hdse, hKey]
+              · simp only [List.getElem_set_self]
+                exact (hor1Mem clk).2 (Or.inr ⟨h1, h2⟩)
     · simp only [hfound, Bool.false_eq_true, ↓reduceIte] at hFind ⊢
       have hFromSpec : order_range.OrderRange.from_range start «end» ⦃ or1 =>
-          OrderRange.Canonical or1 ∧ or1.ranges.length = 1 ∧
+          OrderRange.Canonical or1 ∧ (OrderRange.toList or1).length = 1 ∧
           (∀ c, OrderRange.inRanges or1 c ↔ start.val ≤ c.val ∧ c.val < «end».val) ⦄ := by
-        unfold order_range.OrderRange.from_range
-        step with OrderRange.new_spec as ⟨r0, hr0Can, hr0Len, hr0Mem⟩
-        step with OrderRange.insert_spec r0 start «end» hr0Can (by scalar_tac) as ⟨r1, hr1Can, hr1Len, hr1Mem⟩
-        refine ⟨hr1Can, ?_, fun c => ?_⟩
-        · have hLe1 : r1.ranges.length ≤ 1 := by omega
-          have hPos1 : 0 < r1.ranges.length := by
-            have : OrderRange.inRanges r1 start := (hr1Mem start).2 (Or.inr ⟨le_refl _, hSE⟩)
-            rcases this with ⟨k, hk, _⟩
-            exact Nat.lt_of_le_of_lt (Nat.zero_le k) hk
-          omega
-        · rw [hr1Mem c]
-          constructor
-          · rintro (h | h); exact absurd h (hr0Mem c); exact h
-          · exact Or.inr
+        step with OrderRange.from_range_spec start «end» as ⟨r, hCanR, hLenR, hMemR⟩
+        exact ⟨hCanR, by simpa [hSE] using hLenR, hMemR⟩
       step with hFromSpec as ⟨or1, hor1Can, hor1Len, hor1Mem⟩
       have hInsCan (hIdxLe : idx.val ≤ self.entries.length) :
           CanonicalList (self.entries.val.insertIdx idx.val { client, range := or1 }) := by
@@ -336,7 +343,7 @@ theorem insert_spec (self : delete_set.DeleteSetCore) (client start «end» : St
           have gi := get_ins i hi
           split_ifs at gi with h1 h2
           · rcases gi with ⟨hil, hgi⟩; rw [hgi]; exact hCan.1 i hil
-          · rw [gi]; exact ⟨hor1Can, by simp [hor1Len]⟩
+          · rw [gi]; exact ⟨hor1Can, by simp [entryRanges, hor1Len]⟩
           · rcases gi with ⟨hil, hgi⟩; rw [hgi]; exact hCan.1 (i - 1) hil
         · intro i j hij hj
           have hi : i < (self.entries.val.insertIdx idx.val { client, range := or1 }).length :=
@@ -404,7 +411,7 @@ theorem insert_spec (self : delete_set.DeleteSetCore) (client start «end» : St
           rw [hEqIdx, List.insertIdx_length_self]; exact hvPost
         refine ⟨by simpa [Canonical, hPushEq] using hInsCan (by omega), ?_, ?_⟩
         · rw [totalRanges, hPushEq, totalRangesList_insertIdx _ _ (by omega)]
-          simp [totalRanges, hor1Len]
+          simp [totalRanges, entryRanges, hor1Len]
         · intro c clk; simpa [mem, hPushEq] using hInsMem (by omega) c clk
       · simp only [hAtEnd, Bool.false_eq_true, ↓reduceIte]
         have hIdxLt : idx.val < self.entries.length := by scalar_tac
@@ -413,12 +420,26 @@ theorem insert_spec (self : delete_set.DeleteSetCore) (client start «end» : St
         refine ⟨?_, ?_, ?_⟩
         · rw [Canonical, hvPost]; exact hInsCan (Nat.le_of_lt hIdxLt)
         · rw [totalRanges, hvPost, totalRangesList_insertIdx _ _ (Nat.le_of_lt hIdxLt)]
-          simp [totalRanges, hor1Len]
+          simp [totalRanges, entryRanges, hor1Len]
         · intro c clk; rw [mem, hvPost]; exact hInsMem (Nat.le_of_lt hIdxLt) c clk
+
+theorem insert_spec (self : delete_set.DeleteSetCore) (client start «end» : Std.U64)
+    (hCan : Canonical self) (hCap : totalRanges self < Std.Usize.max)
+    (hRoom : totalRanges self < 2^30) :
+    delete_set.DeleteSetCore.insert self client start «end» ⦃ ds' =>
+      Canonical ds' ∧ totalRanges ds' ≤ totalRanges self + 1 ∧
+      ∀ c clk, mem ds' c clk ↔
+        mem self c clk ∨ (c = client ∧ start.val ≤ clk.val ∧ clk.val < «end».val) ⦄ := by
+  unfold delete_set.DeleteSetCore.insert
+  step with try_insert_spec self client start «end» hCan hCap as ⟨status, ds, hc, hl, hres⟩
+  cases status with
+  | Err e => exact False.elim (Nat.not_le_of_lt hRoom hres.2.2)
+  | Ok _ => simpa [core.result.Result.is_ok, massert, spec_ok] using And.intro hc (And.intro hl hres)
 
 theorem merge_spec (self other : delete_set.DeleteSetCore)
     (hCanSelf : Canonical self) (hCanOther : Canonical other)
-    (hCap : totalRanges self + totalRanges other ≤ Std.Usize.max) :
+    (hCap : totalRanges self + totalRanges other ≤ Std.Usize.max)
+    (hRoom : totalRanges self + totalRanges other ≤ 2^30) :
     delete_set.DeleteSetCore.merge self other ⦃ ds' =>
       Canonical ds' ∧
       totalRanges ds' ≤ totalRanges self + totalRanges other ∧
@@ -453,7 +474,7 @@ theorem merge_spec (self other : delete_set.DeleteSetCore)
     have hDseCan : OrderRange.Canonical dse.range := by
       rw [hdse]; exact (hCanOther.1 i.val hiLt).1
     have hPrefixRest :
-        prefixTot i.val + dse.range.ranges.length ≤ totalRanges other := by
+        prefixTot i.val + (entryRanges dse).length ≤ totalRanges other := by
       -- take i ++ [dse] is take (i + 1) whose totalRanges ≤ totalRanges other
       have hTotSplit : ∀ (l : List delete_set.DeleteSetEntry) (k : Nat),
           totalRangesList (l.take k) ≤ totalRangesList l := by
@@ -481,21 +502,21 @@ theorem merge_spec (self other : delete_set.DeleteSetCore)
     have hInner :
         delete_set.DeleteSetCore.merge_loop0_loop0 ds other.entries i dse.client 0#usize ⦃ ds1 =>
           Canonical ds1 ∧
-          totalRanges ds1 ≤ totalRanges ds + dse.range.ranges.length ∧
+          totalRanges ds1 ≤ totalRanges ds + (entryRanges dse).length ∧
           (∀ c clk, mem ds1 c clk ↔
             mem ds c clk ∨
             (c = dse.client ∧
               OrderRange.inRanges dse.range clk)) ⦄ := by
       unfold delete_set.DeleteSetCore.merge_loop0_loop0
       let invIn : delete_set.DeleteSetCore × Std.Usize → Prop := fun (dsIn, j) =>
-        Canonical dsIn ∧ j.val ≤ dse.range.ranges.length ∧
+        Canonical dsIn ∧ j.val ≤ (entryRanges dse).length ∧
         totalRanges dsIn ≤ totalRanges ds + j.val ∧
         (∀ c clk, mem dsIn c clk ↔
           mem ds c clk ∨
           (c = dse.client ∧
-            OrderRange.inRangesList (dse.range.ranges.val.take j.val) clk))
+            OrderRange.inRangesList ((entryRanges dse).take j.val) clk))
       refine loop.spec_decr_nat
-        (fun (_, j) => dse.range.ranges.length - j.val)
+        (fun (_, j) => (entryRanges dse).length - j.val)
         invIn _ _ (ds, 0#usize) ?_
         ⟨hCanDs, by scalar_tac, by scalar_tac, fun c clk => by simp [OrderRange.inRangesList]⟩
       intro ⟨dsIn, j⟩ ⟨hCanIn, hjLen, hTotIn, hMemIn⟩
@@ -503,44 +524,28 @@ theorem merge_spec (self other : delete_set.DeleteSetCore)
       simp only
       step as ⟨dse_1, hdse1⟩
       have hdse1Eq : dse_1 = dse := by rw [hdse1, hdse]
-      split_ifs with hltIn
-      · have hjLt : j.val < dse.range.ranges.length := by rw [← hdse1Eq]; scalar_tac
+      step with OrderRange.get_spec dse_1.range j (by simpa [hdse1Eq] using hDseCan.1) as ⟨o, ho⟩
+      rw [hdse1Eq] at ho
+      change o = (entryRanges dse)[j.val]? at ho
+      by_cases hjLt : j.val < (entryRanges dse).length
+      · have hSome : o = some ((entryRanges dse)[j.val]) := by
+          exact ho.trans (List.getElem?_eq_getElem hjLt)
+        simp only [hSome, bind_ok]
+        let r := (entryRanges dse)[j.val]
+        have hrEq : r = (entryRanges dse)[j.val] := rfl
         have hCapIn : totalRanges dsIn < Std.Usize.max := by omega
-        step as ⟨r, hrPost⟩
-        have hrEq : r = dse.range.ranges.val[j.val] := by
-          have : r = dse_1.range.ranges.val[j.val] := hrPost
-          simpa [hdse1Eq] using this
-        step with insert_spec dsIn dse.client r.start r.end hCanIn hCapIn as ⟨self1, hSelf1Can, hSelf1Len, hSelf1Mem⟩
+        step with insert_spec dsIn dse.client r.start r.end hCanIn hCapIn (by omega) as
+          ⟨self1, hSelf1Can, hSelf1Len, hSelf1Mem⟩
         step as ⟨j1, hj1⟩
         try simp only [spec_ok]
         have hj1Val : j1.val = j.val + 1 := by scalar_tac
-        refine ⟨⟨hSelf1Can, by scalar_tac, by omega, fun c clk => ?_⟩, by scalar_tac⟩
+        refine ⟨⟨hSelf1Can, by omega, by omega, fun c clk => ?_⟩, by omega⟩
         rw [hj1Val, hSelf1Mem c clk, hMemIn c clk]
-        have hTakeJ : OrderRange.inRangesList (dse.range.ranges.val.take (j.val + 1)) clk ↔
-            OrderRange.inRangesList (dse.range.ranges.val.take j.val) clk ∨
+        have hTakeJ : OrderRange.inRangesList ((entryRanges dse).take (j.val + 1)) clk ↔
+            OrderRange.inRangesList ((entryRanges dse).take j.val) clk ∨
             (r.start.val ≤ clk.val ∧ clk.val < r.end.val) := by
-          simp only [OrderRange.inRangesList]
-          rw [List.take_succ_eq_append_getElem hjLt, hrEq]
-          have hTLen : (dse.range.ranges.val.take j.val).length = j.val := by
-            simp [List.length_take]; omega
-          constructor
-          · rintro ⟨k, hk, h1', h2'⟩
-            simp only [List.length_append, List.length_cons, List.length_nil, hTLen] at hk
-            by_cases hkj : k < j.val
-            · rw [List.getElem_append_left (by omega)] at h1' h2'
-              exact Or.inl ⟨k, by omega, h1', h2'⟩
-            · have hkeq : k = j.val := by omega
-              subst hkeq
-              rw [List.getElem_append_right (by omega)] at h1' h2'
-              simp only [hTLen, Nat.sub_self, List.getElem_cons_zero] at h1' h2'
-              exact Or.inr ⟨h1', h2'⟩
-          · rintro (⟨k, hk, h1', h2'⟩ | ⟨h1', h2'⟩)
-            · refine ⟨k, by simp only [List.length_append, List.length_cons, List.length_nil, hTLen]; omega, ?_⟩
-              rw [List.getElem_append_left hk]; exact ⟨h1', h2'⟩
-            · refine ⟨j.val, by simp only [List.length_append, List.length_cons, List.length_nil, hTLen]; omega, ?_⟩
-              rw [List.getElem_append_right (by omega)]
-              simp only [hTLen, Nat.sub_self, List.getElem_cons_zero]
-              exact ⟨h1', h2'⟩
+          rw [List.take_succ_eq_append_getElem hjLt, OrderRange.inRangesList_append,
+            OrderRange.inRangesList_singleton, hrEq]
         constructor
         · rintro ((hOld | ⟨rfl, hPre⟩) | ⟨rfl, hNew⟩)
           · exact Or.inl hOld
@@ -551,13 +556,14 @@ theorem merge_spec (self other : delete_set.DeleteSetCore)
           · rcases (hTakeJ).1 hPreNew with hPre | hNew
             · exact Or.inl (Or.inr ⟨rfl, hPre⟩)
             · exact Or.inr ⟨rfl, hNew⟩
-      · try simp only [spec_ok]
-        have heq : j.val = dse.range.ranges.length := by rw [← hdse1Eq]; scalar_tac
-        have hTotEnd : totalRanges dsIn ≤ totalRanges ds + dse.range.ranges.length := by
+      · have hNone : o = none := ho.trans (List.getElem?_eq_none (by omega))
+        simp only [hNone, spec_ok]
+        have heq : j.val = (entryRanges dse).length := by omega
+        have hTotEnd : totalRanges dsIn ≤ totalRanges ds + (entryRanges dse).length := by
           rw [← heq]; exact hTotIn
         refine ⟨hCanIn, hTotEnd, fun c clk => ?_⟩
         rw [hMemIn c clk]
-        simp [OrderRange.inRanges, heq, List.take_length]
+        simp [OrderRange.inRanges, heq, entryRanges, List.take_length]
     step with hInner as ⟨ds1, hDs1Can, hDs1Tot, hDs1Mem⟩
     step as ⟨i2, hi2⟩
     try simp only [spec_ok]
@@ -571,7 +577,7 @@ theorem merge_spec (self other : delete_set.DeleteSetCore)
         other.entries.val.take i.val ++ [other.entries.val[i.val]] :=
       List.take_succ_eq_append_getElem hiLt
     refine ⟨⟨hDs1Can, by scalar_tac, ?_, fun c clk => ?_⟩, by scalar_tac⟩
-    · have : prefixTot (i.val + 1) = prefixTot i.val + dse.range.ranges.length := by
+    · have : prefixTot (i.val + 1) = prefixTot i.val + (entryRanges dse).length := by
         simp only [prefixTot, hTakeStep, hTotApp, totalRangesList, Nat.add_zero, hdse]
       rw [hi2Val]
       omega
@@ -611,13 +617,14 @@ theorem merge_spec (self other : delete_set.DeleteSetCore)
 theorem merge_comm (a b : delete_set.DeleteSetCore)
     (hCanA : Canonical a) (hCanB : Canonical b)
     (hCapAB : totalRanges a + totalRanges b ≤ Std.Usize.max)
-    (hCapBA : totalRanges b + totalRanges a ≤ Std.Usize.max) :
+    (hCapBA : totalRanges b + totalRanges a ≤ Std.Usize.max)
+    (hRoom : totalRanges a + totalRanges b ≤ 2^30) :
     (do
       let ab ← delete_set.DeleteSetCore.merge a b
       let ba ← delete_set.DeleteSetCore.merge b a
       ok (ab, ba)) ⦃ (ab, ba) => ∀ c clk, mem ab c clk ↔ mem ba c clk ⦄ := by
-  step with merge_spec a b hCanA hCanB hCapAB as ⟨ab, _, _, habMem⟩
-  step with merge_spec b a hCanB hCanA hCapBA as ⟨ba, _, _, hbaMem⟩
+  step with merge_spec a b hCanA hCanB hCapAB hRoom as ⟨ab, _, _, habMem⟩
+  step with merge_spec b a hCanB hCanA hCapBA (by omega) as ⟨ba, _, _, hbaMem⟩
   try simp only [spec_ok]
   intro c clk
   rw [habMem c clk, hbaMem c clk]
@@ -625,9 +632,10 @@ theorem merge_comm (a b : delete_set.DeleteSetCore)
 
 theorem merge_idem (a : delete_set.DeleteSetCore)
     (hCan : Canonical a)
-    (hCap : totalRanges a + totalRanges a ≤ Std.Usize.max) :
+    (hCap : totalRanges a + totalRanges a ≤ Std.Usize.max)
+    (hRoom : totalRanges a + totalRanges a ≤ 2^30) :
     delete_set.DeleteSetCore.merge a a ⦃ aa => ∀ c clk, mem aa c clk ↔ mem a c clk ⦄ := by
-  refine spec_mono (merge_spec a a hCan hCan hCap) ?_
+  refine spec_mono (merge_spec a a hCan hCan hCap hRoom) ?_
   intro aa ⟨_, _, hMem⟩ c clk
   rw [hMem c clk]
   exact iff_of_eq (or_self _)

@@ -660,7 +660,9 @@ def BlockOK (items : List MItem) (c : MClient) (p : Nat) (b : MBlock) : Prop :=
     x.deleted = b.kind.dead
 
 /-- The invariant of a store.
-- `distinct`: one timeline per client;
+- `sorted`: the timelines are in strictly increasing order of their clients
+  (so there is one timeline per client: `WF.distinct`), which is what the
+  binary search of `client_index` needs;
 - `timeline` (I1): every timeline is strictly increasing, without empty blocks;
 - `block` (I2, I5): every block is an item of the arena whose id, length and
   deleted state are the ones of the block;
@@ -668,8 +670,8 @@ def BlockOK (items : List MItem) (c : MClient) (p : Nat) (b : MBlock) : Prop :=
 - `live`: the sequence holds exactly the items of the timelines;
 - `gc` (I8): only deleted items have dropped their content. -/
 structure WF (s : MStore) : Prop where
-  distinct : ∀ (p q : Nat) (a b : MClient), p < q → s.clients[p]? = some a →
-    s.clients[q]? = some b → a.client ≠ b.client
+  sorted : ∀ (p q : Nat) (a b : MClient), p < q → s.clients[p]? = some a →
+    s.clients[q]? = some b → a.client < b.client
   timeline : ∀ c : MClient, c ∈ s.clients → TimelineWF c.blocks c.stop
   block : ∀ (c : MClient) (p : Nat) (b : MBlock), c ∈ s.clients → c.blocks[p]? = some b →
     BlockOK s.items c p b
@@ -681,7 +683,7 @@ structure WF (s : MStore) : Prop where
 /-- The invariant from any list that is a chain of the store. -/
 theorem WF.of_order {s : MStore} (o : List Nat) (hchain : Chain s.items s.start o)
     (hd : ∀ (p q : Nat) (a b : MClient), p < q → s.clients[p]? = some a →
-      s.clients[q]? = some b → a.client ≠ b.client)
+      s.clients[q]? = some b → a.client < b.client)
     (ht : ∀ c : MClient, c ∈ s.clients → TimelineWF c.blocks c.stop)
     (hb : ∀ (c : MClient) (p : Nat) (b : MBlock), c ∈ s.clients → c.blocks[p]? = some b →
       BlockOK s.items c p b)
@@ -715,6 +717,11 @@ theorem WF.empty : WF ⟨[], none, []⟩ := by
       cases h
   · intro i x h
     cases h
+
+/-- Two timelines are of two clients. -/
+theorem WF.distinct {s : MStore} (h : WF s) (p q : Nat) (a b : MClient) (hpq : p < q)
+    (ha : s.clients[p]? = some a) (hb : s.clients[q]? = some b) : a.client ≠ b.client :=
+  Nat.ne_of_lt (h.sorted p q a b hpq ha hb)
 
 /-- One timeline per client. -/
 theorem WF.client_unique {s : MStore} (h : WF s) {c c' : MClient} (hc : c ∈ s.clients)
@@ -1166,7 +1173,7 @@ theorem splitNode_spec {s : MStore} (h : WF s) {ci p i d : Nat} {c : MClient} {b
       obtain ⟨a0, ha0, ea⟩ := pre p' a' ha'
       obtain ⟨b0, hb0, eb⟩ := pre q' b' hb'
       rw [ea, eb]
-      exact h.distinct p' q' a0 b0 hpq ha0 hb0)
+      exact h.sorted p' q' a0 b0 hpq ha0 hb0)
     (by
       intro c' hc'
       rcases hcl c' hc' with e | ⟨j, _, hj⟩
@@ -1413,29 +1420,40 @@ theorem split_blocks_none {f : Id → Char} {s : MStore} (h : WF s) {z : Id}
 
 /-! ## Linking a new item -/
 
-/-- `ensure_client` for a client that has no timeline yet. -/
-def pushClient (s : MStore) (client : Nat) : MStore :=
-  { s with clients := s.clients ++ [⟨client, [], 0⟩] }
+/-- `ensure_client` for a client that has no timeline yet: an empty one, at
+position `k` of the timelines. -/
+def insClient (s : MStore) (k client : Nat) : MStore :=
+  { s with clients := insAt s.clients k ⟨client, [], 0⟩ }
 
-theorem pushClient_spec {s : MStore} (h : WF s) {client : Nat}
-    (hnew : ∀ c : MClient, c ∈ s.clients → c.client ≠ client) :
-    WF (pushClient s client) ∧ order (pushClient s client) = order s := by
-  have hmem : ∀ c : MClient, c ∈ (pushClient s client).clients →
+/-- A new timeline between the ones of the smaller clients and the ones of
+the larger clients keeps the invariant and the sequence. -/
+theorem insClient_spec {s : MStore} (h : WF s) {k client : Nat} (hk : k ≤ s.clients.length)
+    (hlo : ∀ (j : Nat) (c : MClient), j < k → s.clients[j]? = some c → c.client < client)
+    (hhi : ∀ (j : Nat) (c : MClient), k ≤ j → s.clients[j]? = some c → client < c.client) :
+    WF (insClient s k client) ∧ order (insClient s k client) = order s := by
+  have hmem : ∀ c : MClient, c ∈ (insClient s k client).clients →
       c ∈ s.clients ∨ c = ⟨client, [], 0⟩ := by
     intro c hc
-    rcases List.mem_append.mp hc with h1 | h1
+    rcases mem_insAt.mp hc with h1 | h1
+    · exact Or.inr h1
     · exact Or.inl h1
-    · exact Or.inr (by simpa using h1)
-  refine WF.of_order (s := pushClient s client) (order s) h.chain ?_ ?_ ?_ ?_ h.gc
+  refine WF.of_order (s := insClient s k client) (order s) h.chain ?_ ?_ ?_ ?_ h.gc
   · intro p q a b hpq ha hb
-    rcases get?_snoc_cases ha with ⟨_, ha'⟩ | ⟨hp, _⟩
-    · rcases get?_snoc_cases hb with ⟨_, hb'⟩ | ⟨_, eb⟩
-      · exact h.distinct p q a b hpq ha' hb'
+    rcases get?_insAt_cases hk ha with ⟨hp, ha'⟩ | ⟨hp, ea⟩ | ⟨p', ep, hp', ha'⟩
+    · rcases get?_insAt_cases hk hb with ⟨hq, hb'⟩ | ⟨hq, eb⟩ | ⟨q', eq, hq', hb'⟩
+      · exact h.sorted p q a b hpq ha' hb'
       · rw [eb]
-        exact hnew a (get?_mem ha')
-    · have := get?_lt hb
-      simp only [pushClient, List.length_append, List.length_cons, List.length_nil] at this
-      omega
+        exact hlo p a hp ha'
+      · exact h.sorted p q' a b (by omega) ha' hb'
+    · rcases get?_insAt_cases hk hb with ⟨hq, hb'⟩ | ⟨hq, eb⟩ | ⟨q', eq, hq', hb'⟩
+      · omega
+      · omega
+      · rw [ea]
+        exact hhi q' b hq' hb'
+    · rcases get?_insAt_cases hk hb with ⟨hq, hb'⟩ | ⟨hq, eb⟩ | ⟨q', eq, hq', hb'⟩
+      · omega
+      · omega
+      · exact h.sorted p' q' a b (by omega) ha' hb'
   · intro c hc
     rcases hmem c hc with h1 | h1
     · exact h.timeline c h1
@@ -1450,7 +1468,7 @@ theorem pushClient_spec {s : MStore} (h : WF s) {client : Nat}
     rw [h.live i]
     constructor
     · rintro ⟨c, p, b, hc, hb, hs⟩
-      exact ⟨c, p, b, List.mem_append_left _ hc, hb, hs⟩
+      exact ⟨c, p, b, mem_insAt.mpr (Or.inr hc), hb, hs⟩
     · rintro ⟨c, p, b, hc, hb, hs⟩
       rcases hmem c hc with h1 | h1
       · exact ⟨c, p, b, h1, hb, hs⟩
@@ -1572,7 +1590,7 @@ theorem linkNew_spec {s : MStore} (h : WF s) {ci k : Nat} {c : MClient} {x : MIt
       obtain ⟨a0, ha0, ea⟩ := pre p' a' ha'
       obtain ⟨b0, hb0, eb⟩ := pre q' b' hb'
       rw [ea, eb]
-      exact h.distinct p' q' a0 b0 hpq ha0 hb0)
+      exact h.sorted p' q' a0 b0 hpq ha0 hb0)
     (by
       intro c' hc'
       rcases hcl' c' hc' with e | ⟨j, _, hj⟩
@@ -2866,7 +2884,7 @@ theorem gcAll_spec {s : MStore} (h : WF s) :
     · have e : x.collect = x := by simp [MItem.collect, hd]
       rw [e] at hgc
       exact h.gc i x hi hx hgc
-  have hwo := WF.of_order (s := gcAll s) (order s) hchain h.distinct h.timeline hb h.live hg
+  have hwo := WF.of_order (s := gcAll s) (order s) hchain h.sorted h.timeline hb h.live hg
   refine ⟨hwo.1, hwo.2, fun f => ?_⟩
   unfold blocks gcContent
   rw [hwo.2, List.map_map]
@@ -3008,7 +3026,7 @@ theorem markDeleted_spec {s : MStore} (h : WF s) {ci p i : Nat} {c : MClient} {b
       obtain ⟨a0, ha0, ea⟩ := pre p' a' ha'
       obtain ⟨b0, hb0, eb⟩ := pre q' b' hb'
       rw [ea, eb]
-      exact h.distinct p' q' a0 b0 hpq ha0 hb0)
+      exact h.sorted p' q' a0 b0 hpq ha0 hb0)
     (by
       intro c' hc'
       rcases hcl c' hc' with e | ⟨j, _, hj⟩

@@ -6,13 +6,27 @@ invariant of the model on it. Every function below is total on every store
 that satisfies `Inv` (no panic, no overflow, no index out of bounds), keeps
 `Inv`, and does on `toM` what the model operation of the same name does.
 
-`merge_adjacent` (with `continues`) and `visible_ids` have no theorem here
-yet: see `proofs/TRUSTED.md`.
+The timelines are found by binary search (`find_client_spec`: they are kept
+in increasing order of their clients, a part of `Inv`). The conflict scan
+keeps the ids of the candidates it has walked in one list,
+`id_order::IdOrderCore` (`IdOrder`), under the key the store was made with
+(`with_key_spec`): the two sets of the scan of the model are read off it,
+all of its ids and the ones from a place on, which needs that no id is in the
+list twice, a consequence of `Inv` here (`id_pos_unique`). The key is no part
+of the model of a store: no theorem below reads it. The decisions a root
+sequence shares with `DocStore` are the functions of `doc_kernel`
+(`DocKernel`). `merge_adjacent` (with `continues`) and `visible_ids` are in
+`YataStoreMerge`.
 -/
 import Aeneas
 import YoctoCore.Code.Types
 import YoctoCore.Code.Funs
+import YoctoCore.Properties.IdSetModel
+import YoctoCore.Properties.IdSet
+import YoctoCore.Properties.IdOrder
+import YoctoCore.Properties.DocKernel
 import YoctoCore.Properties.YataModel
+import YoctoCore.Properties.YataMerge
 import YoctoCore.Properties.ClientBlocks
 
 open Aeneas Aeneas.Std Aeneas.Std.WP Result ControlFlow
@@ -21,6 +35,8 @@ open YoctoCore.Properties
 open YoctoCore.Properties.ListAux YoctoCore.Properties.YataModel
 open YoctoCore.Properties.ClientBlocks (toKind toBlock toBlocks kindSlot kindSlot_val
   toBlocks_get? toBlocks_length get?_of_getElem)
+
+open YoctoCore.Properties.Ring (blocksOf length_blocksOf length_blocksOf_le)
 
 set_option maxHeartbeats 1000000
 set_option autoImplicit false
@@ -138,159 +154,333 @@ theorem slot_is_spec (a : Option Std.U32) (b : Std.U32) :
   unfold yata_store.slot_is
   cases a <;> simp [spec_ok, toSlot, u32_val_inj]
 
+theorem toSlot_inj {a b : Option Std.U32} : toSlot a = toSlot b ↔ a = b := by
+  cases a <;> cases b <;> simp [toSlot, u32_val_inj]
+
+/-! ## The candidates of the conflict scan -/
+
+/-- The ids of the candidates a scan has walked, on the model: the set
+`before` of the scan of the model. -/
+def orderIds (o : id_order.IdOrderCore) : List YoctoSpec.Id := o.ids.val.map toId
+
+/-- The ids of the candidates from the place `from` on: the set `conflicting`
+of the scan of the model, when `from` is where the candidates since the last
+taken one begin. -/
+def conflictIds (o : id_order.IdOrderCore) («from» : Nat) : List YoctoSpec.Id :=
+  (o.ids.val.drop «from»).map toId
+
+theorem get?_drop_add {α : Type} (l : List α) (k i : Nat) : (l.drop k)[i]? = l[k + i]? := by
+  induction k generalizing l with
+  | zero => simp
+  | succ k ih =>
+    cases l with
+    | nil => simp
+    | cons x t =>
+      have e : k + 1 + i = (k + i) + 1 := by omega
+      rw [e]
+      simp
+
+/-- What is in a list from a place on. -/
+theorem mem_drop_iff {α : Type} {l : List α} {k : Nat} {x : α} :
+    x ∈ l.drop k ↔ ∃ i, k ≤ i ∧ l[i]? = some x := by
+  constructor
+  · intro h
+    obtain ⟨j, hj⟩ := mem_get? h
+    rw [get?_drop_add] at hj
+    exact ⟨k + j, Nat.le_add_right k j, hj⟩
+  · rintro ⟨i, hi, hx⟩
+    obtain ⟨d, rfl⟩ : ∃ d, i = k + d := ⟨i - k, by omega⟩
+    apply get?_mem (i := d)
+    rw [get?_drop_add]
+    exact hx
+
+theorem mem_orderIds {o : id_order.IdOrderCore} {x : yata_store.IdCore} :
+    toId x ∈ orderIds o ↔ x ∈ o.ids.val := by
+  unfold orderIds
+  rw [List.mem_map]
+  constructor
+  · rintro ⟨y, hy, e⟩
+    rw [← toId_inj e]
+    exact hy
+  · intro h
+    exact ⟨x, h, rfl⟩
+
+theorem mem_conflictIds {o : id_order.IdOrderCore} {k : Nat} {x : yata_store.IdCore} :
+    toId x ∈ conflictIds o k ↔ ∃ i, k ≤ i ∧ o.ids.val[i]? = some x := by
+  unfold conflictIds
+  rw [List.mem_map, ← mem_drop_iff]
+  constructor
+  · rintro ⟨y, hy, e⟩
+    rw [← toId_inj e]
+    exact hy
+  · intro h
+    exact ⟨x, h, rfl⟩
+
+/-- The candidates after one more was walked, on the model. -/
+theorem mem_push_order {B : List YoctoSpec.Id} {o o1 : id_order.IdOrderCore}
+    {x : yata_store.IdCore} (hB : ∀ z, z ∈ B ↔ z ∈ orderIds o)
+    (hadd : o1.ids.val = o.ids.val ++ [x]) :
+    ∀ z, z ∈ toId x :: B ↔ z ∈ orderIds o1 := by
+  intro z
+  unfold orderIds
+  rw [hadd, List.map_append, List.mem_append, List.mem_cons]
+  constructor
+  · rintro (e | hz)
+    · right
+      rw [e]
+      exact List.mem_singleton.mpr rfl
+    · left
+      exact (hB z).mp hz
+  · rintro (hz | hz)
+    · right
+      exact (hB z).mpr hz
+    · left
+      exact List.mem_singleton.mp hz
+
+/-- The candidates since the last taken one, after one more was walked. -/
+theorem mem_push_conflict {C : List YoctoSpec.Id} {o o1 : id_order.IdOrderCore}
+    {x : yata_store.IdCore} {k : Nat} (hC : ∀ z, z ∈ C ↔ z ∈ conflictIds o k)
+    (hadd : o1.ids.val = o.ids.val ++ [x]) (hk : k ≤ o.ids.val.length) :
+    ∀ z, z ∈ toId x :: C ↔ z ∈ conflictIds o1 k := by
+  intro z
+  rw [List.mem_cons]
+  constructor
+  · rintro (e | hz)
+    · rw [e]
+      apply mem_conflictIds.mpr
+      refine ⟨o.ids.val.length, hk, ?_⟩
+      rw [hadd]
+      exact get?_snoc_last _ _
+    · have hz' := (hC z).mp hz
+      unfold conflictIds at hz'
+      obtain ⟨y, hy, e⟩ := List.mem_map.mp hz'
+      obtain ⟨i, hi, hx⟩ := mem_drop_iff.mp hy
+      rw [← e]
+      apply mem_conflictIds.mpr
+      refine ⟨i, hi, ?_⟩
+      rw [hadd, get?_append_left (get?_lt hx)]
+      exact hx
+  · intro hz
+    unfold conflictIds at hz
+    obtain ⟨y, hy, e⟩ := List.mem_map.mp hz
+    obtain ⟨i, hi, hx⟩ := mem_drop_iff.mp hy
+    rw [hadd] at hx
+    rcases get?_snoc_cases hx with ⟨_, hx'⟩ | ⟨_, rfl⟩
+    · right
+      apply (hC z).mpr
+      rw [← e]
+      exact mem_conflictIds.mpr ⟨i, hi, hx'⟩
+    · left
+      exact e.symm
+
+/-- No candidate came since the last one. -/
+theorem conflictIds_end {o : id_order.IdOrderCore} {k : Nat} (hk : o.ids.val.length ≤ k) :
+    ∀ z, z ∈ ([] : List YoctoSpec.Id) ↔ z ∈ conflictIds o k := by
+  intro z
+  constructor
+  · intro hz
+    cases hz
+  · intro hz
+    unfold conflictIds at hz
+    obtain ⟨y, hy, _⟩ := List.mem_map.mp hz
+    obtain ⟨i, hi, hx⟩ := mem_drop_iff.mp hy
+    have := get?_lt hx
+    omega
+
+/-! ## `new`, `with_key`, `client_index`, `get_state` -/
+
+/-- **`with_key` makes the empty store**, whatever the key: the key is where
+its conflict scans look ids up, and no part of what the store stands for. -/
 @[step]
-theorem check_origin_spec (id : yata_store.IdCore) (origin : Option yata_store.IdCore) :
-    yata_store.check_origin id origin ⦃ _ => True ⦄ := by
-  unfold yata_store.check_origin
-  cases origin with
-  | none => simp [spec_ok]
-  | some o =>
-    dsimp only
-    split_ifs <;> simp [spec_ok]
+theorem with_key_spec (k0 k1 : Std.U64) :
+    yata_store.YataStoreCore.with_key k0 k1 ⦃ s =>
+      toM s = ⟨[], none, []⟩ ∧ Inv s ∧ s.k0 = k0 ∧ s.k1 = k1 ⦄ := by
+  unfold yata_store.YataStoreCore.with_key
+  have e : toM (yata_store.YataStoreCore.mk (alloc.vec.Vec.new yata_store.ItemCore) none
+      (alloc.vec.Vec.new yata_store.ClientEntryCore) k0 k1) = ⟨[], none, []⟩ := by
+    simp [toM, toSlot]
+  refine (spec_ok _).mpr ⟨e, ?_, rfl, rfl⟩
+  unfold Inv
+  rw [e]
+  exact WF.empty
 
-/-! ## `ids_contain` -/
-
-theorem ids_contain_loop_spec (ids : Slice yata_store.IdCore) (id : yata_store.IdCore)
-    (i : Std.Usize)
-    (hinv : ∀ (j : Nat) (x : yata_store.IdCore), j < i.val → ids.val[j]? = some x →
-      toId x ≠ toId id) :
-    yata_store.ids_contain_loop ids id i ⦃ r => (r = true ↔ toId id ∈ ids.val.map toId) ⦄ := by
-  unfold yata_store.ids_contain_loop
-  refine loop.spec_decr_nat
-    (fun (k : Std.Usize) => ids.val.length - k.val)
-    (fun (k : Std.Usize) => ∀ (j : Nat) (x : yata_store.IdCore), j < k.val →
-      ids.val[j]? = some x → toId x ≠ toId id)
-    (fun (r : Bool) => (r = true ↔ toId id ∈ ids.val.map toId))
-    _ i ?_ hinv
-  intro k hk
-  unfold yata_store.ids_contain_loop.body
-  simp only
-  by_cases hlt : k < Slice.len ids
-  · simp only [hlt, ↓reduceIte]
-    have hkl : k.val < ids.val.length := by scalar_tac
-    step as ⟨ic, hic⟩
-    have hx := get?_of_getElem hkl hic
-    step as ⟨b, hb⟩
-    by_cases hbt : b = true
-    · simp only [hbt, ↓reduceIte, spec_ok]
-      have hmem : toId id ∈ ids.val.map toId := by
-        rw [← hb.mp hbt]
-        exact List.mem_map.mpr ⟨ic, get?_mem hx, rfl⟩
-      simp [hmem]
-    · simp only [hbt, Bool.false_eq_true, ↓reduceIte]
-      step as ⟨k1, hk1⟩
-      refine ⟨?_, by scalar_tac⟩
-      intro j x hj hjx
-      by_cases e : j = k.val
-      · rw [e, hx] at hjx
-        cases hjx
-        intro heq
-        exact hbt (hb.mpr heq)
-      · exact hk j x (by scalar_tac) hjx
-  · simp only [hlt, ↓reduceIte, spec_ok]
-    have hge : ids.val.length ≤ k.val := by scalar_tac
-    constructor
-    · intro h
-      cases h
-    · intro hmem
-      exfalso
-      obtain ⟨x, hx, hxe⟩ := List.mem_map.mp hmem
-      obtain ⟨j, hj⟩ := mem_get? hx
-      exact hk j x (by have := get?_lt hj; omega) hj hxe
-
-@[step]
-theorem ids_contain_spec (ids : Slice yata_store.IdCore) (id : yata_store.IdCore) :
-    yata_store.ids_contain ids id ⦃ r => (r = true ↔ toId id ∈ ids.val.map toId) ⦄ := by
-  unfold yata_store.ids_contain
-  exact ids_contain_loop_spec ids id 0#usize (by
-    intro j x hj
-    exfalso
-    scalar_tac)
-
-/-! ## `new`, `client_index`, `get_state` -/
+/-- `new` is `with_key` under the key `(0, 0)`. -/
+theorem new_eq : yata_store.YataStoreCore.new = yata_store.YataStoreCore.with_key 0#u64 0#u64 := by
+  unfold yata_store.YataStoreCore.new
+  rfl
 
 @[step]
 theorem new_spec : yata_store.YataStoreCore.new ⦃ s => toM s = ⟨[], none, []⟩ ∧ Inv s ⦄ := by
-  unfold yata_store.YataStoreCore.new
-  simp only [spec_ok]
-  have key : ∀ s' : yata_store.YataStoreCore, toM s' = ⟨[], none, []⟩ →
-      toM s' = ⟨[], none, []⟩ ∧ Inv s' := by
-    intro s' e
-    refine ⟨e, ?_⟩
-    unfold Inv
-    rw [e]
-    exact WF.empty
-  apply key
-  simp [toM, toSlot]
+  rw [new_eq]
+  exact spec_mono (with_key_spec 0#u64 0#u64) (fun s hs => ⟨hs.1, hs.2.1⟩)
 
-theorem client_index_loop_spec (s : yata_store.YataStoreCore) (client : Std.U64) (i : Std.Usize)
-    (hinv : ∀ (j : Nat) (c : yata_store.ClientEntryCore), j < i.val →
-      s.clients.val[j]? = some c → c.client ≠ client) :
-    yata_store.YataStoreCore.client_index_loop s client i ⦃ o =>
-      (o = none ∧ ∀ (j : Nat) (c : yata_store.ClientEntryCore), s.clients.val[j]? = some c →
-        c.client ≠ client) ∨
-      ∃ (ci : Std.Usize) (c : yata_store.ClientEntryCore), o = some ci ∧
-        s.clients.val[ci.val]? = some c ∧ c.client = client ⦄ := by
-  unfold yata_store.YataStoreCore.client_index_loop
+/-- The timelines are in strictly increasing order of their clients. -/
+def ClientsSorted (v : List yata_store.ClientEntryCore) : Prop :=
+  ∀ (p q : Nat) (a b : yata_store.ClientEntryCore), p < q → v[p]? = some a → v[q]? = some b →
+    a.client.val < b.client.val
+
+theorem clientsSorted_of_inv {s : yata_store.YataStoreCore} (h : Inv s) :
+    ClientsSorted s.clients.val := by
+  intro p q a b hpq ha hb
+  have ha' : (toM s).clients[p]? = some (toClient a) := by
+    rw [toM_clients_get?, ha]
+    rfl
+  have hb' : (toM s).clients[q]? = some (toClient b) := by
+    rw [toM_clients_get?, hb]
+    rfl
+  exact h.sorted p q (toClient a) (toClient b) hpq ha' hb'
+
+/-- What the binary search answers: the timeline of the client, or, when the
+timelines are sorted, the place of the timeline it does not have yet. -/
+structure FindPost (v : List yata_store.ClientEntryCore) (client : Std.U64) (found : Bool)
+    (index : Std.Usize) : Prop where
+  bound : index.val ≤ v.length
+  hit : found = true → ∃ c, v[index.val]? = some c ∧ c.client = client
+  below : found = false → ClientsSorted v → ∀ (j : Nat) (c : yata_store.ClientEntryCore),
+    j < index.val → v[j]? = some c → c.client.val < client.val
+  above : found = false → ClientsSorted v → ∀ (j : Nat) (c : yata_store.ClientEntryCore),
+    index.val ≤ j → v[j]? = some c → client.val < c.client.val
+
+/-- The binary search between `lo` and `hi`. -/
+structure Searching (v : List yata_store.ClientEntryCore) (client : Std.U64) (lo hi : Nat) :
+    Prop where
+  le : lo ≤ hi
+  bound : hi ≤ v.length
+  below : ClientsSorted v → ∀ (j : Nat) (c : yata_store.ClientEntryCore), j < lo →
+    v[j]? = some c → c.client.val < client.val
+  above : ClientsSorted v → ∀ (j : Nat) (c : yata_store.ClientEntryCore), hi ≤ j →
+    v[j]? = some c → client.val < c.client.val
+
+theorem find_client_loop_spec (v : alloc.vec.Vec yata_store.ClientEntryCore) (client : Std.U64)
+    (low high : Std.Usize) (hinv : Searching v.val client low.val high.val) :
+    yata_store.YataStoreCore.find_client_loop v client low high ⦃ r =>
+      FindPost v.val client r.1 r.2 ⦄ := by
+  unfold yata_store.YataStoreCore.find_client_loop
   refine loop.spec_decr_nat
-    (fun (k : Std.Usize) => s.clients.val.length - k.val)
-    (fun (k : Std.Usize) => ∀ (j : Nat) (c : yata_store.ClientEntryCore), j < k.val →
-      s.clients.val[j]? = some c → c.client ≠ client)
-    (fun (o : Option Std.Usize) =>
-      (o = none ∧ ∀ (j : Nat) (c : yata_store.ClientEntryCore), s.clients.val[j]? = some c →
-        c.client ≠ client) ∨
-      ∃ (ci : Std.Usize) (c : yata_store.ClientEntryCore), o = some ci ∧
-        s.clients.val[ci.val]? = some c ∧ c.client = client)
-    _ i ?_ hinv
-  intro k hk
-  unfold yata_store.YataStoreCore.client_index_loop.body
+    (fun ((lo, hi) : Std.Usize × Std.Usize) => hi.val - lo.val)
+    (fun ((lo, hi) : Std.Usize × Std.Usize) => Searching v.val client lo.val hi.val)
+    (fun (r : Bool × Std.Usize) => FindPost v.val client r.1 r.2)
+    _ (low, high) ?_ hinv
+  intro ⟨lo, hi⟩ hS0
+  have hS : Searching v.val client lo.val hi.val := hS0
+  have hle := hS.le
+  have hbound := hS.bound
+  have hvb := v.property
+  unfold yata_store.YataStoreCore.find_client_loop.body
   simp only
-  by_cases hlt : k < alloc.vec.Vec.len s.clients
+  by_cases hlt : lo < hi
   · simp only [hlt, ↓reduceIte]
-    have hkl : k.val < s.clients.val.length := by scalar_tac
+    have hlt' : lo.val < hi.val := by scalar_tac
+    step as ⟨d, hd⟩
+    have hdv : d.val = hi.val - lo.val := by scalar_tac
+    step as ⟨half, hhalf⟩
+    have hhalfv : half.val = (hi.val - lo.val) / 2 := by scalar_tac
+    step as ⟨mid, hmid⟩
+    have hmidv : mid.val = lo.val + (hi.val - lo.val) / 2 := by scalar_tac
+    have hmlt : mid.val < v.val.length := by omega
     step as ⟨cec, hcec⟩
-    have hx := get?_of_getElem hkl hcec
-    by_cases hc : cec.client = client
-    · have hc' : (cec.client = client) = True := eq_true hc
-      simp only [hc', ↓reduceIte, spec_ok]
-      right
-      exact ⟨k, cec, rfl, hx, hc⟩
-    · simp only [hc, ↓reduceIte]
-      step as ⟨k1, hk1⟩
-      refine ⟨?_, by scalar_tac⟩
-      intro j c hj hjc
-      by_cases e : j = k.val
-      · rw [e, hx] at hjc
-        cases hjc
-        exact hc
-      · exact hk j c (by scalar_tac) hjc
+    have hget := get?_of_getElem hmlt hcec
+    by_cases heq : cec.client = client
+    · have heq' : (cec.client = client) = True := eq_true heq
+      simp only [heq', ↓reduceIte, spec_ok]
+      show FindPost v.val client true mid
+      exact ⟨by omega, fun _ => ⟨cec, hget, heq⟩, (fun e => nomatch e), (fun e => nomatch e)⟩
+    · simp only [heq, ↓reduceIte]
+      have hne : cec.client.val ≠ client.val := fun e => heq (UScalar.eq_of_val_eq e)
+      by_cases hless : cec.client < client
+      · simp only [hless, ↓reduceIte]
+        have hless' : cec.client.val < client.val := by scalar_tac
+        step as ⟨lo1, hlo1⟩
+        have hlo1v : lo1.val = mid.val + 1 := by scalar_tac
+        refine ⟨?_, by scalar_tac⟩
+        show Searching v.val client lo1.val hi.val
+        rw [hlo1v]
+        refine ⟨by omega, hbound, fun hs j c hj hc => ?_, hS.above⟩
+        by_cases e : j = mid.val
+        · rw [e, hget] at hc
+          rw [← Option.some.inj hc]
+          exact hless'
+        · have h1 := hs j mid.val c cec (by omega) hc hget
+          omega
+      · simp only [hless, ↓reduceIte, spec_ok]
+        have hgt : client.val < cec.client.val := by
+          have : ¬ cec.client.val < client.val := by scalar_tac
+          omega
+        refine ⟨?_, by scalar_tac⟩
+        show Searching v.val client lo.val mid.val
+        refine ⟨by omega, by omega, hS.below, fun hs j c hj hc => ?_⟩
+        by_cases e : j = mid.val
+        · rw [e, hget] at hc
+          rw [← Option.some.inj hc]
+          exact hgt
+        · have h1 := hs mid.val j cec c (by omega) hget hc
+          omega
   · simp only [hlt, ↓reduceIte, spec_ok]
-    have hge : s.clients.val.length ≤ k.val := by scalar_tac
-    left
-    refine ⟨trivial, ?_⟩
-    intro j c hj
-    exact hk j c (by have := get?_lt hj; omega) hj
+    have e : lo.val = hi.val := by scalar_tac
+    show FindPost v.val client false lo
+    exact ⟨by omega, (fun hh => nomatch hh), fun _ hs => hS.below hs,
+      fun _ hs j c hj hc => hS.above hs j c (by omega) hc⟩
+
+/-- **`find_client` is a binary search of the timelines**: it answers the
+timeline of the client or, the timelines being sorted, where it goes. -/
+theorem find_client_spec (s : yata_store.YataStoreCore) (client : Std.U64) :
+    yata_store.YataStoreCore.find_client s client ⦃ found index =>
+      FindPost s.clients.val client found index ⦄ := by
+  unfold yata_store.YataStoreCore.find_client
+  simp only
+  have hinit : Searching s.clients.val client (0#usize : Std.Usize).val
+      (alloc.vec.Vec.len s.clients).val := by
+    refine ⟨by scalar_tac, by scalar_tac, fun _ j c hj _ => ?_, fun _ j c hj hc => ?_⟩
+    · exfalso
+      scalar_tac
+    · exfalso
+      have := get?_lt hc
+      scalar_tac
+  refine spec_mono (find_client_loop_spec s.clients client 0#usize
+    (alloc.vec.Vec.len s.clients) hinit) ?_
+  rintro ⟨found, index⟩ hr
+  have hF : FindPost s.clients.val client found index := hr
+  exact hF
 
 @[step]
 theorem client_index_spec (s : yata_store.YataStoreCore) (client : Std.U64) :
     yata_store.YataStoreCore.client_index s client ⦃ o =>
-      (o = none ∧ ∀ (j : Nat) (c : yata_store.ClientEntryCore), s.clients.val[j]? = some c →
-        c.client ≠ client) ∨
+      (o = none ∧ (ClientsSorted s.clients.val →
+        ∀ (j : Nat) (c : yata_store.ClientEntryCore), s.clients.val[j]? = some c →
+          c.client ≠ client)) ∨
       ∃ (ci : Std.Usize) (c : yata_store.ClientEntryCore), o = some ci ∧
         s.clients.val[ci.val]? = some c ∧ c.client = client ⦄ := by
   unfold yata_store.YataStoreCore.client_index
-  exact client_index_loop_spec s client 0#usize (by
-    intro j c hj
-    exfalso
-    scalar_tac)
+  step with find_client_spec s client as ⟨found, index, hf⟩
+  have hF : FindPost s.clients.val client found index := hf
+  by_cases hft : found = true
+  · simp only [hft, ↓reduceIte, spec_ok]
+    obtain ⟨c, hc, hcl⟩ := hF.hit hft
+    right
+    exact ⟨index, c, rfl, hc, hcl⟩
+  · have hff : found = false := by
+      cases hb : found with
+      | false => rfl
+      | true => exact absurd hb hft
+    simp only [hft, Bool.false_eq_true, ↓reduceIte, spec_ok]
+    left
+    refine ⟨trivial, fun hs j c hc e => ?_⟩
+    by_cases hj : j < index.val
+    · have h1 := hF.below hff hs j c hj hc
+      rw [e] at h1
+      exact Nat.lt_irrefl _ h1
+    · have h1 := hF.above hff hs j c (by omega) hc
+      rw [e] at h1
+      exact Nat.lt_irrefl _ h1
 
 /-- The clock the next struct of `client` has to start at; `0` for a client
 the store does not know. -/
 @[step]
 theorem get_state_spec (s : yata_store.YataStoreCore) (client : Std.U64) :
     yata_store.YataStoreCore.get_state s client ⦃ r =>
-      (r.val = 0 ∧ ∀ (j : Nat) (c : yata_store.ClientEntryCore), s.clients.val[j]? = some c →
-        c.client ≠ client) ∨
+      (r.val = 0 ∧ (ClientsSorted s.clients.val →
+        ∀ (j : Nat) (c : yata_store.ClientEntryCore), s.clients.val[j]? = some c →
+          c.client ≠ client)) ∨
       ∃ (j : Nat) (c : yata_store.ClientEntryCore), s.clients.val[j]? = some c ∧
         c.client = client ∧ r = c.blocks.end_clock ⦄ := by
   unfold yata_store.YataStoreCore.get_state
@@ -305,8 +495,9 @@ theorem get_state_spec (s : yata_store.YataStoreCore) (client : Std.U64) :
     have hx := get?_of_getElem hlt hcec
     rw [hc] at hx
     cases hx
+    step as ⟨r, hr⟩
     right
-    exact ⟨ci.val, c, hc, hcl, rfl⟩
+    exact ⟨ci.val, c, hc, hcl, hr⟩
 
 /-! ## `locate` and `node_id` -/
 
@@ -317,7 +508,7 @@ theorem locate_spec (s : yata_store.YataStoreCore) (id : yata_store.IdCore) (h :
       (o = none ∧ ∀ (c : MClient) (p : Nat) (b : MBlock), ¬ At (toM s) (toId id) c p b) ∨
       ∃ (ci pos : Std.Usize) (c : yata_store.ClientEntryCore) (b : client_blocks.BlockRefCore),
         o = some (ci, pos) ∧ s.clients.val[ci.val]? = some c ∧
-        c.blocks.blocks.val[pos.val]? = some b ∧
+        (blocksOf c.blocks)[pos.val]? = some b ∧
         At (toM s) (toId id) (toClient c) pos.val (toBlock b) ⦄ := by
   unfold yata_store.YataStoreCore.locate
   step as ⟨o, ho⟩
@@ -328,7 +519,7 @@ theorem locate_spec (s : yata_store.YataStoreCore) (id : yata_store.IdCore) (h :
     intro c' p b ha
     obtain ⟨c0, hc0, rfl⟩ := List.mem_map.mp ha.mem
     obtain ⟨j, hj⟩ := mem_get? hc0
-    apply hno j c0 hj
+    apply hno (clientsSorted_of_inv h) j c0 hj
     exact UScalar.eq_of_val_eq ha.client
   · simp only []
     have hlt := get?_lt hc
@@ -354,7 +545,7 @@ theorem locate_spec (s : yata_store.YataStoreCore) (id : yata_store.IdCore) (h :
       right
       obtain ⟨a, ha, hge, hlt'⟩ := hholds
       rw [toBlocks_get?] at ha
-      cases hb : c.blocks.blocks.val[pos.val]? with
+      cases hb : (blocksOf c.blocks)[pos.val]? with
       | none =>
         rw [hb] at ha
         cases ha
@@ -507,7 +698,7 @@ theorem toM_clients_at {s : yata_store.YataStoreCore} {i : Nat} {c : yata_store.
   rfl
 
 theorem toClient_block {c : yata_store.ClientEntryCore} {p : Nat}
-    {b : client_blocks.BlockRefCore} (h : c.blocks.blocks.val[p]? = some b) :
+    {b : client_blocks.BlockRefCore} (h : (blocksOf c.blocks)[p]? = some b) :
     (toClient c).blocks[p]? = some (toBlock b) := by
   show (toBlocks c.blocks)[p]? = some (toBlock b)
   rw [toBlocks_get?, h]
@@ -519,13 +710,13 @@ theorem toM_split_node {s : yata_store.YataStoreCore} {ci pos i5 : Std.Usize}
     {item : yata_store.ItemCore} {diff clock i3 i4 : Std.U64}
     {kind : client_blocks.BlockKindCore} {cbc : client_blocks.ClientBlocksCore}
     {v1 : alloc.vec.Vec yata_store.ItemCore}
-    (hc : s.clients.val[ci.val]? = some c) (hb : c.blocks.blocks.val[pos.val]? = some b)
+    (hc : s.clients.val[ci.val]? = some c) (hb : (blocksOf c.blocks)[pos.val]? = some b)
     (hit : s.items.val[idx.val]? = some item) (hi5 : i5.val = idx.val)
     (hriv : right_idx.val = s.items.val.length)
     (hclock : clock.val = item.id.clock.val + diff.val)
     (hi3 : i3.val = item.len.val - diff.val) (hi4 : i4.val = clock.val - 1)
     (hkind : toKind kind = (toKind b.kind).reslot s.items.val.length)
-    (hbl : cbc.blocks.val = insAt c.blocks.blocks.val (pos.val + 1)
+    (hbl : (blocksOf cbc) = insAt (blocksOf c.blocks) (pos.val + 1)
       ({ clock := clock, kind := kind } : client_blocks.BlockRefCore))
     (hend : cbc.end_clock = c.blocks.end_clock)
     (hv1 : v1.val = (s.items.set i5 { item with len := diff }).val ++
@@ -574,7 +765,7 @@ structure SplitNodePost (s : yata_store.YataStoreCore) (ci pos : Std.Usize) (dif
 
 theorem split_node_spec (s : yata_store.YataStoreCore) (ci pos : Std.Usize) (diff : Std.U64)
     (h : Inv s) {c : yata_store.ClientEntryCore} {b : client_blocks.BlockRefCore}
-    (hc : s.clients.val[ci.val]? = some c) (hb : c.blocks.blocks.val[pos.val]? = some b)
+    (hc : s.clients.val[ci.val]? = some c) (hb : (blocksOf c.blocks)[pos.val]? = some b)
     (hd : ∀ (i : Nat) (x : MItem), (toKind b.kind).slot = some i →
       coreAt (toM s).items i = some x → 0 < diff.val ∧ diff.val < x.len) :
     yata_store.YataStoreCore.split_node s ci pos diff ⦃ r s' =>
@@ -944,89 +1135,197 @@ def toStep : yata_store.ScanStep → MStep
   | .Skip => MStep.skip
   | .Take => MStep.take
 
-/-- One step of the scan is `scanStep` of the model. -/
-@[step]
-theorem scan_step_spec (s : yata_store.YataStoreCore) (id : yata_store.IdCore)
-    (ol or_ : Option yata_store.IdCore) (cand : yata_store.ItemCore)
-    (before conflicting : Slice yata_store.IdCore) (h : Inv s) :
-    yata_store.YataStoreCore.scan_step s id ol or_ cand before conflicting ⦃ r =>
-      toStep r = scanStep (ownerM (toM s)) (toId id) (ol.map toId) (or_.map toId) (toItem cand)
-        (before.val.map toId) (conflicting.val.map toId) ⦄ := by
-  unfold yata_store.YataStoreCore.scan_step
+/-- `decide_conflict_step`, branch by branch: what the origins and the
+clients of an item and of a candidate decide. -/
+theorem decide_conflict_step_spec (tc : Std.U64) (ol or_ : Option yata_store.IdCore)
+    (cc : Std.U64) (cl cr : Option yata_store.IdCore) :
+    yata_store.decide_conflict_step tc ol or_ cc cl cr ⦃ d =>
+      (ol.map toId = cl.map toId ∧ cc.val < tc.val ∧
+        d = yata_store.ConflictDecision.Step yata_store.ScanStep.Take) ∨
+      (ol.map toId = cl.map toId ∧ ¬ cc.val < tc.val ∧ or_.map toId = cr.map toId ∧
+        d = yata_store.ConflictDecision.Step yata_store.ScanStep.Stop) ∨
+      (ol.map toId = cl.map toId ∧ ¬ cc.val < tc.val ∧ ¬ or_.map toId = cr.map toId ∧
+        d = yata_store.ConflictDecision.Step yata_store.ScanStep.Skip) ∨
+      (¬ ol.map toId = cl.map toId ∧ cl = none ∧
+        d = yata_store.ConflictDecision.Step yata_store.ScanStep.Stop) ∨
+      (∃ origin, ¬ ol.map toId = cl.map toId ∧ cl = some origin ∧
+        d = yata_store.ConflictDecision.Owner origin) ⦄ := by
+  unfold yata_store.decide_conflict_step
   step as ⟨b, hb⟩
   by_cases hbt : b = true
   · simp only [hbt, ↓reduceIte]
-    have h1 : ol.map toId = (toItem cand).originL := hb.mp hbt
-    by_cases hlt : cand.id.client < id.client
+    have h1 : ol.map toId = cl.map toId := hb.mp hbt
+    by_cases hlt : cc < tc
     · simp only [hlt, ↓reduceIte, spec_ok]
-      have hlt' : (toItem cand).id.client < (toId id).client := by
-        show cand.id.client.val < id.client.val
-        scalar_tac
-      rw [scanStep_same_take h1 hlt']
-      rfl
+      exact Or.inl ⟨h1, by scalar_tac, trivial⟩
     · simp only [hlt, ↓reduceIte]
-      have hlt' : ¬ (toItem cand).id.client < (toId id).client := by
-        show ¬ cand.id.client.val < id.client.val
-        scalar_tac
+      have hlt' : ¬ cc.val < tc.val := by scalar_tac
       step as ⟨b1, hb1⟩
       by_cases hb1t : b1 = true
       · simp only [hb1t, ↓reduceIte, spec_ok]
-        have h3 : or_.map toId = (toItem cand).originR := hb1.mp hb1t
-        rw [scanStep_same_stop h1 hlt' h3]
-        rfl
+        exact Or.inr (Or.inl ⟨h1, hlt', hb1.mp hb1t, trivial⟩)
       · simp only [hb1t, Bool.false_eq_true, ↓reduceIte, spec_ok]
-        have h3 : ¬ or_.map toId = (toItem cand).originR := fun e => hb1t (hb1.mpr e)
-        rw [scanStep_same_skip h1 hlt' h3]
-        rfl
+        exact Or.inr (Or.inr (Or.inl ⟨h1, hlt', fun e => hb1t (hb1.mpr e), trivial⟩))
   · simp only [hbt, Bool.false_eq_true, ↓reduceIte]
-    have h1 : ¬ ol.map toId = (toItem cand).originL := fun e => hbt (hb.mpr e)
-    cases hcl : cand.origin_left with
+    have h1 : ¬ ol.map toId = cl.map toId := fun e => hbt (hb.mpr e)
+    cases cl with
     | none =>
       simp only [spec_ok]
-      have h2 : (toItem cand).originL = none := by
-        show cand.origin_left.map toId = none
-        rw [hcl]
-        rfl
-      rw [scanStep_none h1 h2]
-      rfl
+      exact Or.inr (Or.inr (Or.inr (Or.inl ⟨h1, trivial, trivial⟩)))
     | some origin =>
-      simp only []
-      have h2 : (toItem cand).originL = some (toId origin) := by
-        show cand.origin_left.map toId = some (toId origin)
-        rw [hcl]
-        rfl
-      step with node_id_spec s origin h as ⟨o, ho⟩
-      cases o with
-      | none =>
-        simp only [spec_ok]
-        rw [scanStep_owner_none h1 h2 ho.symm]
-        rfl
-      | some owner =>
-        have h3 : ownerM (toM s) (toId origin) = some (toId owner) := ho.symm
-        simp only []
-        step as ⟨b1, hb1⟩
-        by_cases hb1t : b1 = true
-        · simp only [hb1t, ↓reduceIte]
-          step as ⟨b2, hb2⟩
-          by_cases hb2t : b2 = true
-          · simp only [hb2t, ↓reduceIte, spec_ok]
-            rw [scanStep_owner_skip h1 h2 h3 (hb1.mp hb1t) (hb2.mp hb2t)]
-            rfl
-          · simp only [hb2t, Bool.false_eq_true, ↓reduceIte, spec_ok]
-            rw [scanStep_owner_take h1 h2 h3 (hb1.mp hb1t) (fun e => hb2t (hb2.mpr e))]
-            rfl
-        · simp only [hb1t, Bool.false_eq_true, ↓reduceIte, spec_ok]
-          rw [scanStep_owner_far h1 h2 h3 (fun e => hb1t (hb1.mpr e))]
-          rfl
+      simp only [spec_ok]
+      exact Or.inr (Or.inr (Or.inr (Or.inr ⟨origin, h1, rfl, rfl⟩)))
 
-theorem mem_push_ids {B : List YoctoSpec.Id} {l l1 : List yata_store.IdCore}
-    {x : yata_store.IdCore} (hB : ∀ z, z ∈ B ↔ z ∈ l.map toId) (hl : l1 = l ++ [x]) :
-    ∀ z, z ∈ toId x :: B ↔ z ∈ l1.map toId := by
-  intro z
-  rw [hl, List.map_append, List.mem_append, List.mem_cons, hB z]
-  show z = toId x ∨ z ∈ l.map toId ↔ z ∈ l.map toId ∨ z ∈ [toId x]
-  rw [List.mem_singleton]
-  exact Or.comm
+/-- `decide_owner_step`, branch by branch: what the place of the struct that
+holds the left origin of a candidate decides. -/
+theorem decide_owner_step_spec (in_before in_conflicting : Bool) :
+    yata_store.decide_owner_step in_before in_conflicting ⦃ r =>
+      (in_before = false ∧ r = yata_store.ScanStep.Stop) ∨
+      (in_before = true ∧ in_conflicting = false ∧ r = yata_store.ScanStep.Take) ∨
+      (in_before = true ∧ in_conflicting = true ∧ r = yata_store.ScanStep.Skip) ⦄ := by
+  unfold yata_store.decide_owner_step
+  cases in_before <;> cases in_conflicting <;> simp [spec_ok]
+
+/-- Items of the sequence with the same id are at the same place. -/
+theorem id_pos_unique {s : yata_store.YataStoreCore} (h : Inv s) {j1 j2 i1 i2 : Nat}
+    {x1 x2 : yata_store.ItemCore} (h1 : (order (toM s))[j1]? = some i1)
+    (h2 : (order (toM s))[j2]? = some i2) (hx1 : s.items.val[i1]? = some x1)
+    (hx2 : s.items.val[i2]? = some x2) (e : x1.id = x2.id) : j1 = j2 := by
+  refine blocks_id_inj (f := fun _ => 'a') h h1 h2 ?_
+  show (blockOf (fun _ => 'a') (itemAt (toM s).items i1)).id =
+    (blockOf (fun _ => 'a') (itemAt (toM s).items i2)).id
+  rw [itemAt_toM hx1, itemAt_toM hx2]
+  show toId x1.id = toId x2.id
+  rw [e]
+
+/-- One step of the scan is `scanStep` of the model: the two sets of the
+model are the ids of the list and its ids from `conflict_from` on. The list
+keeps its ids; only where it looks first, and what its table holds, change. -/
+theorem scan_step_spec (s : yata_store.YataStoreCore) (id : yata_store.IdCore)
+    (ol or_ : Option yata_store.IdCore) (cand : yata_store.ItemCore)
+    (ord : id_order.IdOrderCore) (cfrom : Std.Usize) (h : Inv s) (hw : IdOrder.WF ord)
+    (hnd : ord.ids.val.Nodup) :
+    yata_store.YataStoreCore.scan_step s id ol or_ cand ord cfrom ⦃ r ord' =>
+      toStep r = scanStep (ownerM (toM s)) (toId id) (ol.map toId) (or_.map toId) (toItem cand)
+        (orderIds ord) (conflictIds ord cfrom.val) ∧
+      IdOrder.WF ord' ∧ ord'.ids = ord.ids ⦄ := by
+  unfold yata_store.YataStoreCore.scan_step
+  step with decide_conflict_step_spec id.client ol or_ cand.id.client cand.origin_left
+    cand.origin_right as ⟨cd, hcd⟩
+  rcases hcd with ⟨h1, hlt, rfl⟩ | ⟨h1, hlt, h3, rfl⟩ | ⟨h1, hlt, h3, rfl⟩ | ⟨h1, h2, rfl⟩ |
+    ⟨origin, h1, h2, rfl⟩
+  · simp only [spec_ok, uncurry'_pair]
+    have h1' : ol.map toId = (toItem cand).originL := h1
+    have hlt' : (toItem cand).id.client < (toId id).client := hlt
+    rw [scanStep_same_take h1' hlt']
+    exact ⟨rfl, hw, trivial⟩
+  · simp only [spec_ok, uncurry'_pair]
+    have h1' : ol.map toId = (toItem cand).originL := h1
+    have hlt' : ¬ (toItem cand).id.client < (toId id).client := hlt
+    have h3' : or_.map toId = (toItem cand).originR := h3
+    rw [scanStep_same_stop h1' hlt' h3']
+    exact ⟨rfl, hw, trivial⟩
+  · simp only [spec_ok, uncurry'_pair]
+    have h1' : ol.map toId = (toItem cand).originL := h1
+    have hlt' : ¬ (toItem cand).id.client < (toId id).client := hlt
+    have h3' : ¬ or_.map toId = (toItem cand).originR := h3
+    rw [scanStep_same_skip h1' hlt' h3']
+    exact ⟨rfl, hw, trivial⟩
+  · simp only [spec_ok, uncurry'_pair]
+    have h1' : ¬ ol.map toId = (toItem cand).originL := h1
+    have h2' : (toItem cand).originL = none := by
+      show cand.origin_left.map toId = none
+      rw [h2]
+      rfl
+    rw [scanStep_none h1' h2']
+    exact ⟨rfl, hw, trivial⟩
+  · simp only []
+    have h1' : ¬ ol.map toId = (toItem cand).originL := h1
+    have h2' : (toItem cand).originL = some (toId origin) := by
+      show cand.origin_left.map toId = some (toId origin)
+      rw [h2]
+      rfl
+    step with node_id_spec s origin h as ⟨o, ho⟩
+    cases o with
+    | none =>
+      simp only [spec_ok, uncurry'_pair]
+      rw [scanStep_owner_none h1' h2' ho.symm]
+      exact ⟨rfl, hw, trivial⟩
+    | some owner =>
+      have h3 : ownerM (toM s) (toId origin) = some (toId owner) := ho.symm
+      simp only []
+      step with IdOrder.recent_spec ord owner as ⟨r, ord1, hr, hsame⟩
+      have hS : IdOrder.Same ord ord1 := hsame
+      have hw1 : IdOrder.WF ord1 := hw.same hS
+      have hids1 : ord1.ids = ord.ids := hS.ids
+      -- where the struct is in the list, by hand or through the table
+      refine spec_bind (?_ : spec _ (fun (p : id_order.IdOrderCore × Option Std.Usize) =>
+        IdOrder.WF p.1 ∧ p.1.ids = ord.ids ∧
+        (∀ a, p.2 = some a → ord.ids.val[a.val]? = some owner) ∧
+        (p.2 = none → ∀ j : Nat, ord.ids.val[j]? ≠ some owner))) (fun p hp => ?_)
+      · cases r with
+        | At a =>
+          simp only [spec_ok]
+          have ha : ord.ids.val[a.val]? = some owner := hr
+          refine ⟨hw1, hids1, fun a' e => ?_, fun e => nomatch e⟩
+          cases e
+          exact ha
+        | Absent =>
+          simp only [spec_ok]
+          have ha : ∀ j : Nat, ord.ids.val[j]? ≠ some owner := hr
+          exact ⟨hw1, hids1, (fun a' e => nomatch e), fun _ => ha⟩
+        | Far =>
+          simp only []
+          step with IdOrder.position_spec ord1 owner hw1 as ⟨found1, ord3, hpos⟩
+          have hP : IdOrder.PositionPost ord1 owner found1 ord3 := hpos
+          refine ⟨hP.wf, hP.same.1.trans hids1, fun a e => ?_, fun e j => ?_⟩
+          · have hat : ord1.ids.val[a.val]? = some owner := hP.found a e
+            rw [hids1] at hat
+            exact hat
+          · have hno : ¬ ord1.ids.val[j]? = some owner := hP.absent e j
+            rw [hids1] at hno
+            exact hno
+      · obtain ⟨ord2, found⟩ := p
+        obtain ⟨hw2, hids2, hfound, habsent⟩ := hp
+        cases found with
+        | none =>
+          refine spec_bind (decide_owner_step_spec false false) (fun st hst => ?_)
+          simp only [spec_ok, uncurry'_pair]
+          refine ⟨?_, hw2, hids2⟩
+          rcases hst with ⟨_, rfl⟩ | ⟨e1, _, _⟩ | ⟨e1, _, _⟩
+          · have hnb : ¬ toId owner ∈ orderIds ord := by
+              intro hm
+              obtain ⟨j, hj⟩ := mem_get? (mem_orderIds.mp hm)
+              exact habsent rfl j hj
+            rw [scanStep_owner_far h1' h2' h3 hnb]
+            rfl
+          · cases e1
+          · cases e1
+        | some a =>
+          have hat : ord.ids.val[a.val]? = some owner := hfound a rfl
+          have hb' : toId owner ∈ orderIds ord := mem_orderIds.mpr (get?_mem hat)
+          refine spec_bind (decide_owner_step_spec true _) (fun st hst => ?_)
+          simp only [spec_ok, uncurry'_pair]
+          refine ⟨?_, hw2, hids2⟩
+          rcases hst with ⟨e1, _⟩ | ⟨_, e2, rfl⟩ | ⟨_, e2, rfl⟩
+          · cases e1
+          · have hlt : a.val < cfrom.val := by
+              have hn : ¬ a >= cfrom := of_decide_eq_false e2
+              scalar_tac
+            have hnc : ¬ toId owner ∈ conflictIds ord cfrom.val := by
+              intro hm
+              obtain ⟨i, hi, hx⟩ := mem_conflictIds.mp hm
+              have e : i = a.val := nodup_get?_inj hnd hx hat
+              omega
+            rw [scanStep_owner_take h1' h2' h3 hb' hnc]
+            rfl
+          · have hge : cfrom.val ≤ a.val := by
+              have hy : a >= cfrom := of_decide_eq_true e2
+              scalar_tac
+            have hc' : toId owner ∈ conflictIds ord cfrom.val :=
+              mem_conflictIds.mpr ⟨a.val, hge, hat⟩
+            rw [scanStep_owner_skip h1' h2' h3 hb' hc']
+            rfl
 
 theorem order_le_items {s : yata_store.YataStoreCore} (h : Inv s) :
     (order (toM s)).length ≤ s.items.val.length := by
@@ -1048,44 +1347,103 @@ theorem leftOf_toM {s : yata_store.YataStoreCore} {i : Nat} {item : yata_store.I
     (h : s.items.val[i]? = some item) : leftOf (toM s).items i = toSlot item.left := by
   simp [leftOf, toM_items_get?, h, toItem]
 
+/-- What is left of the sequence from a slot on: the measure of the loops that
+walk it. -/
+def restOf (o : List Nat) (cursor : Option Std.U32) : Nat :=
+  match cursor with
+  | none => 0
+  | some c => o.length - posOf o c.val
+
+/-- The successor of an item of the sequence has less of the sequence left. -/
+theorem restOf_next {s : yata_store.YataStoreCore} (h : Inv s) {k : Nat} {current : Std.U32}
+    {item : yata_store.ItemCore} (hcur : (order (toM s))[k]? = some current.val)
+    (hit : s.items.val[current.val]? = some item) :
+    restOf (order (toM s)) item.right < restOf (order (toM s)) (some current) := by
+  have hklt : k < (order (toM s)).length := get?_lt hcur
+  have hnext : toSlot item.right = (order (toM s))[k + 1]? := by
+    rw [← rightOf_toM hit]
+    exact h.chain.right k _ hcur
+  have hpos0 : posOf (order (toM s)) current.val = k := posOf_get? h.chain.nodup hcur
+  show restOf (order (toM s)) item.right <
+    (order (toM s)).length - posOf (order (toM s)) current.val
+  rw [hpos0]
+  cases hr : item.right with
+  | none =>
+    show 0 < (order (toM s)).length - k
+    omega
+  | some nxt =>
+    rw [hr] at hnext
+    have hnx : (order (toM s))[k + 1]? = some nxt.val := hnext.symm
+    have hpos1 : posOf (order (toM s)) nxt.val = k + 1 := posOf_get? h.chain.nodup hnx
+    have := get?_lt hnx
+    show (order (toM s)).length - posOf (order (toM s)) nxt.val < (order (toM s)).length - k
+    rw [hpos1]
+    omega
+
+/-- What the loop of the scan answers: the left neighbour the model scan
+finds, unless the list of the scan could not grow; and it does answer one
+while the store holds fewer than `2 ^ 30` items. -/
+structure ScanPost (s : yata_store.YataStoreCore) (R : Option Nat)
+    (r : core.result.Result (Option Std.U32) client_blocks.StoreError) : Prop where
+  found : ∀ o, r = core.result.Result.Ok o → toSlot o = R
+  accepts : s.items.val.length < 1073741824 → ∃ o, r = core.result.Result.Ok o
+
 /-- The loop of the scan is `scanLoop` of the model, with any fuel that
-covers the rest of the sequence. -/
+covers the rest of the sequence. The list holds the ids of the candidates
+walked so far, each once (they are items at earlier places of the sequence),
+and `cfrom` is where the candidates since the last taken one begin. -/
 theorem find_conflict_left_loop_spec (s : yata_store.YataStoreCore) (id : yata_store.IdCore)
     (ol or_ : Option yata_store.IdCore) (right conflict left : Option Std.U32)
-    (conflicting before : alloc.vec.Vec yata_store.IdCore) (h : Inv s)
+    (ord : id_order.IdOrderCore) (cfrom : Std.Usize) (h : Inv s)
     (k : Nat) (B C : List YoctoSpec.Id) (fuel : Nat)
     (hk : k ≤ (order (toM s)).length) (hcur : toSlot conflict = (order (toM s))[k]?)
-    (hB : ∀ z, z ∈ B ↔ z ∈ before.val.map toId)
-    (hC : ∀ z, z ∈ C ↔ z ∈ conflicting.val.map toId)
-    (hbl : before.val.length ≤ k) (hcl : conflicting.val.length ≤ k)
+    (hw : IdOrder.WF ord) (hcf : cfrom.val ≤ ord.ids.val.length)
+    (hlen : ord.ids.val.length ≤ k) (hnd : ord.ids.val.Nodup)
+    (hids : ∀ x, x ∈ ord.ids.val → ∃ (j slot : Nat) (item : yata_store.ItemCore), j < k ∧
+      (order (toM s))[j]? = some slot ∧ s.items.val[slot]? = some item ∧ item.id = x)
+    (hB : ∀ z, z ∈ B ↔ z ∈ orderIds ord)
+    (hC : ∀ z, z ∈ C ↔ z ∈ conflictIds ord cfrom.val)
     (hfuel : (order (toM s)).length - k ≤ fuel) :
-    yata_store.YataStoreCore.find_conflict_left_loop conflict s id ol or_ right left conflicting
-        before ⦃ r =>
-      toSlot r = scanLoop (toM s).items (ownerM (toM s)) (toId id) (ol.map toId) (or_.map toId)
-        (toSlot right) fuel (toSlot left) (toSlot conflict) B C ⦄ := by
+    yata_store.YataStoreCore.find_conflict_left_loop conflict s.items s.start s.clients s.k0
+        s.k1 id ol or_ right left ord cfrom ⦃ r =>
+      ScanPost s (scanLoop (toM s).items (ownerM (toM s)) (toId id) (ol.map toId)
+        (or_.map toId) (toSlot right) fuel (toSlot left) (toSlot conflict) B C) r ⦄ := by
   obtain ⟨R, hR⟩ : ∃ R, scanLoop (toM s).items (ownerM (toM s)) (toId id) (ol.map toId)
       (or_.map toId) (toSlot right) fuel (toSlot left) (toSlot conflict) B C = R := ⟨_, rfl⟩
   rw [hR]
   unfold yata_store.YataStoreCore.find_conflict_left_loop
   refine loop.spec_decr_nat
-    (fun ((_, _, _, bv) : Option Std.U32 × Option Std.U32 × alloc.vec.Vec yata_store.IdCore ×
-      alloc.vec.Vec yata_store.IdCore) => Std.Usize.max - bv.val.length)
-    (fun ((cf, lf, cv, bv) : Option Std.U32 × Option Std.U32 ×
-      alloc.vec.Vec yata_store.IdCore × alloc.vec.Vec yata_store.IdCore) =>
+    (fun ((cf, _, _, _) : Option Std.U32 × Option Std.U32 × id_order.IdOrderCore ×
+      Std.Usize) => restOf (order (toM s)) cf)
+    (fun ((cf, lf, ov, cv) : Option Std.U32 × Option Std.U32 × id_order.IdOrderCore ×
+      Std.Usize) =>
       ∃ (k' : Nat) (B' C' : List YoctoSpec.Id) (fuel' : Nat),
         k' ≤ (order (toM s)).length ∧ toSlot cf = (order (toM s))[k']? ∧
-        (∀ z, z ∈ B' ↔ z ∈ bv.val.map toId) ∧ (∀ z, z ∈ C' ↔ z ∈ cv.val.map toId) ∧
-        bv.val.length ≤ k' ∧ cv.val.length ≤ k' ∧ (order (toM s)).length - k' ≤ fuel' ∧
+        IdOrder.WF ov ∧ cv.val ≤ ov.ids.val.length ∧ ov.ids.val.length ≤ k' ∧
+        ov.ids.val.Nodup ∧
+        (∀ x, x ∈ ov.ids.val → ∃ (j slot : Nat) (item : yata_store.ItemCore), j < k' ∧
+          (order (toM s))[j]? = some slot ∧ s.items.val[slot]? = some item ∧ item.id = x) ∧
+        (∀ z, z ∈ B' ↔ z ∈ orderIds ov) ∧ (∀ z, z ∈ C' ↔ z ∈ conflictIds ov cv.val) ∧
+        (order (toM s)).length - k' ≤ fuel' ∧
         scanLoop (toM s).items (ownerM (toM s)) (toId id) (ol.map toId) (or_.map toId)
           (toSlot right) fuel' (toSlot lf) (toSlot cf) B' C' = R)
-    (fun (r : Option Std.U32) => toSlot r = R)
-    _ (conflict, left, conflicting, before) ?_ ⟨k, B, C, fuel, hk, hcur, hB, hC, hbl, hcl, hfuel, hR⟩
-  intro ⟨cf, lf, cv, bv⟩ ⟨k', B', C', fuel', hk', hcur', hB', hC', hbl', hcl', hfuel', hinv⟩
+    (fun (r : core.result.Result (Option Std.U32) client_blocks.StoreError) => ScanPost s R r)
+    _ (conflict, left, ord, cfrom) ?_
+    ⟨k, B, C, fuel, hk, hcur, hw, hcf, hlen, hnd, hids, hB, hC, hfuel, hR⟩
+  intro ⟨cf, lf, ov, cv⟩ ⟨k', B', C', fuel', hk', hcur', hw', hcf', hlen', hnd', hids', hB', hC',
+    hfuel', hinv⟩
   unfold yata_store.YataStoreCore.find_conflict_left_loop.body
   simp only
+  have answer : ∀ o : Option Std.U32, toSlot o = R →
+      ScanPost s R (core.result.Result.Ok o) := by
+    intro o ho
+    refine ⟨fun o' e => ?_, fun _ => ⟨o, rfl⟩⟩
+    cases e
+    exact ho
   cases cf with
   | none =>
     simp only [spec_ok]
+    refine answer lf ?_
     rw [← hinv]
     exact (scanLoop_stop _ _ _ _ _ _ _ _ _ _ _ (Or.inl rfl)).symm
   | some current =>
@@ -1098,6 +1456,7 @@ theorem find_conflict_left_loop_spec (s : yata_store.YataStoreCore) (id : yata_s
     step as ⟨b, hb⟩
     by_cases hbt : b = true
     · simp only [hbt, ↓reduceIte, spec_ok]
+      refine answer lf ?_
       rw [← hinv]
       exact (scanLoop_stop _ _ _ _ _ _ _ _ _ _ _ (Or.inr (hb.mp hbt))).symm
     · simp only [hbt, Bool.false_eq_true, ↓reduceIte]
@@ -1108,69 +1467,104 @@ theorem find_conflict_left_loop_spec (s : yata_store.YataStoreCore) (id : yata_s
       step as ⟨cand, hcand⟩
       have hit := get?_of_getElem hilt hcand
       rw [hiv] at hit
-      have hbv : bv.val.length < Std.Usize.max := by scalar_tac
-      have hcv : cv.val.length < Std.Usize.max := by scalar_tac
-      step as ⟨bv1, hbv1⟩
-      step as ⟨cv1, hcv1⟩
-      have hB1 := mem_push_ids hB' hbv1
-      have hC1 := mem_push_ids hC' hcv1
-      have hd1 : (alloc.vec.Vec.deref bv1).val = bv1.val := by
-        simp [alloc.vec.Vec.deref]
-      have hd2 : (alloc.vec.Vec.deref cv1).val = cv1.val := by
-        simp [alloc.vec.Vec.deref]
-      step with scan_step_spec s id ol or_ cand (alloc.vec.Vec.deref bv1)
-        (alloc.vec.Vec.deref cv1) h as ⟨ss, hss⟩
-      rw [hd1, hd2] at hss
-      have hstep : toStep ss = scanStep (ownerM (toM s)) (toId id) (ol.map toId) (or_.map toId)
-          (toItem cand) (toId cand.id :: B') (toId cand.id :: C') := by
-        rw [hss]
-        exact (scanStep_congr hB1 hC1).symm
-      obtain ⟨fuel'', hfe⟩ : ∃ f'' : Nat, fuel' = f'' + 1 := ⟨fuel' - 1, by omega⟩
-      have hinv' : (match toStep ss with
-          | MStep.stop => toSlot lf
-          | MStep.skip =>
-            scanLoop (toM s).items (ownerM (toM s)) (toId id) (ol.map toId) (or_.map toId)
-              (toSlot right) fuel'' (toSlot lf) (toSlot cand.right) (toId cand.id :: B')
-              (toId cand.id :: C')
-          | MStep.take =>
-            scanLoop (toM s).items (ownerM (toM s)) (toId id) (ol.map toId) (or_.map toId)
-              (toSlot right) fuel'' (some current.val) (toSlot cand.right) (toId cand.id :: B')
-              []) = R := by
-        rw [← hinv, hfe]
-        show _ = scanLoop (toM s).items (ownerM (toM s)) (toId id) (ol.map toId) (or_.map toId)
-          (toSlot right) (fuel'' + 1) (toSlot lf) (some current.val) B' C'
-        rw [scanLoop_succ, itemAt_toM hit, hstep]
-        simp only [hne, ↓reduceIte]
-        rfl
-      have hnext : toSlot cand.right = (order (toM s))[k' + 1]? := by
-        rw [← rightOf_toM hit]
-        exact h.chain.right k' _ hcur''
-      have hbl1 : bv1.val.length ≤ k' + 1 := by
-        rw [hbv1, List.length_append, List.length_singleton]
-        omega
-      have hmeas : Std.Usize.max - bv1.val.length < Std.Usize.max - bv.val.length := by
-        rw [hbv1, List.length_append, List.length_singleton]
-        omega
-      cases ss with
-      | Stop =>
-        simp only [spec_ok]
-        exact hinv'
-      | Skip =>
-        simp only [spec_ok]
-        have hcl1 : cv1.val.length ≤ k' + 1 := by
-          rw [hcv1, List.length_append, List.length_singleton]
+      step with IdOrder.push_spec ov cand.id hw' as ⟨b1, ov1, hpush⟩
+      have hP : IdOrder.PushPost ov cand.id b1 ov1 := hpush
+      by_cases hb1t : b1 = true
+      · simp only [hb1t, ↓reduceIte]
+        have hadd : ov1.ids.val = ov.ids.val ++ [cand.id] := hP.added hb1t
+        -- the candidate is not in the list yet: the ids of the list are the
+        -- ones of items at earlier places of the sequence
+        have hfresh : ¬ cand.id ∈ ov.ids.val := by
+          intro hm
+          obtain ⟨j, slot, item, hj, hjo, hjit, hjid⟩ := hids' cand.id hm
+          have e : j = k' := id_pos_unique h hjo hcur'' hjit hit hjid
           omega
-        exact ⟨⟨k' + 1, toId cand.id :: B', toId cand.id :: C', fuel'', by omega, hnext, hB1,
-          hC1, hbl1, hcl1, by omega, hinv'⟩, hmeas⟩
-      | Take =>
-        simp only [spec_ok]
-        refine ⟨⟨k' + 1, toId cand.id :: B', [], fuel'', by omega, hnext, hB1, ?_, hbl1, ?_,
-          by omega, hinv'⟩, hmeas⟩
-        · intro z
-          simp
-        · simp
+        have hnd1 : ov1.ids.val.Nodup := by
+          rw [hadd, ← insAt_length]
+          exact nodup_insAt hnd' hfresh
+        have hlen1 : ov1.ids.val.length = ov.ids.val.length + 1 := by
+          rw [hadd, List.length_append, List.length_singleton]
+        have hids1 : ∀ x, x ∈ ov1.ids.val → ∃ (j slot : Nat) (item : yata_store.ItemCore),
+            j < k' + 1 ∧ (order (toM s))[j]? = some slot ∧ s.items.val[slot]? = some item ∧
+              item.id = x := by
+          intro x hx
+          rw [hadd, List.mem_append] at hx
+          rcases hx with hx | hx
+          · obtain ⟨j, slot, item, hj, hjo, hjit, hjid⟩ := hids' x hx
+            exact ⟨j, slot, item, by omega, hjo, hjit, hjid⟩
+          · have ex : x = cand.id := List.mem_singleton.mp hx
+            exact ⟨k', current.val, cand, Nat.lt_succ_self k', hcur'', hit, ex.symm⟩
+        have hB1 := mem_push_order hB' hadd
+        have hC1 := mem_push_conflict hC' hadd hcf'
+        step with scan_step_spec s id ol or_ cand ov1 cv h hP.wf hnd1 as ⟨ss, ov2, hss, hw2, hids2⟩
+        have hstep : toStep ss = scanStep (ownerM (toM s)) (toId id) (ol.map toId)
+            (or_.map toId) (toItem cand) (toId cand.id :: B') (toId cand.id :: C') := by
+          rw [hss]
+          exact (scanStep_congr hB1 hC1).symm
+        obtain ⟨fuel'', hfe⟩ : ∃ f'' : Nat, fuel' = f'' + 1 := ⟨fuel' - 1, by omega⟩
+        have hinv' : (match toStep ss with
+            | MStep.stop => toSlot lf
+            | MStep.skip =>
+              scanLoop (toM s).items (ownerM (toM s)) (toId id) (ol.map toId) (or_.map toId)
+                (toSlot right) fuel'' (toSlot lf) (toSlot cand.right) (toId cand.id :: B')
+                (toId cand.id :: C')
+            | MStep.take =>
+              scanLoop (toM s).items (ownerM (toM s)) (toId id) (ol.map toId) (or_.map toId)
+                (toSlot right) fuel'' (some current.val) (toSlot cand.right)
+                (toId cand.id :: B') []) = R := by
+          rw [← hinv, hfe]
+          show _ = scanLoop (toM s).items (ownerM (toM s)) (toId id) (ol.map toId)
+            (or_.map toId) (toSlot right) (fuel'' + 1) (toSlot lf) (some current.val) B' C'
+          rw [scanLoop_succ, itemAt_toM hit, hstep]
+          simp only [hne, ↓reduceIte]
+          rfl
+        have hnext : toSlot cand.right = (order (toM s))[k' + 1]? := by
+          rw [← rightOf_toM hit]
+          exact h.chain.right k' _ hcur''
+        have hmeas : restOf (order (toM s)) cand.right <
+            restOf (order (toM s)) (some current) := restOf_next h hcur'' hit
+        -- the list after the step: the same ids
+        have hnd2 : ov2.ids.val.Nodup := by
+          rw [hids2]
+          exact hnd1
+        have hlen2 : ov2.ids.val.length = ov.ids.val.length + 1 := by
+          rw [hids2]
+          exact hlen1
+        have hids2' : ∀ x, x ∈ ov2.ids.val → ∃ (j slot : Nat) (item : yata_store.ItemCore),
+            j < k' + 1 ∧ (order (toM s))[j]? = some slot ∧ s.items.val[slot]? = some item ∧
+              item.id = x := by
+          rw [hids2]
+          exact hids1
+        have hB2 : ∀ z, z ∈ toId cand.id :: B' ↔ z ∈ orderIds ov2 := by
+          unfold orderIds
+          rw [hids2]
+          exact hB1
+        cases ss with
+        | Stop =>
+          simp only [spec_ok]
+          exact answer lf hinv'
+        | Skip =>
+          simp only [spec_ok]
+          have hC2 : ∀ z, z ∈ toId cand.id :: C' ↔ z ∈ conflictIds ov2 cv.val := by
+            unfold conflictIds
+            rw [hids2]
+            exact hC1
+          exact ⟨⟨k' + 1, toId cand.id :: B', toId cand.id :: C', fuel'', by omega, hnext, hw2,
+            by omega, by omega, hnd2, hids2', hB2, hC2, by omega, hinv'⟩, hmeas⟩
+        | Take =>
+          simp only []
+          step as ⟨n, hn⟩
+          have hnv : n.val = ov2.ids.val.length := hn
+          have hC2 : ∀ z, z ∈ ([] : List YoctoSpec.Id) ↔ z ∈ conflictIds ov2 n.val :=
+            conflictIds_end (by omega)
+          exact ⟨⟨k' + 1, toId cand.id :: B', [], fuel'', by omega, hnext, hw2, by omega,
+            by omega, hnd2, hids2', hB2, hC2, by omega, hinv'⟩, hmeas⟩
+      · simp only [hb1t, Bool.false_eq_true, ↓reduceIte, spec_ok]
+        refine ⟨(fun o e => nomatch e), fun hsmall => ?_⟩
+        exact absurd (hP.accepts (by omega)) hb1t
 
-/-- Whether the scan has to look at anything: `needsScan` of the model. -/
+/-- Whether the scan has to look at anything: `needsScan` of the model, by
+`needs_conflict_scan`, the decision `DocStore::integrate_item` takes. -/
 theorem needs_scan_spec (s : yata_store.YataStoreCore) (left right : Option Std.U32)
     (hl : ∀ i, left = some i → i.val < s.items.val.length)
     (hr : ∀ i, right = some i → i.val < s.items.val.length) :
@@ -1179,8 +1573,14 @@ theorem needs_scan_spec (s : yata_store.YataStoreCore) (left right : Option Std.
   unfold yata_store.YataStoreCore.needs_scan
   cases left with
   | none =>
+    simp only []
     cases right with
-    | none => simp [spec_ok, needsScan, toSlot]
+    | none =>
+      simp only [bind_ok]
+      refine spec_mono (DocKernel.needs_conflict_scan_spec false none none none) ?_
+      intro b hb
+      rw [hb]
+      rfl
     | some idx =>
       have hlt := hr idx rfl
       simp only []
@@ -1191,17 +1591,12 @@ theorem needs_scan_spec (s : yata_store.YataStoreCore) (left right : Option Std.
       have hit := get?_of_getElem hilt hic
       rw [hiv] at hit
       have hlo := leftOf_toM hit
-      cases hleft : ic.left with
-      | none =>
-        simp only [spec_ok]
-        show false = (leftOf (toM s).items idx.val).isSome
-        rw [hlo, hleft]
-        rfl
-      | some j =>
-        simp only [spec_ok]
-        show true = (leftOf (toM s).items idx.val).isSome
-        rw [hlo, hleft]
-        rfl
+      refine spec_mono (DocKernel.needs_conflict_scan_spec false none (some idx) ic.left) ?_
+      intro b hb
+      rw [hb]
+      show ic.left.isSome = (leftOf (toM s).items idx.val).isSome
+      rw [hlo]
+      cases ic.left <;> rfl
   | some idx =>
     have hlt := hl idx rfl
     simp only []
@@ -1212,17 +1607,15 @@ theorem needs_scan_spec (s : yata_store.YataStoreCore) (left right : Option Std.
     have hit := get?_of_getElem hilt hic
     rw [hiv] at hit
     have hro := rightOf_toM hit
-    step as ⟨b, hb⟩
-    show _ = decide (rightOf (toM s).items idx.val ≠ toSlot right)
+    refine spec_mono (DocKernel.needs_conflict_scan_spec true ic.right right none) ?_
+    intro b hb
+    rw [hb]
+    show decide (ic.right ≠ right) = decide (rightOf (toM s).items idx.val ≠ toSlot right)
     rw [hro]
-    by_cases e : toSlot ic.right = toSlot right
-    · have hbt : b = true := hb.mpr e
-      simp [hbt, e]
-    · have hbf : b = false := by
-        cases hbb : b with
-        | false => rfl
-        | true => exact absurd (hb.mp hbb) e
-      simp [hbf, e]
+    by_cases e : ic.right = right
+    · simp [e]
+    · have e' : ¬ toSlot ic.right = toSlot right := fun hh => e (toSlot_inj.mp hh)
+      simp [e, e']
 
 /-- The left neighbour `integrate` links after: `scanM` of the model. -/
 theorem conflict_left_spec (s : yata_store.YataStoreCore) (id : yata_store.IdCore)
@@ -1230,8 +1623,8 @@ theorem conflict_left_spec (s : yata_store.YataStoreCore) (id : yata_store.IdCor
     (hk : k ≤ (order (toM s)).length) (hleft : toSlot left = prevAt (order (toM s)) k)
     (hrmem : ∀ r, toSlot right = some r → r ∈ order (toM s)) :
     yata_store.YataStoreCore.conflict_left s id ol or_ left right ⦃ r =>
-      toSlot r = scanM (toM s) (toId id) (ol.map toId) (or_.map toId) (toSlot left)
-        (toSlot right) ⦄ := by
+      ScanPost s (scanM (toM s) (toId id) (ol.map toId) (or_.map toId) (toSlot left)
+        (toSlot right)) r ⦄ := by
   unfold yata_store.YataStoreCore.conflict_left
   have hlb : ∀ i, left = some i → i.val < s.items.val.length := by
     intro i hi
@@ -1251,16 +1644,33 @@ theorem conflict_left_spec (s : yata_store.YataStoreCore) (id : yata_store.IdCor
       exact h.chain.nextOf_prevAt hk
     have hol := order_le_items h
     unfold yata_store.YataStoreCore.find_conflict_left
-    refine spec_mono (find_conflict_left_loop_spec s id ol or_ right o left
-      (alloc.vec.Vec.new yata_store.IdCore) (alloc.vec.Vec.new yata_store.IdCore) h k [] []
-      (toM s).items.length hk hcur (by intro z; simp) (by intro z; simp) (by simp) (by simp)
-      (by rw [toM_items_length]; omega)) ?_
-    intro r hr
-    rw [hr]
-    unfold scanM
-    rw [← hb, hbt, ← ho]
-    simp
+    step with IdOrder.with_key_spec s.k0 s.k1 as ⟨e, hew, hei, _, _, _⟩
+    have hscan : scanM (toM s) (toId id) (ol.map toId) (or_.map toId) (toSlot left)
+        (toSlot right) =
+        scanLoop (toM s).items (ownerM (toM s)) (toId id) (ol.map toId) (or_.map toId)
+          (toSlot right) (toM s).items.length (toSlot left) (toSlot o) [] [] := by
+      unfold scanM
+      rw [← hb, hbt, ← ho]
+      simp
+    rw [hscan]
+    have hnone : ∀ z, z ∈ ([] : List YoctoSpec.Id) ↔ z ∈ orderIds e := by
+      intro z
+      unfold orderIds
+      rw [hei]
+      exact Iff.rfl
+    have hzero : (0#usize : Std.Usize).val = 0 := rfl
+    exact find_conflict_left_loop_spec s id ol or_ right o left e 0#usize h k [] []
+      (toM s).items.length hk hcur hew (by rw [hzero]; exact Nat.zero_le _)
+      (by rw [hei]; exact Nat.zero_le _) (by rw [hei]; exact List.nodup_nil)
+      (by
+        intro x hx
+        rw [hei] at hx
+        cases hx)
+      hnone (conflictIds_end (by rw [hei, hzero]; exact Nat.le_refl _))
+      (by rw [toM_items_length]; omega)
   · simp only [hbt, Bool.false_eq_true, ↓reduceIte, spec_ok]
+    refine ⟨fun o e => ?_, fun _ => ⟨left, rfl⟩⟩
+    cases e
     unfold scanM
     rw [← hb]
     simp [hbt]
@@ -1310,17 +1720,46 @@ structure EnsurePost (s : yata_store.YataStoreCore) (client : Std.U64)
       (toM s').items = (toM s).items
   /-- it accepts while there is room for a timeline -/
   accepts : s.clients.val.length < 4294967295 → ∃ ci, r = core.result.Result.Ok ci
-  /-- the timeline it answers is one the store had, or a new empty one -/
+  /-- the timeline it answers is one the store had, or a new empty one, at
+  its place among the others -/
   fresh : ∀ ci c, r = core.result.Result.Ok ci → s'.clients.val[ci.val]? = some c →
-    s' = s ∨ (c.blocks.blocks.val = [] ∧ s'.clients.val = s.clients.val ++ [c])
+    s' = s ∨ ((blocksOf c.blocks) = [] ∧ s'.clients.val = insAt s.clients.val ci.val c)
 
-/-- `ensure_client` finds the timeline of a client, or adds an empty one. -/
+theorem clients_of_toM {s : yata_store.YataStoreCore} {ci : Nat} {mc : MClient}
+    (h : (toM s).clients[ci]? = some mc) :
+    ∃ c, s.clients.val[ci]? = some c ∧ toClient c = mc := by
+  rw [toM_clients_get?] at h
+  cases hc : s.clients.val[ci]? with
+  | none =>
+    rw [hc] at h
+    cases h
+  | some c =>
+    rw [hc] at h
+    exact ⟨c, rfl, Option.some.inj h⟩
+
+theorem toM_clients_length (s : yata_store.YataStoreCore) :
+    (toM s).clients.length = s.clients.val.length := by
+  simp [toM]
+
+/-- `ensure_client` finds the timeline of a client, or adds an empty one at
+its place among the others. -/
 theorem ensure_client_spec (s : yata_store.YataStoreCore) (client : Std.U64) (h : Inv s) :
     yata_store.YataStoreCore.ensure_client s client ⦃ r s' => EnsurePost s client r s' ⦄ := by
   unfold yata_store.YataStoreCore.ensure_client
-  step as ⟨o, ho⟩
-  rcases ho with ⟨rfl, hno⟩ | ⟨ci, c, rfl, hc, hcl⟩
-  · simp only []
+  step with find_client_spec s client as ⟨found, index, hf⟩
+  have hF : FindPost s.clients.val client found index := hf
+  by_cases hft : found = true
+  · simp only [hft, ↓reduceIte, spec_ok, uncurry'_pair]
+    obtain ⟨c, hc, hcl⟩ := hF.hit hft
+    refine ⟨(fun _ hh => nomatch hh), fun j hj => ?_, fun _ => ⟨_, rfl⟩,
+      fun _ _ _ _ => Or.inl rfl⟩
+    cases hj
+    exact ⟨c, hc, hcl, rfl, rfl, h, rfl, rfl⟩
+  · have hff : found = false := by
+      cases hb : found with
+      | false => rfl
+      | true => exact absurd hb hft
+    simp only [hft, Bool.false_eq_true, ↓reduceIte]
     by_cases hcap : alloc.vec.Vec.len s.clients >= yata_store.MAX_ITEMS
     · have hfull : ¬ s.clients.val.length < 4294967295 := by
         intro hlt
@@ -1334,41 +1773,76 @@ theorem ensure_client_spec (s : yata_store.YataStoreCore) (client : Std.U64) (h 
         simp [yata_store.MAX_ITEMS] at hcap
         scalar_tac
       step as ⟨cbc, hcbc1, hcbc2, hcbc3⟩
-      step as ⟨v, hv⟩
-      refine ⟨(fun _ hh => nomatch hh), fun ci hci => ?_, fun _ => ⟨_, rfl⟩,
-        fun ci c hci hc => ?_⟩
-      swap
-      · cases hci
-        right
-        have hc' : v.val[(alloc.vec.Vec.len s.clients).val]? = some c := hc
-        rw [hv] at hc'
-        simp at hc'
-        rw [← hc']
-        exact ⟨hcbc1, hv⟩
-      cases hci
-      have hm : toM ({ s with clients := v }) = pushClient (toM s) client.val := by
-        unfold toM pushClient
-        simp [hv, toClient, toBlocks, hcbc1, hcbc2]
-      have hnew : ∀ c : MClient, c ∈ (toM s).clients → c.client ≠ client.val := by
-        intro c' hc' e
-        obtain ⟨c0, hc0, rfl⟩ := List.mem_map.mp hc'
-        obtain ⟨j, hj⟩ := mem_get? hc0
-        exact hno j c0 hj (UScalar.eq_of_val_eq e)
-      obtain ⟨hw, ho⟩ := pushClient_spec h hnew
-      refine ⟨{ client := client, blocks := cbc }, ?_, rfl, rfl, rfl, ?_, ?_, rfl⟩
-      · show v.val[(alloc.vec.Vec.len s.clients).val]? = some _
-        rw [hv]
-        simp
-      · unfold Inv
-        rw [hm]
-        exact hw
-      · rw [hm]
-        exact ho
-  · simp only [spec_ok, uncurry'_pair]
-    refine ⟨(fun _ hh => nomatch hh), fun j hj => ?_, fun _ => ⟨_, rfl⟩,
-      fun _ _ _ _ => Or.inl rfl⟩
-    cases hj
-    exact ⟨c, hc, hcl, rfl, rfl, h, rfl, rfl⟩
+      have hs := clientsSorted_of_inv h
+      have hbound := hF.bound
+      have hcl0 : toClient ({ client := client, blocks := cbc } : yata_store.ClientEntryCore) =
+          ⟨client.val, [], 0⟩ := by
+        show (⟨client.val, toBlocks cbc, cbc.end_clock.val⟩ : MClient) = _
+        unfold toBlocks
+        rw [hcbc1, hcbc2]
+        rfl
+      -- the store with the new timeline at `index` is `insClient` of the model
+      have key : ∀ v : alloc.vec.Vec yata_store.ClientEntryCore,
+          v.val = insAt s.clients.val index.val
+            ({ client := client, blocks := cbc } : yata_store.ClientEntryCore) →
+          EnsurePost s client (core.result.Result.Ok index) ({ s with clients := v }) := by
+        intro v hv
+        have hm : toM ({ s with clients := v }) = insClient (toM s) index.val client.val := by
+          show (⟨s.items.val.map toItem, toSlot s.start, v.val.map toClient⟩ : MStore) =
+            ⟨s.items.val.map toItem, toSlot s.start,
+              insAt (s.clients.val.map toClient) index.val ⟨client.val, [], 0⟩⟩
+          rw [hv, map_insAt, hcl0]
+        have hlo : ∀ (j : Nat) (c : MClient), j < index.val → (toM s).clients[j]? = some c →
+            c.client < client.val := by
+          intro j c hj hc
+          obtain ⟨c0, hc0, e⟩ := clients_of_toM hc
+          rw [← e]
+          exact hF.below hff hs j c0 hj hc0
+        have hhi : ∀ (j : Nat) (c : MClient), index.val ≤ j → (toM s).clients[j]? = some c →
+            client.val < c.client := by
+          intro j c hj hc
+          obtain ⟨c0, hc0, e⟩ := clients_of_toM hc
+          rw [← e]
+          exact hF.above hff hs j c0 hj hc0
+        obtain ⟨hw, ho⟩ := insClient_spec h (by rw [toM_clients_length]; exact hbound) hlo hhi
+        refine ⟨(fun _ hh => nomatch hh), fun ci hci => ?_, fun _ => ⟨_, rfl⟩,
+          fun ci c hci hc => ?_⟩
+        · cases hci
+          refine ⟨{ client := client, blocks := cbc }, ?_, rfl, rfl, rfl, ?_, ?_, rfl⟩
+          · show v.val[index.val]? = some _
+            rw [hv]
+            exact get?_insAt_self _ _ hbound
+          · unfold Inv
+            rw [hm]
+            exact hw
+          · rw [hm]
+            exact ho
+        · cases hci
+          right
+          have hc' : v.val[index.val]? = some c := hc
+          rw [hv, get?_insAt_self _ _ hbound] at hc'
+          rw [← Option.some.inj hc']
+          exact ⟨hcbc1, hv⟩
+      by_cases hend : index = alloc.vec.Vec.len s.clients
+      · have hend' : (index = alloc.vec.Vec.len s.clients) = True := eq_true hend
+        simp only [hend', ↓reduceIte]
+        step as ⟨v, hv⟩
+        refine key v ?_
+        have hiv : index.val = s.clients.val.length := by
+          rw [hend]
+          simp
+        rw [hv, hiv, insAt_length]
+      · simp only [hend, ↓reduceIte]
+        have hilt : index.val < s.clients.val.length := by
+          have hne : index.val ≠ s.clients.val.length := by
+            intro e
+            apply hend
+            apply UScalar.eq_of_val_eq
+            simp [e]
+          omega
+        step as ⟨v, hv⟩
+        refine key v ?_
+        rw [hv, insertIdx_eq_insAt _ _ _ hbound]
 
 structure RepairPost (s : yata_store.YataStoreCore) (origin : Option yata_store.IdCore)
     (P : MStore → YoctoSpec.Id → MStore → Nat → Prop)
@@ -1508,7 +1982,7 @@ theorem toM_link {s1 : yata_store.YataStoreCore} {ci : Std.Usize}
     {cbc : client_blocks.ClientBlocksCore} {v : alloc.vec.Vec yata_store.ItemCore}
     (hc : s1.clients.val[ci.val]? = some c) (hidx : idx.val = s1.items.val.length)
     (hnext : toSlot next = nextOf (toM s1).items (toM s1).start (toSlot left))
-    (hbl : cbc.blocks.val = c.blocks.blocks.val ++
+    (hbl : (blocksOf cbc) = (blocksOf c.blocks) ++
       [({ clock := id.clock, kind := client_blocks.BlockKindCore.Item idx } :
         client_blocks.BlockRefCore)])
     (hend : cbc.end_clock.val = id.clock.val + len.val)
@@ -1542,11 +2016,13 @@ structure Room (s : yata_store.YataStoreCore) (id : yata_store.IdCore) (len : St
     Prop where
   pos : 0 < len.val
   fits : id.clock.val + len.val ≤ Std.U64.max
-  items : s.items.val.length + 3 < 4294967295
+  /-- room for the item and the two splits, and for the list of the scan
+  (`IdOrder.push_spec` accepts below `2 ^ 30` ids) -/
+  items : s.items.val.length + 3 < 1073741824
   clients : s.clients.val.length < 4294967295
   cont : ∀ c, c ∈ s.clients.val → c.client = id.client →
-    (c.blocks.blocks.val = [] ∨ id.clock = c.blocks.end_clock) ∧
-      c.blocks.blocks.val.length < 4294967295
+    ((blocksOf c.blocks) = [] ∨ id.clock = c.blocks.end_clock) ∧
+      (blocksOf c.blocks).length < 4294967295
 
 /-- A struct was accepted: the store has one more item, at most one more
 timeline, and every new or changed timeline is the one of the struct. -/
@@ -1617,8 +2093,8 @@ theorem link_spec (s : yata_store.YataStoreCore) (id : yata_store.IdCore) (len :
       obtain ⟨c, hc, hcl, hitems, hstart, hinv1, hord1, hmi⟩ := hens.done ci rfl
       have hfresh := hens.fresh ci c rfl hc
       have hroom : Room s id len →
-          (c.blocks.blocks.val = [] ∨ id.clock = c.blocks.end_clock) ∧
-            c.blocks.blocks.val.length < 4294967295 := by
+          ((blocksOf c.blocks) = [] ∨ id.clock = c.blocks.end_clock) ∧
+            (blocksOf c.blocks).length < 4294967295 := by
         intro hr
         rcases hfresh with e | ⟨he, _⟩
         · rw [e] at hc
@@ -1690,8 +2166,7 @@ theorem link_spec (s : yata_store.YataStoreCore) (id : yata_store.IdCore) (len :
             rcases hfresh with e | ⟨_, e⟩
             · rw [e]
               exact Nat.le_succ _
-            · rw [e, List.length_append]
-              exact Nat.le_refl _
+            · rw [e, length_insAt]
           · intro c' hc'
             rw [hcls] at hc'
             rcases List.mem_or_eq_of_mem_set hc' with hm | hm
@@ -1699,10 +2174,10 @@ theorem link_spec (s : yata_store.YataStoreCore) (id : yata_store.IdCore) (len :
               · rw [e] at hm
                 exact Or.inr hm
               · rw [e] at hm
-                rcases List.mem_append.mp hm with hm' | hm'
-                · exact Or.inr hm'
-                · rw [List.mem_singleton.mp hm']
+                rcases mem_insAt.mp hm with hm' | hm'
+                · rw [hm']
                   exact Or.inl hcl
+                · exact Or.inr hm'
             · rw [hm]
               exact Or.inl hcl
         cases hj
@@ -1885,42 +2360,51 @@ theorem integrate_spec (s : yata_store.YataStoreCore) (id : yata_store.IdCore) (
                 obtain ⟨k, hk, ek⟩ := prevAt_of_mem (toSlot left) hlmem
                 show spec (Bind.bind _ _) _
                 step with conflict_left_spec s2 id tl tr left right h2 hk ek hrmem
-                  as ⟨left1, hleft1⟩
-                obtain ⟨k', hk', ek'⟩ := scanM_pos h2 (toId id) (tl.map toId) (tr.map toId)
-                  (toSlot right) hlmem
-                refine spec_mono
-                  (link_spec s2 id len tl tr left1 h2 hk' (hleft1.trans ek')) ?_
-                rintro ⟨r5, s3⟩ hpost
-                have hpost' : LinkPost s2 id len tl tr left1 r5 s3 := hpost
-                show IntegratePost s id len tl tr r5 s3
-                refine ⟨?_, ?_, ?_⟩
-                · cases r5 with
-                  | Err e => exact (hpost'.err e rfl).1
-                  | Ok idx =>
+                  as ⟨rs, hscan⟩
+                have hS : ScanPost s2 (scanM (toM s2) (toId id) (tl.map toId) (tr.map toId)
+                    (toSlot left) (toSlot right)) rs := hscan
+                cases rs with
+                | Err e =>
+                  simp only [spec_ok, uncurry'_pair]
+                  exact ⟨h2, fun _ _ => hz2, (fun _ hh => nomatch hh)⟩
+                | Ok left1 =>
+                  have hleft1 := hS.found left1 rfl
+                  simp only []
+                  obtain ⟨k', hk', ek'⟩ := scanM_pos h2 (toId id) (tl.map toId) (tr.map toId)
+                    (toSlot right) hlmem
+                  refine spec_mono
+                    (link_spec s2 id len tl tr left1 h2 hk' (hleft1.trans ek')) ?_
+                  rintro ⟨r5, s3⟩ hpost
+                  have hpost' : LinkPost s2 id len tl tr left1 r5 s3 := hpost
+                  show IntegratePost s id len tl tr r5 s3
+                  refine ⟨?_, ?_, ?_⟩
+                  · cases r5 with
+                    | Err e => exact (hpost'.err e rfl).1
+                    | Ok idx =>
+                      obtain ⟨ci, c, m3, hw3, ho3, hi3, hc3, hcl3, hcont3, hlen3, hm⟩ :=
+                        hpost'.done idx rfl
+                      unfold Inv
+                      rw [hm, hleft1, ek', ← ho3]
+                      exact (linkNew_spec hw3 hc3 hcl3 hcont3 hlen3 rfl rfl
+                        (by rw [ho3]; exact hk')).1
+                  · intro e he
+                    subst he
+                    obtain ⟨_, ho, hi⟩ := hpost'.err e rfl
+                    obtain ⟨zs, hzs⟩ := hz2
+                    refine ⟨zs, fun f => ?_⟩
+                    rw [← hzs f]
+                    unfold abs blocks
+                    rw [ho, hi]
+                  · intro idx he
+                    subst he
+                    refine ⟨hpos, fun hsep f => ?_⟩
                     obtain ⟨ci, c, m3, hw3, ho3, hi3, hc3, hcl3, hcont3, hlen3, hm⟩ :=
                       hpost'.done idx rfl
-                    unfold Inv
-                    rw [hm, hleft1, ek', ← ho3]
-                    exact (linkNew_spec hw3 hc3 hcl3 hcont3 hlen3 rfl rfl
-                      (by rw [ho3]; exact hk')).1
-                · intro e he
-                  subst he
-                  obtain ⟨_, ho, hi⟩ := hpost'.err e rfl
-                  obtain ⟨zs, hzs⟩ := hz2
-                  refine ⟨zs, fun f => ?_⟩
-                  rw [← hzs f]
-                  unfold abs blocks
-                  rw [ho, hi]
-                · intro idx he
-                  subst he
-                  refine ⟨hpos, fun hsep f => ?_⟩
-                  obtain ⟨ci, c, m3, hw3, ho3, hi3, hc3, hcl3, hcont3, hlen3, hm⟩ :=
-                    hpost'.done idx rfl
-                  have key := (integrate_compose (x := newItem id len tl tr) h hlen3 rfl rfl hLm
-                    hRm hsep hw3 ho3 hi3 hc3 hcl3 hcont3).2 f
-                  unfold abs
-                  rw [hm, hleft1]
-                  exact key
+                    have key := (integrate_compose (x := newItem id len tl tr) h hlen3 rfl rfl hLm
+                      hRm hsep hw3 ho3 hi3 hc3 hcl3 hcont3).2 f
+                    unfold abs
+                    rw [hm, hleft1]
+                    exact key
 
 /-! ## `gc` -/
 
@@ -1957,7 +2441,7 @@ theorem gc_loop_spec (s0 s : yata_store.YataStoreCore) (i : Std.Usize)
     (hinv : i.val ≤ s0.items.val.length ∧ s.start = s0.start ∧ s.clients = s0.clients ∧
       s.items.val = (s0.items.val.take i.val).map collectC ++ s0.items.val.drop i.val) :
     yata_store.YataStoreCore.gc_loop s i ⦃ r =>
-      r.1.val = s0.items.val.map collectC ∧ r.2.1 = s0.start ∧ r.2.2 = s0.clients ⦄ := by
+      r.1.val = s0.items.val.map collectC ∧ r.2.1 = s0.start ∧ r.2.2.1 = s0.clients ⦄ := by
   unfold yata_store.YataStoreCore.gc_loop
   refine loop.spec_decr_nat
     (fun ((_, k) : yata_store.YataStoreCore × Std.Usize) => s0.items.val.length - k.val)
@@ -1965,8 +2449,8 @@ theorem gc_loop_spec (s0 s : yata_store.YataStoreCore) (i : Std.Usize)
       k.val ≤ s0.items.val.length ∧ t.start = s0.start ∧ t.clients = s0.clients ∧
         t.items.val = (s0.items.val.take k.val).map collectC ++ s0.items.val.drop k.val)
     (fun (r : alloc.vec.Vec yata_store.ItemCore × Option Std.U32 ×
-        alloc.vec.Vec yata_store.ClientEntryCore) =>
-      r.1.val = s0.items.val.map collectC ∧ r.2.1 = s0.start ∧ r.2.2 = s0.clients)
+        alloc.vec.Vec yata_store.ClientEntryCore × Std.U64 × Std.U64) =>
+      r.1.val = s0.items.val.map collectC ∧ r.2.1 = s0.start ∧ r.2.2.1 = s0.clients)
     _ (s, i) ?_ hinv
   intro ⟨t, k⟩ ⟨hk, hst, hcl, hit⟩
   unfold yata_store.YataStoreCore.gc_loop.body
@@ -2034,8 +2518,9 @@ theorem gc_spec (s : yata_store.YataStoreCore) (h : Inv s) :
         s.items.val.drop (0#usize).val := by
     refine ⟨by scalar_tac, rfl, rfl, ?_⟩
     simp
-  step with gc_loop_spec s s 0#usize hinit as ⟨v, o, v1, hr1, hr2, hr3⟩
-  have hm : toM { items := v, start := o, clients := v1 } = gcAll (toM s) := by
+  step with gc_loop_spec s s 0#usize hinit as ⟨v, o, v1, key0, key1, hr1, hr2, hr3⟩
+  have hm : toM { items := v, start := o, clients := v1, k0 := key0, k1 := key1 } =
+      gcAll (toM s) := by
     have e1 : v.val = s.items.val.map collectC := hr1
     have e2 : o = s.start := hr2
     have e3 : v1 = s.clients := hr3
@@ -2069,34 +2554,18 @@ theorem toKind_inj {a b : client_blocks.BlockKindCore} (h : toKind a = toKind b)
     | (have e := MKind.item.inj h; rw [UScalar.eq_of_val_eq e])
     | (have e := MKind.deleted.inj h; rw [UScalar.eq_of_val_eq e])
 
-theorem clients_of_toM {s : yata_store.YataStoreCore} {ci : Nat} {mc : MClient}
-    (h : (toM s).clients[ci]? = some mc) :
-    ∃ c, s.clients.val[ci]? = some c ∧ toClient c = mc := by
-  rw [toM_clients_get?] at h
-  cases hc : s.clients.val[ci]? with
-  | none =>
-    rw [hc] at h
-    cases h
-  | some c =>
-    rw [hc] at h
-    exact ⟨c, rfl, Option.some.inj h⟩
-
 theorem block_of_toClient {c : yata_store.ClientEntryCore} {p : Nat} {mb : MBlock}
     (h : (toClient c).blocks[p]? = some mb) :
-    ∃ b, c.blocks.blocks.val[p]? = some b ∧ toBlock b = mb := by
+    ∃ b, (blocksOf c.blocks)[p]? = some b ∧ toBlock b = mb := by
   have h' : (toBlocks c.blocks)[p]? = some mb := h
   rw [toBlocks_get?] at h'
-  cases hb : c.blocks.blocks.val[p]? with
+  cases hb : (blocksOf c.blocks)[p]? with
   | none =>
     rw [hb] at h'
     cases h'
   | some b =>
     rw [hb] at h'
     exact ⟨b, rfl, Option.some.inj h'⟩
-
-theorem toM_clients_length (s : yata_store.YataStoreCore) :
-    (toM s).clients.length = s.clients.val.length := by
-  simp [toM]
 
 /-- What `split_inside` does: the store stands for the same document, and no
 live block of the timeline holds the clock after its first clock any more. -/
@@ -2256,9 +2725,9 @@ theorem split_inside_spec (s : yata_store.YataStoreCore) (ci : Std.Usize) (clock
 theorem toM_mark_deleted {s1 : yata_store.YataStoreCore} {ci pos i : Std.Usize}
     {c1 : yata_store.ClientEntryCore} {b1 : client_blocks.BlockRefCore} {idx : Std.U32}
     {ic : yata_store.ItemCore} {cbc : client_blocks.ClientBlocksCore}
-    (hc1 : s1.clients.val[ci.val]? = some c1) (hb1 : c1.blocks.blocks.val[pos.val]? = some b1)
+    (hc1 : s1.clients.val[ci.val]? = some c1) (hb1 : (blocksOf c1.blocks)[pos.val]? = some b1)
     (hit : s1.items.val[idx.val]? = some ic) (hi : i.val = idx.val)
-    (hbl : cbc.blocks.val = c1.blocks.blocks.val.set pos.val
+    (hbl : (blocksOf cbc) = (blocksOf c1.blocks).set pos.val
       ({ clock := b1.clock, kind := client_blocks.BlockKindCore.DeletedItem idx } :
         client_blocks.BlockRefCore))
     (hend : cbc.end_clock = c1.blocks.end_clock) :
@@ -2289,7 +2758,7 @@ structure DeleteBlockPost (s : yata_store.YataStoreCore) (ci pos : Std.Usize)
 
 theorem delete_block_spec (s : yata_store.YataStoreCore) (ci pos : Std.Usize) (h : Inv s)
     {c : yata_store.ClientEntryCore} {b : client_blocks.BlockRefCore}
-    (hc : s.clients.val[ci.val]? = some c) (hb : c.blocks.blocks.val[pos.val]? = some b) :
+    (hc : s.clients.val[ci.val]? = some c) (hb : (blocksOf c.blocks)[pos.val]? = some b) :
     yata_store.YataStoreCore.delete_block s ci pos ⦃ r s' =>
       DeleteBlockPost s ci pos b r s' ⦄ := by
   unfold yata_store.YataStoreCore.delete_block
@@ -2424,7 +2893,7 @@ theorem delete_range_loop_spec (m : MStore) (s : yata_store.YataStoreCore) (stop
     rw [hmc] at hc''
     rw [← Option.some.inj hc''] at hb'
     have h1 := get?_lt hb'
-    have h2 : (toClient c).blocks.length = c.blocks.blocks.val.length := toBlocks_length c.blocks
+    have h2 : (toClient c).blocks.length = (blocksOf c.blocks).length := toBlocks_length c.blocks
     omega
   · have hbm := toClient_block hb
     show (if b.clock >= stop then _ else _) ⦃ _ ⦄
@@ -2441,7 +2910,7 @@ theorem delete_range_loop_spec (m : MStore) (s : yata_store.YataStoreCore) (stop
     · simp only [hge, ↓reduceIte]
       have hinvt : Inv t := hmk'.wf
       have hkl := get?_lt hb
-      have hbnd := c.blocks.blocks.property
+      have hbnd := length_blocksOf_le c.blocks
       step with delete_block_spec t ci k hinvt hc hb as ⟨r, t1, hdb⟩
       have hr := hdb.ok
       have hpost := hdb.state
@@ -2516,7 +2985,7 @@ theorem delete_range_spec (s : yata_store.YataStoreCore) (client start stop : St
     rintro ⟨⟨c', p, b, ha⟩, _⟩
     obtain ⟨c0, hc0, e0⟩ := List.mem_map.mp ha.mem
     obtain ⟨j, hj⟩ := mem_get? hc0
-    apply hnone j c0 hj
+    apply hnone (clientsSorted_of_inv h) j c0 hj
     apply UScalar.eq_of_val_eq
     have e1 : c'.client = client.val := ha.client
     rw [← e0] at e1
@@ -2711,9 +3180,8 @@ theorem integrate_root_spec (s : yata_store.YataStoreCore) (id : yata_store.IdCo
   have hpos := hr.pos
   have hz : ¬ len = 0#u64 := by scalar_tac
   simp only [hz, ↓reduceIte]
-  have hco : yata_store.check_origin id none = ok (core.result.Result.Ok ()) := by
-    unfold yata_store.check_origin
-    rfl
+  have hco : doc_kernel.check_origin id none = ok (core.result.Result.Ok ()) :=
+    DocKernel.check_origin_none id
   simp only [hco]
   step with check_append_accepts s id len hr as ⟨r2, hr2⟩
   subst hr2
@@ -2747,7 +3215,13 @@ theorem integrate_root_spec (s : yata_store.YataStoreCore) (id : yata_store.IdCo
     rw [hnone] at hi
     cases hi
   step with conflict_left_spec s id none none none none h (Nat.zero_le _) rfl hlmem
-    as ⟨left1, hleft1⟩
+    as ⟨rs, hscan⟩
+  have hS : ScanPost s (scanM (toM s) (toId id) none none (toSlot (none : Option Std.U32))
+      (toSlot (none : Option Std.U32))) rs := hscan
+  obtain ⟨left1, hrs⟩ := hS.accepts (by have := hr.items; omega)
+  subst hrs
+  have hleft1 := hS.found left1 rfl
+  simp only []
   obtain ⟨k', hk', ek'⟩ := scanM_pos h (toId id) none none (toSlot (none : Option Std.U32)) hlmem
   refine spec_mono (link_spec s id len none none left1 h hk' (hleft1.trans ek')) ?_
   rintro ⟨r5, s3⟩ hpost

@@ -8,10 +8,19 @@
 //! content) and `visible_ids`. Content, parents, map keys, nested types and
 //! the pending queue stay in `y-octo`. A slot is never reused: a merged item
 //! leaves its slot behind, where `ItemSpace` of `y-octo` would recycle it.
+//!
+//! The conflict scan keeps the candidates it has walked in one list, as the
+//! scan of `y-octo` does (`IdOrderCore`, under the key the store was made
+//! with), and the decisions a root sequence shares with `DocStore` are the
+//! functions of `doc_kernel` both run.
 
 use alloc::vec::Vec;
 
-use crate::client_blocks::{BlockKindCore, BlockRefCore, ClientBlocksCore, MAX_BLOCKS, StoreError};
+use crate::{
+    client_blocks::{BlockKindCore, BlockRefCore, ClientBlocksCore, MAX_BLOCKS, StoreError},
+    doc_kernel::{MergeSide, can_merge_items, check_origin, needs_conflict_scan},
+    id_order::{IdOrderCore, Recent},
+};
 
 /// The arena never holds more items than a `u32` slot can name.
 pub const MAX_ITEMS: usize = 4_294_967_295;
@@ -40,25 +49,34 @@ pub struct ItemCore {
     pub gc: bool,
 }
 
-#[cfg_attr(not(aeneas_extract), derive(Clone, Debug, PartialEq, Eq))]
+#[cfg_attr(not(aeneas_extract), derive(Clone, Debug))]
 pub struct ClientEntryCore {
     pub client: u64,
     pub blocks: ClientBlocksCore,
 }
 
-#[cfg_attr(not(aeneas_extract), derive(Clone, Debug, PartialEq, Eq))]
+#[cfg_attr(not(aeneas_extract), derive(Clone, Debug))]
 pub struct YataStoreCore {
-    pub items: Vec<ItemCore>,
+    // The fields are private: a store is only ever what `new` and the
+    // functions below make of it, so the order of `clients` cannot be
+    // broken from outside. `items`, `start` and `clients` read them.
+    items: Vec<ItemCore>,
     /// the first item of the sequence
-    pub start: Option<u32>,
-    pub clients: Vec<ClientEntryCore>,
+    start: Option<u32>,
+    /// the timelines, by strictly increasing client
+    clients: Vec<ClientEntryCore>,
+    /// the key of the hash of a conflict scan (`IdOrderCore::with_key`)
+    k0: u64,
+    k1: u64,
 }
 
-fn id_eq(a: IdCore, b: IdCore) -> bool {
+#[inline]
+pub(crate) fn id_eq(a: IdCore, b: IdCore) -> bool {
     a.client == b.client && a.clock == b.clock
 }
 
-fn opt_id_eq(a: Option<IdCore>, b: Option<IdCore>) -> bool {
+#[inline]
+pub(crate) fn opt_id_eq(a: Option<IdCore>, b: Option<IdCore>) -> bool {
     match a {
         Some(x) => match b {
             Some(y) => id_eq(x, y),
@@ -71,7 +89,8 @@ fn opt_id_eq(a: Option<IdCore>, b: Option<IdCore>) -> bool {
     }
 }
 
-fn opt_slot_eq(a: Option<u32>, b: Option<u32>) -> bool {
+#[inline]
+pub(crate) fn opt_slot_eq(a: Option<u32>, b: Option<u32>) -> bool {
     match a {
         Some(x) => match b {
             Some(y) => x == y,
@@ -84,7 +103,8 @@ fn opt_slot_eq(a: Option<u32>, b: Option<u32>) -> bool {
     }
 }
 
-fn slot_is(a: Option<u32>, b: u32) -> bool {
+#[inline]
+pub(crate) fn slot_is(a: Option<u32>, b: u32) -> bool {
     match a {
         Some(x) => x == b,
         None => false,
@@ -95,51 +115,96 @@ fn slot_is(a: Option<u32>, b: u32) -> bool {
 /// goes on with the candidate as the new left neighbour.
 #[derive(Clone, Copy)]
 #[cfg_attr(not(aeneas_extract), derive(Debug, PartialEq, Eq))]
-enum ScanStep {
+pub enum ScanStep {
     Stop,
     Skip,
     Take,
 }
 
-/// An item cannot anchor to a struct of its client created at or after
-/// itself.
-fn check_origin(id: IdCore, origin: Option<IdCore>) -> Result<(), StoreError> {
-    match origin {
-        Some(origin) => {
-            if origin.client == id.client && origin.clock >= id.clock {
-                Err(StoreError::InvalidOrigin)
-            } else {
-                Ok(())
-            }
+/// What the origins and the clients of an item and of a candidate of its
+/// conflict scan decide: the step, or that the struct that holds the left
+/// origin of the candidate has to be looked up first.
+#[derive(Clone, Copy)]
+#[cfg_attr(not(aeneas_extract), derive(Debug, PartialEq, Eq))]
+pub enum ConflictDecision {
+    Step(ScanStep),
+    Owner(IdCore),
+}
+
+/// The first half of a step of `find_conflict_left` (the YATA rule), for an
+/// item of `this_client` with the two origins `origin_left`/`origin_right`
+/// and a candidate between them:
+///
+/// - the same left origin: the item goes right of a candidate of a smaller
+///   client (`Take`), stops before one with the same right origin (`Stop`) and
+///   goes on over any other (`Skip`);
+/// - another left origin: the scan ends at a candidate without one (`Stop`);
+///   with one, `decide_owner_step` decides once the caller knows where the
+///   struct that holds it is (`Owner`).
+///
+/// `y-octo` runs this function in `find_conflict_left`, and so does
+/// `YataStoreCore`, whose scan is proved to be the one of the model.
+#[inline]
+pub fn decide_conflict_step(
+    this_client: u64,
+    origin_left: Option<IdCore>,
+    origin_right: Option<IdCore>,
+    candidate_client: u64,
+    candidate_left: Option<IdCore>,
+    candidate_right: Option<IdCore>,
+) -> ConflictDecision {
+    if opt_id_eq(origin_left, candidate_left) {
+        if candidate_client < this_client {
+            ConflictDecision::Step(ScanStep::Take)
+        } else if opt_id_eq(origin_right, candidate_right) {
+            ConflictDecision::Step(ScanStep::Stop)
+        } else {
+            ConflictDecision::Step(ScanStep::Skip)
         }
-        None => Ok(()),
+    } else {
+        match candidate_left {
+            Some(origin) => ConflictDecision::Owner(origin),
+            None => ConflictDecision::Step(ScanStep::Stop),
+        }
+    }
+}
+
+/// The second half, for a candidate with another left origin: `in_before`
+/// says that the struct that holds this origin is one of the candidates the
+/// scan has seen, `in_conflicting` that it is one seen since the left
+/// neighbour last changed. The scan ends at an origin it has not seen
+/// (`Stop`), takes a candidate whose origin is left of the left neighbour
+/// (`Take`) and goes on over one whose origin is right of it (`Skip`).
+#[inline]
+pub fn decide_owner_step(in_before: bool, in_conflicting: bool) -> ScanStep {
+    if !in_before {
+        ScanStep::Stop
+    } else if !in_conflicting {
+        ScanStep::Take
+    } else {
+        ScanStep::Skip
+    }
+}
+
+/// What `can_merge_items` reads of an item.
+fn merge_side(item: ItemCore) -> MergeSide {
+    MergeSide {
+        id: item.id,
+        len: item.len,
+        origin_left: item.origin_left,
+        origin_right: item.origin_right,
+        left: item.left,
+        right: item.right,
     }
 }
 
 /// The conditions of `DocStore::merge_items`: `right` (slot `r`) follows
-/// `left` (slot `l`) in the sequence and continues it: its first clock is
-/// the next one, typed right after the last clock of `left`, with the same
-/// right origin, and both hold the same kind of content.
+/// `left` (slot `l`) in the sequence and continues it (`can_merge_items`:
+/// its first clock is the next one, typed right after the last clock of
+/// `left`, with the same right origin; the sequence is one list), and both
+/// hold the same kind of content.
 fn continues(left: ItemCore, l: u32, right: ItemCore, r: u32) -> bool {
-    if !slot_is(left.right, r) || !slot_is(right.left, l) {
-        return false;
-    }
-    let after_last = match right.origin_left {
-        Some(origin) => origin.client == left.id.client && origin.clock == left.id.clock + (left.len - 1),
-        None => false,
-    };
-    after_last && opt_id_eq(left.origin_right, right.origin_right) && left.gc == right.gc
-}
-
-fn ids_contain(ids: &[IdCore], id: IdCore) -> bool {
-    let mut i = 0usize;
-    while i < ids.len() {
-        if id_eq(ids[i], id) {
-            return true;
-        }
-        i += 1;
-    }
-    false
+    can_merge_items(merge_side(left), l, merge_side(right), r, true) && left.gc == right.gc
 }
 
 impl Default for YataStoreCore {
@@ -149,29 +214,68 @@ impl Default for YataStoreCore {
 }
 
 impl YataStoreCore {
+    /// The empty store. Its conflict scans hash under the key `(0, 0)`.
     pub fn new() -> Self {
+        Self::with_key(0, 0)
+    }
+
+    /// The empty store whose conflict scans hash under the key `(k0, k1)`:
+    /// two words the peers that choose the ids cannot know, so that the ids
+    /// they send cannot be chosen to share their probes. The key changes
+    /// where a scan looks an id up, never what it answers.
+    pub fn with_key(k0: u64, k1: u64) -> Self {
         Self {
             items: Vec::new(),
             start: None,
             clients: Vec::new(),
+            k0,
+            k1,
         }
     }
 
-    fn client_index(&self, client: u64) -> Option<usize> {
-        let mut i = 0usize;
-        while i < self.clients.len() {
-            if self.clients[i].client == client {
-                return Some(i);
+    /// The arena of the items; the links between them are indices into it.
+    pub fn items(&self) -> &[ItemCore] {
+        &self.items
+    }
+
+    /// The first item of the sequence.
+    pub fn start(&self) -> Option<u32> {
+        self.start
+    }
+
+    /// The timelines, by strictly increasing client.
+    pub fn clients(&self) -> &[ClientEntryCore] {
+        &self.clients
+    }
+
+    /// Binary search of the timelines: whether `client` has one, and where
+    /// it is, or where it goes.
+    fn find_client(&self, client: u64) -> (bool, usize) {
+        let mut low = 0usize;
+        let mut high = self.clients.len();
+        while low < high {
+            let mid = low + (high - low) / 2;
+            let at = self.clients[mid].client;
+            if at == client {
+                return (true, mid);
+            } else if at < client {
+                low = mid + 1;
+            } else {
+                high = mid;
             }
-            i += 1;
         }
-        None
+        (false, low)
+    }
+
+    fn client_index(&self, client: u64) -> Option<usize> {
+        let (found, index) = self.find_client(client);
+        if found { Some(index) } else { None }
     }
 
     /// `DocStore::get_state`: the next clock expected from `client`.
     pub fn get_state(&self, client: u64) -> u64 {
         match self.client_index(client) {
-            Some(ci) => self.clients[ci].blocks.end_clock,
+            Some(ci) => self.clients[ci].blocks.end_clock(),
             None => 0,
         }
     }
@@ -192,7 +296,7 @@ impl YataStoreCore {
         match self.locate(id) {
             Some((ci, pos)) => Some(IdCore {
                 client: id.client,
-                clock: self.clients[ci].blocks.blocks[pos].clock,
+                clock: self.clients[ci].blocks.block_at(pos).clock,
             }),
             None => None,
         }
@@ -220,7 +324,7 @@ impl YataStoreCore {
     /// `ci` keeps its first `diff` clocks (`0 < diff < len`); the rest is a
     /// new item right after it. Returns the slots of the two halves.
     fn split_node(&mut self, ci: usize, pos: usize, diff: u64) -> Result<(u32, u32), StoreError> {
-        let block = self.clients[ci].blocks.blocks[pos];
+        let block = self.clients[ci].blocks.block_at(pos);
         let left_idx = match block.kind.item() {
             Some(idx) => idx,
             None => return Err(StoreError::NotAnItem),
@@ -271,7 +375,7 @@ impl YataStoreCore {
             Some(found) => found,
             None => return Err(StoreError::MissingStruct),
         };
-        let block = self.clients[ci].blocks.blocks[pos];
+        let block = self.clients[ci].blocks.block_at(pos);
         let idx = match block.kind.item() {
             Some(idx) => idx,
             None => return Ok(None),
@@ -292,7 +396,7 @@ impl YataStoreCore {
             Some(found) => found,
             None => return Err(StoreError::MissingStruct),
         };
-        let block = self.clients[ci].blocks.blocks[pos];
+        let block = self.clients[ci].blocks.block_at(pos);
         let idx = match block.kind.item() {
             Some(idx) => idx,
             None => return Ok(None),
@@ -316,48 +420,55 @@ impl YataStoreCore {
         }
     }
 
-    /// One candidate of `find_conflict_left`, branch for branch. The two sets
-    /// hold struct starts and already include the candidate.
+    /// One candidate of `find_conflict_left`, branch for branch
+    /// (`decide_conflict_step`, `decide_owner_step`). `order` holds the
+    /// first ids of the candidates walked so far, the candidate among them
+    /// (what Yjs keeps as the set `itemsBeforeOrigin`); the ones from the
+    /// place `conflict_from` on came since the last candidate that was
+    /// taken (`conflictingItems`). As in `y-octo`, the struct an origin
+    /// points into is looked for among the last candidates first
+    /// (`IdOrderCore::recent`) and through the table of the list only when
+    /// it is not there (`IdOrderCore::position`).
     fn scan_step(
         &self,
         id: IdCore,
         origin_left: Option<IdCore>,
         origin_right: Option<IdCore>,
         candidate: ItemCore,
-        before_origin: &[IdCore],
-        conflicting: &[IdCore],
+        order: &mut IdOrderCore,
+        conflict_from: usize,
     ) -> ScanStep {
-        if opt_id_eq(origin_left, candidate.origin_left) {
-            if candidate.id.client < id.client {
-                ScanStep::Take
-            } else if opt_id_eq(origin_right, candidate.origin_right) {
-                ScanStep::Stop
-            } else {
-                ScanStep::Skip
-            }
-        } else {
-            let candidate_left = match candidate.origin_left {
-                Some(origin) => origin,
-                None => return ScanStep::Stop,
-            };
-            // origins can point inside a struct; the sets hold struct
-            // starts
-            let owner = match self.node_id(candidate_left) {
-                Some(owner) => owner,
-                None => return ScanStep::Stop,
-            };
-            if !ids_contain(before_origin, owner) {
-                ScanStep::Stop
-            } else if !ids_contain(conflicting, owner) {
-                ScanStep::Take
-            } else {
-                ScanStep::Skip
-            }
+        let candidate_left = match decide_conflict_step(
+            id.client,
+            origin_left,
+            origin_right,
+            candidate.id.client,
+            candidate.origin_left,
+            candidate.origin_right,
+        ) {
+            ConflictDecision::Step(step) => return step,
+            ConflictDecision::Owner(origin) => origin,
+        };
+        // origins can point inside a struct; the list holds struct starts
+        let owner = match self.node_id(candidate_left) {
+            Some(owner) => owner,
+            None => return ScanStep::Stop,
+        };
+        let found = match order.recent(owner) {
+            Recent::At(at) => Some(at),
+            Recent::Absent => None,
+            Recent::Far => order.position(owner),
+        };
+        match found {
+            Some(at) => decide_owner_step(true, at >= conflict_from),
+            None => decide_owner_step(false, false),
         }
     }
 
     /// `find_conflict_left` of `y-octo/src/doc/common/algorithm.rs`:
     /// `conflict` is the first candidate, `left` the neighbour found so far.
+    /// It fails only when the list of the candidates cannot grow
+    /// (`IdOrderCore::push`, past `2 ^ 30` of them).
     fn find_conflict_left(
         &self,
         id: IdCore,
@@ -366,29 +477,31 @@ impl YataStoreCore {
         left: Option<u32>,
         conflict: Option<u32>,
         right: Option<u32>,
-    ) -> Option<u32> {
+    ) -> Result<Option<u32>, StoreError> {
         let mut left = left;
         let mut conflict = conflict;
-        let mut conflicting: Vec<IdCore> = Vec::new();
-        let mut before_origin: Vec<IdCore> = Vec::new();
+        let mut order = IdOrderCore::with_key(self.k0, self.k1);
+        let mut conflict_from = 0usize;
         while let Some(current) = conflict {
             if slot_is(right, current) {
                 break;
             }
             let candidate = self.items[current as usize];
-            before_origin.push(candidate.id);
-            conflicting.push(candidate.id);
-            match self.scan_step(id, origin_left, origin_right, candidate, &before_origin, &conflicting) {
+            if !order.push(candidate.id) {
+                return Err(StoreError::Capacity);
+            }
+            match self.scan_step(id, origin_left, origin_right, candidate, &mut order, conflict_from) {
                 ScanStep::Stop => break,
                 ScanStep::Take => {
                     left = Some(current);
-                    conflicting = Vec::new();
+                    // nothing conflicts with what comes after it yet
+                    conflict_from = order.len();
                 }
                 ScanStep::Skip => {}
             }
             conflict = candidate.right;
         }
-        left
+        Ok(left)
     }
 
     /// `DocStore::check_append`: the struct continues the timeline of its
@@ -407,22 +520,28 @@ impl YataStoreCore {
         Ok(())
     }
 
-    /// The timeline of `client`, created empty when it has none yet.
+    /// The timeline of `client`, created empty at its place among the
+    /// others when it has none yet.
     fn ensure_client(&mut self, client: u64) -> Result<usize, StoreError> {
-        match self.client_index(client) {
-            Some(ci) => Ok(ci),
-            None => {
-                if self.clients.len() >= MAX_ITEMS {
-                    return Err(StoreError::Capacity);
-                }
-                let ci = self.clients.len();
-                self.clients.push(ClientEntryCore {
-                    client,
-                    blocks: ClientBlocksCore::new(),
-                });
-                Ok(ci)
-            }
+        let (found, index) = self.find_client(client);
+        if found {
+            return Ok(index);
         }
+        if self.clients.len() >= MAX_ITEMS {
+            return Err(StoreError::Capacity);
+        }
+        let entry = ClientEntryCore {
+            client,
+            blocks: ClientBlocksCore::new(),
+        };
+        // `Vec::insert` at the end is `push` (Aeneas models `insert` below
+        // the length only)
+        if index == self.clients.len() {
+            self.clients.push(entry);
+        } else {
+            self.clients.insert(index, entry);
+        }
+        Ok(index)
     }
 
     /// `DocStore::repair`, left origin: a struct ends at the origin. Returns
@@ -467,19 +586,19 @@ impl YataStoreCore {
         }
     }
 
-    /// Whether other items may sit between `left` and `right`: unless
-    /// `right` follows `left` directly, or is the first item when there is
-    /// no `left`.
+    /// Whether other items may sit between `left` and `right`
+    /// (`needs_conflict_scan`): unless `right` follows `left` directly, or
+    /// is the first item when there is no `left`.
     fn needs_scan(&self, left: Option<u32>, right: Option<u32>) -> bool {
         match left {
-            Some(idx) => !opt_slot_eq(self.items[idx as usize].right, right),
-            None => match right {
-                Some(idx) => match self.items[idx as usize].left {
-                    Some(_) => true,
-                    None => false,
-                },
-                None => true,
-            },
+            Some(idx) => needs_conflict_scan(true, self.items[idx as usize].right, right, None),
+            None => {
+                let right_left = match right {
+                    Some(idx) => self.items[idx as usize].left,
+                    None => None,
+                };
+                needs_conflict_scan(false, None, right, right_left)
+            }
         }
     }
 
@@ -492,11 +611,11 @@ impl YataStoreCore {
         origin_right: Option<IdCore>,
         left: Option<u32>,
         right: Option<u32>,
-    ) -> Option<u32> {
+    ) -> Result<Option<u32>, StoreError> {
         if self.needs_scan(left, right) {
             self.find_conflict_left(id, origin_left, origin_right, left, self.next_of(left), right)
         } else {
-            left
+            Ok(left)
         }
     }
 
@@ -580,7 +699,10 @@ impl YataStoreCore {
             Ok(found) => found,
             Err(error) => return Err(error),
         };
-        let left = self.conflict_left(id, this_left, this_right, left, right);
+        let left = match self.conflict_left(id, this_left, this_right, left, right) {
+            Ok(left) => left,
+            Err(error) => return Err(error),
+        };
         self.link(id, len, this_left, this_right, left)
     }
 
@@ -597,8 +719,8 @@ impl YataStoreCore {
         if next_pos >= self.clients[ci].blocks.len() {
             return Ok(false);
         }
-        let left_kind = self.clients[ci].blocks.blocks[pos].kind;
-        let right_kind = self.clients[ci].blocks.blocks[next_pos].kind;
+        let left_kind = self.clients[ci].blocks.block_at(pos).kind;
+        let right_kind = self.clients[ci].blocks.block_at(next_pos).kind;
         if !left_kind.same_kind(right_kind) {
             return Ok(false);
         }
@@ -632,8 +754,9 @@ impl YataStoreCore {
             Some(pos) => pos,
             None => return Ok(()),
         };
-        let start = self.clients[ci].blocks.blocks[pos].clock;
-        let live = match self.clients[ci].blocks.blocks[pos].kind {
+        let start = self.clients[ci].blocks.block_at(pos).clock;
+        let kind = self.clients[ci].blocks.block_at(pos).kind;
+        let live = match kind {
             BlockKindCore::Item(_) => true,
             BlockKindCore::DeletedItem(_) => false,
             BlockKindCore::Gc => false,
@@ -651,7 +774,8 @@ impl YataStoreCore {
 
     /// Deletes the block `pos` of the timeline `ci` when it is a live item.
     fn delete_block(&mut self, ci: usize, pos: usize) -> Result<(), StoreError> {
-        let slot = match self.clients[ci].blocks.blocks[pos].kind {
+        let block = self.clients[ci].blocks.block_at(pos);
+        let slot = match block.kind {
             BlockKindCore::Item(idx) => Some(idx),
             BlockKindCore::DeletedItem(_) => None,
             BlockKindCore::Gc => None,
@@ -777,11 +901,16 @@ mod tests {
         out
     }
 
-    /// The timelines agree with the items they name.
+    /// The timelines agree with the items they name, and are sorted by
+    /// client.
     fn check(store: &YataStoreCore) {
         let mut linked = sequence(store).len();
+        for pair in store.clients.windows(2) {
+            assert!(pair[0].client < pair[1].client, "timelines by increasing client");
+        }
         for entry in &store.clients {
-            for (pos, block) in entry.blocks.blocks.iter().enumerate() {
+            for pos in 0..entry.blocks.len() {
+                let block = entry.blocks.get(pos).unwrap();
                 let (start, end) = entry.blocks.range(pos).unwrap();
                 assert!(start < end);
                 let idx = block.kind.item().expect("the sequence holds items only");
@@ -811,6 +940,343 @@ mod tests {
                 [(id(1, 0), 2, false), (id(2, 0), 2, false), (id(3, 0), 2, false)]
             );
         }
+    }
+
+    #[test]
+    fn timelines_are_found_by_binary_search_whatever_the_order_of_arrival() {
+        // clients arrive in an order that inserts at the start, in the middle
+        // and at the end of the sorted timelines
+        let arrivals: [u64; 9] = [50, 10, 90, 30, 70, 20, 80, 0, u64::MAX];
+        let mut store = YataStoreCore::new();
+        assert_eq!(store.find_client(7), (false, 0));
+        for (seen, client) in arrivals.into_iter().enumerate() {
+            assert_eq!(store.client_index(client), None);
+            assert_eq!(store.get_state(client), 0);
+            store.integrate(id(client, 0), 3, None, None).unwrap();
+            check(&store);
+            assert_eq!(store.clients.len(), seen + 1);
+            assert_eq!(store.get_state(client), 3);
+        }
+        let sorted: Vec<u64> = store.clients.iter().map(|entry| entry.client).collect();
+        assert_eq!(sorted, [0, 10, 20, 30, 50, 70, 80, 90, u64::MAX]);
+        for (index, client) in sorted.iter().enumerate() {
+            assert_eq!(store.find_client(*client), (true, index));
+            assert_eq!(store.client_index(*client), Some(index));
+        }
+        // a client the store does not know: where its timeline would go
+        assert_eq!(store.find_client(5), (false, 1));
+        assert_eq!(store.find_client(60), (false, 5));
+        assert_eq!(store.find_client(u64::MAX - 1), (false, 8));
+        assert_eq!(store.client_index(60), None);
+        // a second struct of a known client does not add a timeline
+        store.integrate(id(30, 3), 1, Some(id(30, 2)), None).unwrap();
+        check(&store);
+        assert_eq!(store.clients.len(), 9);
+        assert_eq!(store.get_state(30), 4);
+    }
+
+    #[test]
+    fn a_smaller_client_that_arrives_later_goes_before_and_no_timeline_is_added_twice() {
+        let clients =
+            |store: &YataStoreCore| -> Vec<u64> { store.clients().iter().map(|entry| entry.client).collect() };
+        let mut store = YataStoreCore::new();
+        store.integrate(id(2, 0), 1, None, None).unwrap();
+        store.integrate(id(1, 0), 1, None, None).unwrap();
+        check(&store);
+        assert_eq!(store.get_state(2), 1);
+        assert_eq!(store.get_state(1), 1);
+        assert_eq!(clients(&store), [1, 2]);
+        // client 2 goes on: its timeline is found, not added again
+        store.integrate(id(2, 1), 1, Some(id(2, 0)), None).unwrap();
+        check(&store);
+        assert_eq!(store.get_state(2), 2);
+        assert_eq!(store.get_state(1), 1);
+        assert_eq!(clients(&store), [1, 2]);
+        assert_eq!(store.items().len(), 3);
+        assert!(store.start().is_some());
+    }
+
+    #[test]
+    fn the_steps_of_the_conflict_scan() {
+        let step = ConflictDecision::Step;
+        let (a, b, c) = (Some(id(1, 0)), Some(id(1, 5)), Some(id(2, 7)));
+        // the same left origin: by client, then by right origin
+        assert_eq!(decide_conflict_step(5, a, b, 4, a, c), step(ScanStep::Take));
+        assert_eq!(decide_conflict_step(5, None, b, 4, None, b), step(ScanStep::Take));
+        assert_eq!(decide_conflict_step(5, a, b, 6, a, b), step(ScanStep::Stop));
+        assert_eq!(decide_conflict_step(5, a, None, 5, a, None), step(ScanStep::Stop));
+        assert_eq!(decide_conflict_step(5, a, b, 6, a, c), step(ScanStep::Skip));
+        assert_eq!(decide_conflict_step(5, a, b, 6, a, None), step(ScanStep::Skip));
+        // another left origin: the owner of the one of the candidate decides
+        assert_eq!(decide_conflict_step(5, a, b, 4, None, b), step(ScanStep::Stop));
+        assert_eq!(
+            decide_conflict_step(5, None, b, 4, c, b),
+            ConflictDecision::Owner(id(2, 7))
+        );
+        assert_eq!(
+            decide_conflict_step(5, a, b, 9, c, b),
+            ConflictDecision::Owner(id(2, 7))
+        );
+        assert_eq!(decide_owner_step(false, false), ScanStep::Stop);
+        assert_eq!(decide_owner_step(false, true), ScanStep::Stop);
+        assert_eq!(decide_owner_step(true, false), ScanStep::Take);
+        assert_eq!(decide_owner_step(true, true), ScanStep::Skip);
+    }
+
+    /// A struct of a replica, as the others receive it.
+    #[derive(Clone, Copy, Debug)]
+    struct Struct {
+        id: IdCore,
+        len: u64,
+        origin_left: Option<IdCore>,
+        origin_right: Option<IdCore>,
+    }
+
+    fn xorshift(state: &mut u64) -> u64 {
+        *state ^= *state << 13;
+        *state ^= *state >> 7;
+        *state ^= *state << 17;
+        *state
+    }
+
+    /// Integrates the structs a store can take (the next clock of their
+    /// client, both origins held), walking `pending` again and again in the
+    /// direction given, until none is left.
+    fn deliver(store: &mut YataStoreCore, mut pending: Vec<Struct>, backwards: bool) {
+        while !pending.is_empty() {
+            if backwards {
+                pending.reverse();
+            }
+            let mut later = Vec::new();
+            let before = pending.len();
+            for item in pending {
+                let held = |origin: Option<IdCore>| origin.is_none_or(|origin| store.node_id(origin).is_some());
+                if store.get_state(item.id.client) == item.id.clock && held(item.origin_left) && held(item.origin_right)
+                {
+                    store
+                        .integrate(item.id, item.len, item.origin_left, item.origin_right)
+                        .unwrap();
+                } else {
+                    later.push(item);
+                }
+            }
+            assert!(later.len() < before, "a struct that can never be integrated");
+            if backwards {
+                later.reverse();
+            }
+            pending = later;
+        }
+    }
+
+    #[test]
+    fn two_thousand_concurrent_inserts_at_one_place_order_by_client() {
+        // every client inserts at the start of the empty sequence without
+        // seeing the others: each scan walks every item of a smaller client
+        // (under Miri a few clients: the same branches, hundreds of times
+        // slower)
+        let clients: u64 = if cfg!(miri) { 40 } else { 2_000 };
+        let ascending: Vec<u64> = (1..=clients).collect();
+        let descending: Vec<u64> = ascending.iter().rev().copied().collect();
+        // an order that is neither: a walk with a step coprime to the count
+        let scattered: Vec<u64> = (0..clients).map(|i| (i * 787) % clients + 1).collect();
+        for order in [&ascending, &descending, &scattered] {
+            let mut store = YataStoreCore::new();
+            for client in order {
+                store.integrate(id(*client, 0), 1, None, None).unwrap();
+            }
+            check(&store);
+            assert_eq!(store.clients.len(), clients as usize);
+            let ids: Vec<IdCore> = store.visible_ids().into_iter().map(|(id, _)| id).collect();
+            let expected: Vec<IdCore> = ascending.iter().map(|client| id(*client, 0)).collect();
+            assert_eq!(ids, expected);
+        }
+    }
+
+    #[test]
+    fn a_scan_over_two_thousand_candidates_it_skips_and_takes() {
+        // 1 writes "ab". The clients 2, 4, …, 2k insert between the two, each
+        // having seen what the ones before it wrote there, at the very left:
+        // the right origin of `c` is the item of `c - 2` (the one of "b" for
+        // the first). The sequence is a, 2k, …, 4, 2, b. (`k` is a multiple
+        // of four; a small one under Miri.)
+        let k: u64 = if cfg!(miri) { 40 } else { 2_000 };
+        let mut base = YataStoreCore::new();
+        base.integrate(id(1, 0), 2, None, None).unwrap();
+        for client in (2..=2 * k).step_by(2) {
+            let origin_right = if client == 2 { id(1, 1) } else { id(client - 2, 0) };
+            base.integrate(id(client, 0), 1, Some(id(1, 0)), Some(origin_right))
+                .unwrap();
+        }
+        check(&base);
+        let ids: Vec<IdCore> = base.visible_ids().into_iter().map(|(id, _)| id).collect();
+        assert_eq!(ids.len() as u64, k + 2);
+        assert_eq!(ids[1], id(2 * k, 0));
+        assert_eq!(ids[k as usize], id(2, 0));
+        let between = |client: u64, clock: u64| Struct {
+            id: id(client, clock),
+            len: 1,
+            origin_left: Some(id(1, 0)),
+            origin_right: Some(id(1, 1)),
+        };
+
+        // a client that saw only "ab" and is smaller than all of them: the
+        // scan skips every candidate (the same left origin, another right
+        // origin, a larger client) and the item stays left of them
+        let mut low = base.clone();
+        deliver(&mut low, vec![between(0, 0)], false);
+        check(&low);
+        assert_eq!(low.visible_ids()[1], (id(0, 0), 1));
+
+        // one that is larger than all of them: the scan takes every
+        // candidate and the item ends right before "b"
+        let mut high = base.clone();
+        deliver(&mut high, vec![between(2 * k + 1, 0)], false);
+        check(&high);
+        assert_eq!(high.visible_ids()[k as usize + 1], (id(2 * k + 1, 0), 1));
+
+        // one in the middle, with two items the scan meets on its way whose
+        // left origin is a candidate: one it has seen since the left
+        // neighbour last changed (skipped), one it took right before (taken)
+        let after = |client: u64| Struct {
+            id: id(client, 1),
+            len: 1,
+            origin_left: Some(id(client, 0)),
+            origin_right: Some(id(client - 2, 0)),
+        };
+        let structs = vec![between(k + 1, 0), after(k + k / 2), after(k / 2)];
+        let mut one = base.clone();
+        deliver(&mut one, structs.clone(), false);
+        let mut other = base.clone();
+        deliver(&mut other, structs, true);
+        check(&one);
+        check(&other);
+        assert_eq!(one.visible_ids(), other.visible_ids());
+        // it took every candidate of a smaller client: right before "b"
+        assert_eq!(one.visible_ids()[k as usize + 3], (id(k + 1, 0), 1));
+    }
+
+    #[test]
+    fn the_key_of_a_store_changes_no_answer_of_its_scans() {
+        // the scans of
+        // `a_scan_over_two_thousand_candidates_it_skips_and_takes`, which look
+        // origins up among the last candidates and, further back, through the
+        // table of the list: under the key of `new`, under `(0, 0)` given by
+        // hand and under other keys
+        let k: u64 = if cfg!(miri) { 40 } else { 400 };
+        let run = |mut store: YataStoreCore| -> YataStoreCore {
+            store.integrate(id(1, 0), 2, None, None).unwrap();
+            for client in (2..=2 * k).step_by(2) {
+                let origin_right = if client == 2 { id(1, 1) } else { id(client - 2, 0) };
+                store
+                    .integrate(id(client, 0), 1, Some(id(1, 0)), Some(origin_right))
+                    .unwrap();
+            }
+            let between = |client: u64| Struct {
+                id: id(client, 0),
+                len: 1,
+                origin_left: Some(id(1, 0)),
+                origin_right: Some(id(1, 1)),
+            };
+            let after = |client: u64| Struct {
+                id: id(client, 1),
+                len: 1,
+                origin_left: Some(id(client, 0)),
+                origin_right: Some(id(client - 2, 0)),
+            };
+            // origins far back in the walk and right behind it
+            let structs = vec![
+                between(k + 1),
+                after(k + k / 2),
+                after(k / 2),
+                after(4),
+                after(2 * k),
+                between(2 * k + 1),
+                between(0),
+            ];
+            deliver(&mut store, structs, false);
+            check(&store);
+            store
+        };
+        let plain = run(YataStoreCore::new());
+        assert_eq!((plain.k0, plain.k1), (0, 0));
+        assert_eq!(plain.visible_ids().len() as u64, k + 2 + 7);
+        let mut state = 0x2545_F491_4F6C_DD1Du64;
+        let mut keys = vec![(0, 0), (u64::MAX, u64::MAX), (1, 0), (0, 1)];
+        for _ in 0..4 {
+            keys.push((xorshift(&mut state), xorshift(&mut state)));
+        }
+        for (k0, k1) in keys {
+            let keyed = run(YataStoreCore::with_key(k0, k1));
+            assert_eq!((keyed.k0, keyed.k1), (k0, k1));
+            assert_eq!(keyed.items, plain.items, "key ({k0}, {k1})");
+            assert_eq!(keyed.start, plain.start);
+            assert_eq!(keyed.visible_ids(), plain.visible_ids());
+            // the key stays with a copy of the store
+            let copy = keyed.clone();
+            assert_eq!((copy.k0, copy.k1), (k0, k1));
+        }
+        // a store made with a key is the empty store
+        let empty = YataStoreCore::with_key(7, 9);
+        assert!(empty.items().is_empty() && empty.start().is_none() && empty.clients().is_empty());
+        assert_eq!(YataStoreCore::default().get_state(1), 0);
+    }
+
+    #[test]
+    fn replicas_that_type_concurrently_converge_whatever_the_order_of_delivery() {
+        // `replicas` stores; in every round each writes a few structs at
+        // random places of what it holds, then all receive what the others
+        // wrote, each in an order of its own
+        let replicas = 8usize;
+        let rounds = 12;
+        let mut state = 0x9E37_79B9_7F4A_7C15u64;
+        let mut stores: Vec<YataStoreCore> = (0..replicas).map(|_| YataStoreCore::new()).collect();
+        for round in 0..rounds {
+            let mut written: Vec<Vec<Struct>> = Vec::new();
+            for (replica, store) in stores.iter_mut().enumerate() {
+                let mut mine = Vec::new();
+                for _ in 0..(1 + xorshift(&mut state) % 4) {
+                    // between two clocks of the sequence, or at one of its ends
+                    let clocks: Vec<IdCore> = sequence(store)
+                        .into_iter()
+                        .flat_map(|(first, len, _)| (0..len).map(move |offset| id(first.client, first.clock + offset)))
+                        .collect();
+                    let gap = (xorshift(&mut state) % (clocks.len() as u64 + 1)) as usize;
+                    let item = Struct {
+                        id: id(replica as u64 + 1, store.get_state(replica as u64 + 1)),
+                        len: 1 + xorshift(&mut state) % 3,
+                        origin_left: if gap == 0 { None } else { Some(clocks[gap - 1]) },
+                        origin_right: clocks.get(gap).copied(),
+                    };
+                    store
+                        .integrate(item.id, item.len, item.origin_left, item.origin_right)
+                        .unwrap();
+                    mine.push(item);
+                }
+                written.push(mine);
+            }
+            for (replica, store) in stores.iter_mut().enumerate() {
+                let others: Vec<Struct> = written
+                    .iter()
+                    .enumerate()
+                    .filter(|(from, _)| *from != replica)
+                    .flat_map(|(_, structs)| structs.iter().copied())
+                    .collect();
+                deliver(store, others, (replica + round) % 2 == 1);
+                check(store);
+            }
+            // the same clocks in the same order, whatever the blocks are
+            let clocks = |store: &YataStoreCore| -> Vec<IdCore> {
+                sequence(store)
+                    .into_iter()
+                    .flat_map(|(first, len, _)| (0..len).map(move |offset| id(first.client, first.clock + offset)))
+                    .collect()
+            };
+            let first = clocks(&stores[0]);
+            for store in &stores[1..] {
+                assert_eq!(clocks(store), first, "round {round}");
+            }
+        }
+        assert_eq!(stores[0].clients.len(), replicas);
     }
 
     #[test]

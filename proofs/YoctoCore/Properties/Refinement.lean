@@ -8,7 +8,8 @@ stores (`CoreRun`: every step is a call of an extracted function that
 returned) every replica stands for its state in a reachable unit-level network
 of `YoctoSpec` (`coreRun_sound`), so the strong eventual consistency
 `YoctoSpec` proves for its model holds for the extracted Rust (`core_sec`,
-`core_sec_ids`, `core_sec_visible`). `core_witness` is such a run, with two
+`core_sec_ids`, `core_sec_visible`, and `core_sec_visible_ids` for what the
+extracted `visible_ids` answers). `core_witness` is such a run, with two
 replicas that insert concurrently.
 -/
 import Aeneas
@@ -16,7 +17,9 @@ import YoctoSpec
 import YoctoCore.Code.Types
 import YoctoCore.Code.Funs
 import YoctoCore.Properties.YataModel
+import YoctoCore.Properties.YataMerge
 import YoctoCore.Properties.YataStore
+import YoctoCore.Properties.YataStoreMerge
 
 open Aeneas Aeneas.Std Aeneas.Std.WP Result
 open YoctoCore.Code
@@ -98,7 +101,9 @@ theorem toDoc_splits : ∀ (zs : List YoctoSpec.Id) (bs : List YoctoSpec.Block),
 
 /-- A run of replicas that hold extracted stores, next to the unit-level
 network of `YoctoSpec` it implements. Every step is a call of an extracted
-function that returned (`= ok …`), whatever it answered.
+function that returned (`= ok …`), whatever it answered: `new` or `with_key`
+(under any key, one for each replica), `integrate`, `split`,
+`merge_adjacent`, `gc` and `delete_range`.
 
 A struct a replica integrates is created at the replica or delivered to it,
 clock by clock, in the unit-level network (`UnitRun`, the hypothesis of
@@ -107,6 +112,12 @@ inductive CoreRun (f : YoctoSpec.Id → Char) :
     (Nat → yata_store.YataStoreCore) → YoctoSpec.Net → Prop
   | init {s0 : yata_store.YataStoreCore} :
       yata_store.YataStoreCore.new = ok s0 → CoreRun f (fun _ => s0) YoctoSpec.Net.init
+  /-- every replica starts from the store of `with_key`, each under a key of
+  its own: the key is where the conflict scans of a store look ids up, and
+  no two replicas need the same one -/
+  | initKeyed {sn : Nat → yata_store.YataStoreCore} :
+      (∀ r, ∃ k0 k1 : Std.U64, yata_store.YataStoreCore.with_key k0 k1 = ok (sn r)) →
+      CoreRun f sn YoctoSpec.Net.init
   | integrate {sn : Nat → yata_store.YataStoreCore} {n n' : YoctoSpec.Net} (r : Nat)
       (id : yata_store.IdCore) (len : Std.U64) (ol or_ : Option yata_store.IdCore)
       (res : core.result.Result Std.U32 client_blocks.StoreError)
@@ -122,6 +133,16 @@ inductive CoreRun (f : YoctoSpec.Id → Char) :
       (res : core.result.Result (Option Std.U32) client_blocks.StoreError)
       (s' : yata_store.YataStoreCore) :
       CoreRun f sn n → yata_store.YataStoreCore.split (sn r) id = ok (res, s') →
+      CoreRun f (updS sn r s') n
+  /-- replica `r` asks for the struct that holds `id` and its successor on
+  the timeline to become one item: whatever the call answers (it merged
+  them, it did not, or the store does not hold `id`), nothing changes in the
+  network -/
+  | merge {sn : Nat → yata_store.YataStoreCore} {n : YoctoSpec.Net} (r : Nat)
+      (id : yata_store.IdCore)
+      (res : core.result.Result Bool client_blocks.StoreError)
+      (s' : yata_store.YataStoreCore) :
+      CoreRun f sn n → yata_store.YataStoreCore.merge_adjacent (sn r) id = ok (res, s') →
       CoreRun f (updS sn r s') n
   | gc {sn : Nat → yata_store.YataStoreCore} {n : YoctoSpec.Net} (r : Nat)
       (s' : yata_store.YataStoreCore) :
@@ -171,6 +192,20 @@ theorem coreRun_sound {f : YoctoSpec.Id → Char} {sn : Nat → yata_store.YataS
       funext _
       unfold YataStore.abs
       rw [hm]
+      rfl
+    rw [e]
+    exact YoctoSpec.brun_sound YoctoSpec.BRun.init
+  | @initKeyed sn h0 =>
+    have hm : ∀ r, toM (sn r) = ⟨[], none, []⟩ ∧ Inv (sn r) := by
+      intro r
+      obtain ⟨k0, k1, e⟩ := h0 r
+      obtain ⟨hm, hinv, _, _⟩ := of_spec (YataStore.with_key_spec k0 k1) e
+      exact ⟨hm, hinv⟩
+    refine ⟨fun r => (hm r).2, ?_⟩
+    have e : (fun r : Nat => YataStore.abs f (sn r)) = fun _ => [] := by
+      funext r
+      unfold YataStore.abs
+      rw [(hm r).1]
       rfl
     rw [e]
     exact YoctoSpec.brun_sound YoctoSpec.BRun.init
@@ -229,6 +264,13 @@ theorem coreRun_sound {f : YoctoSpec.Id → Char} {sn : Nat → yata_store.YataS
           ok.blocks f
         rw [e]
         exact YoctoSpec.toDoc_split _ _
+  | @merge sn n r id res s' _ hcall ih =>
+    obtain ⟨hinv, hb⟩ := ih
+    have hp0 := of_spec (merge_adjacent_spec (sn r) id (hinv r)) hcall
+    have hp : MergeAdjacentPost (sn r) id res s' := hp0
+    refine ⟨inv_updS hinv r hp.inv, ?_⟩
+    rw [abs_updS]
+    exact hb.same r (hp.doc f) (blocks_wf hp.inv)
   | @gc sn n r s' _ hcall ih =>
     obtain ⟨hinv, hb⟩ := ih
     obtain ⟨hinv', habs⟩ := of_spec (gc_spec (sn r) (hinv r)) hcall
@@ -264,8 +306,8 @@ theorem coreRun_sound {f : YoctoSpec.Id → Char} {sn : Nat → yata_store.YataS
 /-! ## Strong eventual consistency of the extracted store -/
 
 /-- **SEC, on the extracted Rust.** After any run of the extracted store
-(structs integrated in any causal order, deletions, splits and content
-collection interleaved at will), two replicas that hold the same clocks and the same
+(structs integrated in any causal order, deletions, splits, merges and
+content collection interleaved at will), two replicas that hold the same clocks and the same
 deletions stand for the same document: the same sequence of clocks with the
 same origins, and the same delete set. -/
 theorem core_sec {f : YoctoSpec.Id → Char} {sn : Nat → yata_store.YataStoreCore}
@@ -298,6 +340,36 @@ theorem core_sec_visible {f : YoctoSpec.Id → Char} {sn : Nat → yata_store.Ya
     YoctoSpec.visible (YataStore.abs f (sn r₁)) = YoctoSpec.visible (YataStore.abs f (sn r₂)) :=
   (coreRun_sound h).2.sec_visible r₁ r₂ hu hd
     (payload_blocks ((coreRun_sound h).1 r₁)) (payload_blocks ((coreRun_sound h).1 r₂))
+
+/-- **What `visible_ids` answers agrees, on the extracted Rust.** After any
+run of the extracted store, the extracted `visible_ids` returns on two
+replicas that hold the same clocks and the same deletions, and its two
+answers stand, clock by clock, for the same sequence of ids: the visible ids
+of the document both replicas stand for. The blocks may differ (one replica
+may have split or merged where the other did not); their clocks do not. -/
+theorem core_sec_visible_ids {f : YoctoSpec.Id → Char} {sn : Nat → yata_store.YataStoreCore}
+    {n : YoctoSpec.Net} (h : CoreRun f sn n) (r₁ r₂ : Nat)
+    (hu : ∀ u, u ∈ YoctoSpec.flatten (YataStore.abs f (sn r₁)) ↔
+      u ∈ YoctoSpec.flatten (YataStore.abs f (sn r₂)))
+    (hd : ∀ x, x ∈ YoctoSpec.deletedSet (YataStore.abs f (sn r₁)) ↔
+      x ∈ YoctoSpec.deletedSet (YataStore.abs f (sn r₂))) :
+    ∃ v₁ v₂, yata_store.YataStoreCore.visible_ids (sn r₁) = ok v₁ ∧
+      yata_store.YataStoreCore.visible_ids (sn r₂) = ok v₂ ∧
+      expandIds (v₁.val.map toPair) = expandIds (v₂.val.map toPair) ∧
+      expandIds (v₁.val.map toPair) = (YoctoSpec.toDoc (YataStore.abs f (sn r₁))).visible := by
+  have hinv := (coreRun_sound h).1
+  obtain ⟨v₁, e₁, hv₁⟩ := ok_of_spec (visible_ids_spec (sn r₁) (hinv r₁))
+  obtain ⟨v₂, e₂, hv₂⟩ := ok_of_spec (visible_ids_spec (sn r₂) (hinv r₂))
+  have h₁ : expandIds (v₁.val.map toPair) =
+      (YoctoSpec.toDoc (YataStore.abs f (sn r₁))).visible := by
+    rw [hv₁]
+    exact expand_visM (hinv r₁)
+  have h₂ : expandIds (v₂.val.map toPair) =
+      (YoctoSpec.toDoc (YataStore.abs f (sn r₂))).visible := by
+    rw [hv₂]
+    exact expand_visM (hinv r₂)
+  refine ⟨v₁, v₂, e₁, e₂, ?_, h₁⟩
+  rw [h₁, h₂, core_sec h r₁ r₂ hu hd]
 
 /-! ## A run that inserts
 
@@ -527,5 +599,35 @@ theorem core_witness_sec (f : YoctoSpec.Id → Char) :
   refine ⟨sn, n, h, ?_, core_sec h 1 2 hu hd, core_sec_visible h 1 2 hu hd⟩
   rw [h1]
   exact List.cons_ne_nil _ _
+
+/-- **`core_sec_visible_ids` on that run**: the extracted `visible_ids`
+returns on both replicas, and both answers stand for the clock `0` of client
+`1` and then the clock `0` of client `2`. -/
+theorem core_witness_visible_ids (f : YoctoSpec.Id → Char) :
+    ∃ (sn : Nat → yata_store.YataStoreCore) (n : YoctoSpec.Net)
+      (v₁ v₂ : alloc.vec.Vec (yata_store.IdCore × Std.U64)), CoreRun f sn n ∧
+      yata_store.YataStoreCore.visible_ids (sn 1) = ok v₁ ∧
+      yata_store.YataStoreCore.visible_ids (sn 2) = ok v₂ ∧
+      expandIds (v₁.val.map toPair) = [⟨1, 0⟩, ⟨2, 0⟩] ∧
+      expandIds (v₂.val.map toPair) = [⟨1, 0⟩, ⟨2, 0⟩] := by
+  obtain ⟨sn, n, h, h1, h2, d1, d2⟩ := core_witness f
+  have hu : ∀ u, u ∈ YoctoSpec.flatten (YataStore.abs f (sn 1)) ↔
+      u ∈ YoctoSpec.flatten (YataStore.abs f (sn 2)) := by
+    intro u
+    rw [h1, h2]
+  have hd : ∀ x, x ∈ YoctoSpec.deletedSet (YataStore.abs f (sn 1)) ↔
+      x ∈ YoctoSpec.deletedSet (YataStore.abs f (sn 2)) := by
+    intro x
+    rw [d1, d2]
+  obtain ⟨v₁, v₂, e₁, e₂, heq, hvis⟩ := core_sec_visible_ids h 1 2 hu hd
+  have hdoc : (YoctoSpec.toDoc (YataStore.abs f (sn 1))).visible = [⟨1, 0⟩, ⟨2, 0⟩] := by
+    show ((YoctoSpec.flatten (YataStore.abs f (sn 1))).filter
+      (fun a => decide (¬ a.id ∈ YoctoSpec.deletedSet (YataStore.abs f (sn 1))))).map
+        YoctoSpec.Item.id = _
+    rw [h1, d1]
+    rfl
+  refine ⟨sn, n, v₁, v₂, h, e₁, e₂, ?_, ?_⟩
+  · rw [hvis, hdoc]
+  · rw [← heq, hvis, hdoc]
 
 end YoctoCore.Properties.Refinement

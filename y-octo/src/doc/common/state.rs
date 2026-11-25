@@ -6,6 +6,31 @@ use super::{
 };
 use crate::JwstCodecError;
 
+#[cold]
+#[inline(never)]
+fn sv_varint_err_rem(input: &[u8]) -> usize {
+    let (count_u64, mut pos) = match y_octo_core::varint::decode_var_u64(input) {
+        Ok(v) => v,
+        Err(_) => return input.len(),
+    };
+    let Ok(count) = usize::try_from(count_u64) else {
+        return input.len();
+    };
+    for _ in 0..count {
+        let client_pos = pos;
+        match y_octo_core::varint::decode_var_u64(&input[pos..]) {
+            Ok((_, used)) => pos += used,
+            Err(_) => return input.len() - client_pos,
+        }
+        let clock_pos = pos;
+        match y_octo_core::varint::decode_var_u64(&input[pos..]) {
+            Ok((_, used)) => pos += used,
+            Err(_) => return input.len() - clock_pos,
+        }
+    }
+    input.len() - pos
+}
+
 #[derive(Default, Debug, PartialEq, Clone)]
 pub struct StateVector(ClientMap<Clock>);
 
@@ -58,13 +83,59 @@ impl StateVector {
 
     /// Decodes a Yjs V1 state vector that takes the whole `buffer`.
     pub fn decode_v1<T: AsRef<[u8]>>(buffer: T) -> JwstCodecResult<Self> {
-        let mut decoder = crate::doc::RawDecoder::new(buffer.as_ref());
-        let state = Self::read(&mut decoder)?;
-        let remaining = decoder.rest_ref().len();
+        struct MapSink(ClientMap<Clock>);
+
+        impl y_octo_core::decoder_v1::SvSink for MapSink {
+            #[inline]
+            fn on_sv_len(&mut self, count: usize) -> Result<(), y_octo_core::CodecError> {
+                self.0.reserve(count.min(HASHMAP_SAFE_CAPACITY));
+                Ok(())
+            }
+
+            #[inline]
+            fn on_sv_entry(&mut self, client: u64, clock: u64) -> Result<(), y_octo_core::CodecError> {
+                self.0.insert(client, clock);
+                Ok(())
+            }
+        }
+
+        let input = buffer.as_ref();
+        let mut sink = MapSink(ClientMap::default());
+        let end = y_octo_core::decoder_v1::read_state_vector_v1_with(input, 0, &mut sink).map_err(|err| match err {
+            y_octo_core::CodecError::CountTooLarge(_) => {
+                let (count_u64, used) = y_octo_core::varint::decode_var_u64(input).unwrap_or((u64::MAX, 0));
+                let remaining = input.len() - used;
+                JwstCodecError::IncompleteDocument(format!(
+                    "state vector declares {count_u64} entries but has only {remaining} bytes left"
+                ))
+            }
+            y_octo_core::CodecError::UnexpectedEof => {
+                let rem = sv_varint_err_rem(input);
+                JwstCodecError::UpdateInvalid(nom::Err::Incomplete(nom::Needed::new(rem + 1)))
+            }
+            y_octo_core::CodecError::VarintOverflow => {
+                let rem = sv_varint_err_rem(input);
+                JwstCodecError::UpdateInvalid(nom::Err::Failure(nom::error::Error::new(
+                    rem,
+                    nom::error::ErrorKind::TooLarge,
+                )))
+            }
+            y_octo_core::CodecError::ResourceLimit(_) => {
+                JwstCodecError::IncompleteDocument("state vector too large".into())
+            }
+            other => match crate::doc::codec::decoder::v1::map_core_error(other) {
+                crate::doc::codec::decoder::v1::Error::Codec(e) => e,
+                crate::doc::codec::decoder::v1::Error::Resource(name) => {
+                    JwstCodecError::IncompleteDocument(format!("{name} exceeds limit"))
+                }
+            },
+        })?;
+        let remaining = input.len() - end;
         if remaining != 0 {
             return Err(JwstCodecError::UpdateNotFullyConsumed(remaining));
         }
-        Ok(state)
+        sink.0.shrink_to_fit();
+        Ok(Self(sink.0))
     }
 }
 
@@ -203,5 +274,25 @@ mod tests {
             StateVector::decode_v1(&trailing),
             Err(JwstCodecError::UpdateNotFullyConsumed(1))
         );
+    }
+
+    #[test]
+    fn test_state_vector_v1_error_details() {
+        let cases = [
+            vec![],            // empty header eof
+            vec![0x80],        // partial header eof
+            vec![0xff; 12],    // header varint overflow
+            vec![2, 7, 1, 99], // count exceeds remaining bytes
+            vec![1, 0x80, 0],  /* client varint eof at non-zero
+                                * offset */
+            vec![1, 7, 0x80], // clock varint eof at non-zero offset
+            vec![1, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 2, 0], // client overflow
+            vec![1, 7, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 2], // clock overflow
+        ];
+        for buf in &cases {
+            let expected = StateVector::read(&mut RawDecoder::new(buf)).unwrap_err();
+            let actual = StateVector::decode_v1(buf).unwrap_err();
+            assert_eq!(actual, expected, "mismatch on {buf:?}");
+        }
     }
 }

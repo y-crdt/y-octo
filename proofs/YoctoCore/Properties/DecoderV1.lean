@@ -9,7 +9,7 @@ import YoctoCore.Properties.Utf16
 open Aeneas Aeneas.Std Aeneas.Std.WP Result ControlFlow
 open YoctoCore.Code
 
-set_option maxHeartbeats 2000000
+set_option maxHeartbeats 4000000
 
 namespace YoctoCore.Properties.DecoderV1
 
@@ -35,6 +35,12 @@ elab "cases_result_err" : tactic =>
 open Lean Elab Tactic Meta in
 elab "cases_prod_hyp" : tactic =>
   casesFirstHyp fun t => t.isAppOfArity ``Prod 2
+
+open Lean Elab Tactic Meta in
+elab "cases_and_hyp" : tactic =>
+  casesFirstHyp fun t => t.isAppOfArity ``And 2
+
+macro "cases_and_hyps" : tactic => `(tactic| repeat cases_and_hyp)
 
 private theorem ite_wp_split {α : Type _} (c : Prop) [Decidable c]
     (t e : Result α) (P : α → Prop)
@@ -77,10 +83,172 @@ private def stepFlag (done1 : Bool) (err : Option CodecError) : Nat :=
 @[simp] private theorem stepFlag_some (b : Bool) (e : CodecError) : stepFlag b (some e) = 0 := by
   cases b <;> rfl
 
+/-- Span validity predicate: a byte range `[start, end)` within `input`. -/
+def SpanOk (input : Slice Std.U8) (sp : decoder_v1.Span) : Prop :=
+  sp.start.val ≤ sp.«end».val ∧ sp.«end».val ≤ input.length
+
+def WireParentOk (input : Slice Std.U8) : decoder_v1.WireParentCore → Prop
+  | .Root sp => SpanOk input sp
+  | .Item _ => True
+  | .Inherit => True
+
+def OptSpanOk (input : Slice Std.U8) : Option decoder_v1.Span → Prop
+  | none => True
+  | some sp => SpanOk input sp
+
+def ItemMetaOk (input : Slice Std.U8) (m : decoder_v1.ItemMetaCore) : Prop :=
+  WireParentOk input m.parent ∧ OptSpanOk input m.parent_sub ∧ SpanOk input m.raw_range
+
+/-- Totality contract for `SvSink` preserving a caller invariant `Inv`. -/
+structure SvSinkTotal {S : Type _} (V : decoder_v1.SvSink S) (Inv : S → Prop) : Prop where
+  on_sv_len : ∀ s count, Inv s → V.on_sv_len s count ⦃ (_, s') => Inv s' ⦄
+  on_sv_entry : ∀ s client clock, Inv s → V.on_sv_entry s client clock ⦃ (_, s') => Inv s' ⦄
+
+/-- Totality & span-safety contract for `V1Sink`: `Span`-receiving callbacks
+    may assume `SpanOk input` on their emitted spans and `ItemMetaOk input` on `on_item`. -/
+structure V1SinkSpanSafe {S : Type _}
+    (input : Slice Std.U8) (V : decoder_v1.V1Sink S) (Inv : S → Prop) : Prop where
+  core_validates_utf8 : ∀ s, V.core_validates_utf8 s ⦃ _ => True ⦄
+  validate_utf8_early : ∀ s slot sp, Inv s → SpanOk input sp →
+    V.validate_utf8_early s slot sp ⦃ (_, s') => Inv s' ⦄
+  on_decode_error : ∀ s err a b, Inv s → V.on_decode_error s err a b ⦃ s' => Inv s' ⦄
+  record_client : ∀ s client, Inv s → V.record_client s client ⦃ (_, s') => Inv s' ⦄
+  begin_client : ∀ s client count, Inv s → V.begin_client s client count ⦃ (_, s') => Inv s' ⦄
+  on_gc : ∀ s id len, Inv s → V.on_gc s id len ⦃ (_, s') => Inv s' ⦄
+  on_skip : ∀ s id len, Inv s → V.on_skip s id len ⦃ (_, s') => Inv s' ⦄
+  on_item : ∀ s id len m, Inv s → ItemMetaOk input m →
+    V.on_item s id len m ⦃ (_, s') => Inv s' ⦄
+  on_deleted : ∀ s len, Inv s → V.on_deleted s len ⦃ (_, s') => Inv s' ⦄
+  on_json_start : ∀ s count, Inv s → V.on_json_start s count ⦃ (_, s') => Inv s' ⦄
+  on_json_value : ∀ s sp, Inv s → SpanOk input sp →
+    V.on_json_value s sp ⦃ (_, s') => Inv s' ⦄
+  on_json_finish : ∀ s, Inv s → V.on_json_finish s ⦃ (_, s') => Inv s' ⦄
+  on_binary : ∀ s sp, Inv s → SpanOk input sp → V.on_binary s sp ⦃ (_, s') => Inv s' ⦄
+  on_string : ∀ s sp, Inv s → SpanOk input sp → V.on_string s sp ⦃ (_, s') => Inv s' ⦄
+  on_embed : ∀ s sp, Inv s → SpanOk input sp → V.on_embed s sp ⦃ (_, s') => Inv s' ⦄
+  on_format : ∀ s k v, Inv s → SpanOk input k → SpanOk input v →
+    V.on_format s k v ⦃ (_, s') => Inv s' ⦄
+  on_type : ∀ s kind tag, Inv s → OptSpanOk input tag →
+    V.on_type s kind tag ⦃ (_, s') => Inv s' ⦄
+  on_any_content_start : ∀ s count, Inv s → V.on_any_content_start s count ⦃ (_, s') => Inv s' ⦄
+  on_any_content_value : ∀ s, Inv s → V.on_any_content_value s ⦃ (_, s') => Inv s' ⦄
+  on_any_content_finish : ∀ s, Inv s → V.on_any_content_finish s ⦃ (_, s') => Inv s' ⦄
+  on_doc : ∀ s guid, Inv s → SpanOk input guid → V.on_doc s guid ⦃ (_, s') => Inv s' ⦄
+  on_any_start : ∀ s, Inv s → V.on_any_start s ⦃ (_, s') => Inv s' ⦄
+  on_any_undefined : ∀ s, Inv s → V.on_any_undefined s ⦃ (_, s') => Inv s' ⦄
+  on_any_null : ∀ s, Inv s → V.on_any_null s ⦃ (_, s') => Inv s' ⦄
+  on_any_i32 : ∀ s v, Inv s → V.on_any_i32 s v ⦃ (_, s') => Inv s' ⦄
+  on_any_f32_bits : ∀ s bits, Inv s → V.on_any_f32_bits s bits ⦃ (_, s') => Inv s' ⦄
+  on_any_f64_bits : ∀ s bits, Inv s → V.on_any_f64_bits s bits ⦃ (_, s') => Inv s' ⦄
+  on_any_i64_bits : ∀ s bits, Inv s → V.on_any_i64_bits s bits ⦃ (_, s') => Inv s' ⦄
+  on_any_bool : ∀ s v, Inv s → V.on_any_bool s v ⦃ (_, s') => Inv s' ⦄
+  on_any_str : ∀ s sp, Inv s → SpanOk input sp → V.on_any_str s sp ⦃ (_, s') => Inv s' ⦄
+  on_any_bytes : ∀ s sp, Inv s → SpanOk input sp → V.on_any_bytes s sp ⦃ (_, s') => Inv s' ⦄
+  on_any_begin_object : ∀ s count, Inv s → V.on_any_begin_object s count ⦃ (_, s') => Inv s' ⦄
+  on_any_object_key : ∀ s sp, Inv s → SpanOk input sp →
+    V.on_any_object_key s sp ⦃ (_, s') => Inv s' ⦄
+  on_any_begin_array : ∀ s count, Inv s → V.on_any_begin_array s count ⦃ (_, s') => Inv s' ⦄
+  on_any_end_container : ∀ s, Inv s → V.on_any_end_container s ⦃ (_, s') => Inv s' ⦄
+  on_any_finish : ∀ s sp, Inv s → SpanOk input sp → V.on_any_finish s sp ⦃ (_, s') => Inv s' ⦄
+  begin_delete_client : ∀ s client count, Inv s →
+    V.begin_delete_client s client count ⦃ (_, s') => Inv s' ⦄
+  on_delete_range : ∀ s client start «end», Inv s →
+    V.on_delete_range s client start «end» ⦃ (_, s') => Inv s' ⦄
+
+/-- Unconditional totality contract for `V1Sink` preserving `Inv`. -/
+structure V1SinkTotal {S : Type _} (V : decoder_v1.V1Sink S) (Inv : S → Prop) : Prop where
+  core_validates_utf8 : ∀ s, V.core_validates_utf8 s ⦃ _ => True ⦄
+  validate_utf8_early : ∀ s slot sp, Inv s → V.validate_utf8_early s slot sp ⦃ (_, s') => Inv s' ⦄
+  on_decode_error : ∀ s err a b, Inv s → V.on_decode_error s err a b ⦃ s' => Inv s' ⦄
+  record_client : ∀ s client, Inv s → V.record_client s client ⦃ (_, s') => Inv s' ⦄
+  begin_client : ∀ s client count, Inv s → V.begin_client s client count ⦃ (_, s') => Inv s' ⦄
+  on_gc : ∀ s id len, Inv s → V.on_gc s id len ⦃ (_, s') => Inv s' ⦄
+  on_skip : ∀ s id len, Inv s → V.on_skip s id len ⦃ (_, s') => Inv s' ⦄
+  on_item : ∀ s id len m, Inv s → V.on_item s id len m ⦃ (_, s') => Inv s' ⦄
+  on_deleted : ∀ s len, Inv s → V.on_deleted s len ⦃ (_, s') => Inv s' ⦄
+  on_json_start : ∀ s count, Inv s → V.on_json_start s count ⦃ (_, s') => Inv s' ⦄
+  on_json_value : ∀ s sp, Inv s → V.on_json_value s sp ⦃ (_, s') => Inv s' ⦄
+  on_json_finish : ∀ s, Inv s → V.on_json_finish s ⦃ (_, s') => Inv s' ⦄
+  on_binary : ∀ s sp, Inv s → V.on_binary s sp ⦃ (_, s') => Inv s' ⦄
+  on_string : ∀ s sp, Inv s → V.on_string s sp ⦃ (_, s') => Inv s' ⦄
+  on_embed : ∀ s sp, Inv s → V.on_embed s sp ⦃ (_, s') => Inv s' ⦄
+  on_format : ∀ s k v, Inv s → V.on_format s k v ⦃ (_, s') => Inv s' ⦄
+  on_type : ∀ s kind tag, Inv s → V.on_type s kind tag ⦃ (_, s') => Inv s' ⦄
+  on_any_content_start : ∀ s count, Inv s → V.on_any_content_start s count ⦃ (_, s') => Inv s' ⦄
+  on_any_content_value : ∀ s, Inv s → V.on_any_content_value s ⦃ (_, s') => Inv s' ⦄
+  on_any_content_finish : ∀ s, Inv s → V.on_any_content_finish s ⦃ (_, s') => Inv s' ⦄
+  on_doc : ∀ s guid, Inv s → V.on_doc s guid ⦃ (_, s') => Inv s' ⦄
+  on_any_start : ∀ s, Inv s → V.on_any_start s ⦃ (_, s') => Inv s' ⦄
+  on_any_undefined : ∀ s, Inv s → V.on_any_undefined s ⦃ (_, s') => Inv s' ⦄
+  on_any_null : ∀ s, Inv s → V.on_any_null s ⦃ (_, s') => Inv s' ⦄
+  on_any_i32 : ∀ s v, Inv s → V.on_any_i32 s v ⦃ (_, s') => Inv s' ⦄
+  on_any_f32_bits : ∀ s bits, Inv s → V.on_any_f32_bits s bits ⦃ (_, s') => Inv s' ⦄
+  on_any_f64_bits : ∀ s bits, Inv s → V.on_any_f64_bits s bits ⦃ (_, s') => Inv s' ⦄
+  on_any_i64_bits : ∀ s bits, Inv s → V.on_any_i64_bits s bits ⦃ (_, s') => Inv s' ⦄
+  on_any_bool : ∀ s v, Inv s → V.on_any_bool s v ⦃ (_, s') => Inv s' ⦄
+  on_any_str : ∀ s sp, Inv s → V.on_any_str s sp ⦃ (_, s') => Inv s' ⦄
+  on_any_bytes : ∀ s sp, Inv s → V.on_any_bytes s sp ⦃ (_, s') => Inv s' ⦄
+  on_any_begin_object : ∀ s count, Inv s → V.on_any_begin_object s count ⦃ (_, s') => Inv s' ⦄
+  on_any_object_key : ∀ s sp, Inv s → V.on_any_object_key s sp ⦃ (_, s') => Inv s' ⦄
+  on_any_begin_array : ∀ s count, Inv s → V.on_any_begin_array s count ⦃ (_, s') => Inv s' ⦄
+  on_any_end_container : ∀ s, Inv s → V.on_any_end_container s ⦃ (_, s') => Inv s' ⦄
+  on_any_finish : ∀ s sp, Inv s → V.on_any_finish s sp ⦃ (_, s') => Inv s' ⦄
+  begin_delete_client : ∀ s client count, Inv s →
+    V.begin_delete_client s client count ⦃ (_, s') => Inv s' ⦄
+  on_delete_range : ∀ s client start «end», Inv s →
+    V.on_delete_range s client start «end» ⦃ (_, s') => Inv s' ⦄
+
+theorem V1SinkTotal.toSpanSafe {S : Type _} {V : decoder_v1.V1Sink S} {Inv : S → Prop}
+    (input : Slice Std.U8) (h : V1SinkTotal V Inv) : V1SinkSpanSafe input V Inv :=
+  { core_validates_utf8 := h.core_validates_utf8
+    validate_utf8_early := fun s slot sp hs _ => h.validate_utf8_early s slot sp hs
+    on_decode_error := h.on_decode_error
+    record_client := h.record_client
+    begin_client := h.begin_client
+    on_gc := h.on_gc
+    on_skip := h.on_skip
+    on_item := fun s id len m hs _ => h.on_item s id len m hs
+    on_deleted := h.on_deleted
+    on_json_start := h.on_json_start
+    on_json_value := fun s sp hs _ => h.on_json_value s sp hs
+    on_json_finish := h.on_json_finish
+    on_binary := fun s sp hs _ => h.on_binary s sp hs
+    on_string := fun s sp hs _ => h.on_string s sp hs
+    on_embed := fun s sp hs _ => h.on_embed s sp hs
+    on_format := fun s k v hs _ _ => h.on_format s k v hs
+    on_type := fun s kind tag hs _ => h.on_type s kind tag hs
+    on_any_content_start := h.on_any_content_start
+    on_any_content_value := h.on_any_content_value
+    on_any_content_finish := h.on_any_content_finish
+    on_doc := fun s guid hs _ => h.on_doc s guid hs
+    on_any_start := h.on_any_start
+    on_any_undefined := h.on_any_undefined
+    on_any_null := h.on_any_null
+    on_any_i32 := h.on_any_i32
+    on_any_f32_bits := h.on_any_f32_bits
+    on_any_f64_bits := h.on_any_f64_bits
+    on_any_i64_bits := h.on_any_i64_bits
+    on_any_bool := h.on_any_bool
+    on_any_str := fun s sp hs _ => h.on_any_str s sp hs
+    on_any_bytes := fun s sp hs _ => h.on_any_bytes s sp hs
+    on_any_begin_object := h.on_any_begin_object
+    on_any_object_key := fun s sp hs _ => h.on_any_object_key s sp hs
+    on_any_begin_array := h.on_any_begin_array
+    on_any_end_container := h.on_any_end_container
+    on_any_finish := fun s sp hs _ => h.on_any_finish s sp hs
+    begin_delete_client := h.begin_delete_client
+    on_delete_range := h.on_delete_range }
+
 @[local step]
 theorem checked_usize_from_u64_total (v : Std.U64) :
     decoder_v1.checked_usize_from_u64 v ⦃ _ => True ⦄ := by
   unfold decoder_v1.checked_usize_from_u64
+  step*
+
+@[local step]
+theorem checked_usize_limit_total (v : Std.U64) (kind : LimitKind) :
+    decoder_v1.checked_usize_limit v kind ⦃ _ => True ⦄ := by
+  unfold decoder_v1.checked_usize_limit
   step*
 
 theorem check_fits_total (remaining count : Std.Usize) (min_bytes : Std.U64)
@@ -89,45 +257,75 @@ theorem check_fits_total (remaining count : Std.Usize) (min_bytes : Std.U64)
   unfold decoder_v1.check_fits
   step*
 
+theorem check_fits_kind_total (remaining count : Std.Usize) (min_bytes : Std.U64)
+    (kind : LimitKind) (hMin : 0 < min_bytes.val) :
+    decoder_v1.check_fits_kind remaining count min_bytes kind ⦃ _ => True ⦄ := by
+  unfold decoder_v1.check_fits_kind
+  step*
+
+theorem fail_with_spec {S : Type _} (V : decoder_v1.V1Sink S) (Inv : S → Prop)
+    (input : Slice Std.U8) (hV : V1SinkSpanSafe input V Inv)
+    (sink : S) (err : CodecError) (a : Std.Usize) (b : Std.U64) (hSink : Inv sink) :
+    decoder_v1.fail_with V sink err a b ⦃ (_, sink') => Inv sink' ⦄ := by
+  unfold decoder_v1.fail_with
+  step with hV.on_decode_error sink err a b hSink as ⟨sink1, hInv1⟩
+  simp [spec_ok, hInv1]
+
+theorem check_fits_kind_sink_spec {S : Type _} (V : decoder_v1.V1Sink S) (Inv : S → Prop)
+    (input : Slice Std.U8) (hV : V1SinkSpanSafe input V Inv)
+    (remaining count : Std.Usize) (min_bytes : Std.U64) (kind : LimitKind) (sink : S)
+    (hMin : 0 < min_bytes.val) (hSink : Inv sink) :
+    decoder_v1.check_fits_kind_sink V remaining count min_bytes kind sink
+      ⦃ (_, sink') => Inv sink' ⦄ := by
+  unfold decoder_v1.check_fits_kind_sink
+  step as ⟨i, _⟩
+  step as ⟨available, _⟩
+  step as ⟨i1, _⟩
+  split_ifs
+  · step with fail_with_spec V Inv input hV sink (CodecError.CountTooLarge kind) count available hSink
+      as ⟨ce, sink1, hInv1⟩
+    simp [spec_ok, hInv1]
+  · simp [spec_ok, hSink]
+
 @[local step]
 private theorem check_fits_2_total (remaining count : Std.Usize) :
     decoder_v1.check_fits remaining count 2#u64 ⦃ _ => True ⦄ :=
   check_fits_total remaining count 2#u64 (by decide)
 
 @[local step]
-private theorem check_fits_min_client_total (remaining count : Std.Usize) :
-    decoder_v1.check_fits remaining count decoder_v1.MIN_CLIENT_BYTES ⦃ _ => True ⦄ :=
-  check_fits_total remaining count decoder_v1.MIN_CLIENT_BYTES
+private theorem check_fits_kind_min_client_total (remaining count : Std.Usize) (kind : LimitKind) :
+    decoder_v1.check_fits_kind remaining count decoder_v1.MIN_CLIENT_BYTES kind ⦃ _ => True ⦄ :=
+  check_fits_kind_total remaining count decoder_v1.MIN_CLIENT_BYTES kind
     (by simp [decoder_v1.MIN_CLIENT_BYTES])
 
 @[local step]
-private theorem check_fits_min_struct_total (remaining count : Std.Usize) :
-    decoder_v1.check_fits remaining count decoder_v1.MIN_STRUCT_BYTES ⦃ _ => True ⦄ :=
-  check_fits_total remaining count decoder_v1.MIN_STRUCT_BYTES
+private theorem check_fits_kind_min_struct_total (remaining count : Std.Usize) (kind : LimitKind) :
+    decoder_v1.check_fits_kind remaining count decoder_v1.MIN_STRUCT_BYTES kind ⦃ _ => True ⦄ :=
+  check_fits_kind_total remaining count decoder_v1.MIN_STRUCT_BYTES kind
     (by simp [decoder_v1.MIN_STRUCT_BYTES])
 
 @[local step]
-private theorem check_fits_min_delete_client_total (remaining count : Std.Usize) :
-    decoder_v1.check_fits remaining count decoder_v1.MIN_DELETE_CLIENT_BYTES ⦃ _ => True ⦄ :=
-  check_fits_total remaining count decoder_v1.MIN_DELETE_CLIENT_BYTES
+private theorem check_fits_kind_min_delete_client_total (remaining count : Std.Usize) (kind : LimitKind) :
+    decoder_v1.check_fits_kind remaining count decoder_v1.MIN_DELETE_CLIENT_BYTES kind ⦃ _ => True ⦄ :=
+  check_fits_kind_total remaining count decoder_v1.MIN_DELETE_CLIENT_BYTES kind
     (by simp [decoder_v1.MIN_DELETE_CLIENT_BYTES])
 
 @[local step]
-private theorem check_fits_min_delete_range_total (remaining count : Std.Usize) :
-    decoder_v1.check_fits remaining count decoder_v1.MIN_DELETE_RANGE_BYTES ⦃ _ => True ⦄ :=
-  check_fits_total remaining count decoder_v1.MIN_DELETE_RANGE_BYTES
+private theorem check_fits_kind_min_delete_range_total (remaining count : Std.Usize) (kind : LimitKind) :
+    decoder_v1.check_fits_kind remaining count decoder_v1.MIN_DELETE_RANGE_BYTES kind ⦃ _ => True ⦄ :=
+  check_fits_kind_total remaining count decoder_v1.MIN_DELETE_RANGE_BYTES kind
     (by simp [decoder_v1.MIN_DELETE_RANGE_BYTES])
 
 @[local step]
-private theorem check_fits_min_entry_total (remaining count : Std.Usize) :
-    decoder_v1.check_fits remaining count decoder_v1.MIN_ENTRY_BYTES ⦃ _ => True ⦄ :=
-  check_fits_total remaining count decoder_v1.MIN_ENTRY_BYTES
+private theorem check_fits_kind_min_entry_total (remaining count : Std.Usize) (kind : LimitKind) :
+    decoder_v1.check_fits_kind remaining count decoder_v1.MIN_ENTRY_BYTES kind ⦃ _ => True ⦄ :=
+  check_fits_kind_total remaining count decoder_v1.MIN_ENTRY_BYTES kind
     (by simp [decoder_v1.MIN_ENTRY_BYTES])
 
 @[local step]
-private theorem check_fits_min_obj_entry_total (remaining count : Std.Usize) :
-    decoder_v1.check_fits remaining count decoder_v1.MIN_OBJECT_ENTRY_BYTES ⦃ _ => True ⦄ :=
-  check_fits_total remaining count decoder_v1.MIN_OBJECT_ENTRY_BYTES
+private theorem check_fits_kind_min_obj_entry_total (remaining count : Std.Usize) (kind : LimitKind) :
+    decoder_v1.check_fits_kind remaining count decoder_v1.MIN_OBJECT_ENTRY_BYTES kind ⦃ _ => True ⦄ :=
+  check_fits_kind_total remaining count decoder_v1.MIN_OBJECT_ENTRY_BYTES kind
     (by simp [decoder_v1.MIN_OBJECT_ENTRY_BYTES])
 
 @[local step]
@@ -137,6 +335,16 @@ theorem checked_add_usize_total (a b : Std.Usize) :
       | .Ok s => s.val = a.val + b.val
       | .Err _ => True ⦄ := by
   unfold decoder_v1.checked_add_usize
+  step* <;> try simp [spec_ok]
+  try scalar_tac
+
+@[local step]
+theorem checked_add_limit_total (a b : Std.Usize) (kind : LimitKind) :
+    decoder_v1.checked_add_limit a b kind ⦃ r =>
+      match r with
+      | .Ok s => s.val = a.val + b.val
+      | .Err _ => True ⦄ := by
+  unfold decoder_v1.checked_add_limit
   step* <;> try simp [spec_ok]
   try scalar_tac
 
@@ -151,33 +359,62 @@ theorem read_u8_at_total (input : Slice Std.U8) (pos : Std.Usize) :
   try exact ⟨by scalar_tac, by scalar_tac⟩
 
 @[local step]
+theorem read_u32_be_at_total (input : Slice Std.U8) (pos : Std.Usize) :
+    decoder_v1.read_u32_be_at input pos ⦃ r =>
+      match r with
+      | .Ok (_, nxt) => pos.val ≤ nxt.val ∧ nxt.val ≤ input.length
+      | .Err _ => True ⦄ := by
+  unfold decoder_v1.read_u32_be_at
+  step* <;> try simp [spec_ok]
+  try exact ⟨by scalar_tac, by scalar_tac⟩
+
+@[local step]
+theorem read_u64_be_at_total (input : Slice Std.U8) (pos : Std.Usize) :
+    decoder_v1.read_u64_be_at input pos ⦃ r =>
+      match r with
+      | .Ok (_, nxt) => pos.val ≤ nxt.val ∧ nxt.val ≤ input.length
+      | .Err _ => True ⦄ := by
+  unfold decoder_v1.read_u64_be_at
+  step* <;> try simp [spec_ok]
+  try exact ⟨by scalar_tac, by scalar_tac⟩
+
+@[local step]
 theorem read_var_u64_at_total (input : Slice Std.U8) (pos : Std.Usize) :
     decoder_v1.read_var_u64_at input pos ⦃ r =>
       match r with
-      | .Ok (_, nxt) => nxt.val ≤ input.length
+      | .Ok (_, nxt) => pos.val ≤ nxt.val ∧ nxt.val ≤ input.length
       | .Err _ => True ⦄ := by
   unfold decoder_v1.read_var_u64_at
   dsimp only
   split_ifs with hgt
   · simp [spec_ok]
-  · step as ⟨s, hs⟩
-    step with Varint.decode_var_u64_total s as ⟨r⟩
-    cases r with
-    | Ok val =>
-      simp only [core_ops_try_branch_ok, bind_ok]; try dsimp only
-      rcases val with ⟨val1, used⟩
+  · step as ⟨first, _⟩
+    split_ifs with hfast
+    · step as ⟨i1, _⟩
       step as ⟨i2, hi2⟩
-      split_ifs with hof
-      · simp [spec_ok]
-      · step as ⟨i3, hi3⟩
-        simp [spec_ok]
-        scalar_tac
-    | Err e =>
-      simp only [core_ops_try_branch_err, bind_ok, core_ops_try_from_residual_err, spec_ok]
+      simp [spec_ok]
+      exact ⟨by scalar_tac, by scalar_tac⟩
+    · step as ⟨s, hs⟩
+      step with Varint.decode_var_u64_total s as ⟨r⟩
+      cases r with
+      | Ok val =>
+        simp only [core_ops_try_branch_ok, bind_ok]; try dsimp only
+        rcases val with ⟨val1, used⟩
+        step as ⟨i2, hi2⟩
+        split_ifs with hof
+        · simp [spec_ok]
+        · step as ⟨i3, hi3⟩
+          simp [spec_ok]
+          exact ⟨by scalar_tac, by scalar_tac⟩
+      | Err e =>
+        simp only [core_ops_try_branch_err, bind_ok, core_ops_try_from_residual_err, spec_ok]
 
 @[local step]
 theorem read_var_i32_with_sign_at_total (input : Slice Std.U8) (pos : Std.Usize) :
-    decoder_v1.read_var_i32_with_sign_at input pos ⦃ _ => True ⦄ := by
+    decoder_v1.read_var_i32_with_sign_at input pos ⦃ r =>
+      match r with
+      | .Ok (_, nxt) => pos.val ≤ nxt.val ∧ nxt.val ≤ input.length
+      | .Err _ => True ⦄ := by
   unfold decoder_v1.read_var_i32_with_sign_at
   dsimp only
   split_ifs with hgt
@@ -188,70 +425,196 @@ theorem read_var_i32_with_sign_at_total (input : Slice Std.U8) (pos : Std.Usize)
     | Ok val =>
       simp only [core_ops_try_branch_ok, bind_ok]; try dsimp only
       rcases val with ⟨v, used⟩
-      step*
+      step as ⟨i2, hi2⟩
+      split_ifs with hof
+      · simp [spec_ok]
+      · step as ⟨i3, hi3⟩
+        simp [spec_ok]
+        exact ⟨by scalar_tac, by scalar_tac⟩
     | Err e =>
       simp only [core_ops_try_branch_err, bind_ok, core_ops_try_from_residual_err, spec_ok]
 
-@[local step]
-theorem read_bytes_slice_at_total (input : Slice Std.U8) (pos : Std.Usize) :
-    decoder_v1.read_bytes_slice_at input pos ⦃ r =>
+theorem read_var_u64_sink_spec
+    {S : Type _} (V : decoder_v1.V1Sink S) (Inv : S → Prop)
+    (input : Slice Std.U8) (hV : V1SinkSpanSafe input V Inv)
+    (pos : Std.Usize) (sink : S) (hSink : Inv sink) :
+    decoder_v1.read_var_u64_sink V input pos sink ⦃ (r, sink') =>
+      Inv sink' ∧
       match r with
-      | .Ok (s, e) => s.val ≤ e.val ∧ e.val ≤ input.length
+      | .Ok (_, nxt) => pos.val ≤ nxt.val ∧ nxt.val ≤ input.length
+      | .Err _ => True ⦄ := by
+  unfold decoder_v1.read_var_u64_sink
+  step with read_var_u64_at_total input pos as ⟨r, hr⟩
+  cases r with
+  | Ok val =>
+    simp only [spec_ok]
+    exact ⟨hSink, hr⟩
+  | Err e =>
+    dsimp only
+    split_ifs with hle
+    · step as ⟨i1, hi1⟩
+      step with fail_with_spec V Inv input hV sink e i1 0#u64 hSink as ⟨ce, sink1, hInv1⟩
+      simp [spec_ok, hInv1]
+    · step with fail_with_spec V Inv input hV sink e 0#usize 0#u64 hSink as ⟨ce, sink1, hInv1⟩
+      simp [spec_ok, hInv1]
+
+theorem read_var_i32_with_sign_sink_spec
+    {S : Type _} (V : decoder_v1.V1Sink S) (Inv : S → Prop)
+    (input : Slice Std.U8) (hV : V1SinkSpanSafe input V Inv)
+    (pos : Std.Usize) (sink : S) (hSink : Inv sink) :
+    decoder_v1.read_var_i32_with_sign_sink V input pos sink ⦃ (r, sink') =>
+      Inv sink' ∧
+      match r with
+      | .Ok (_, nxt) => pos.val ≤ nxt.val ∧ nxt.val ≤ input.length
+      | .Err _ => True ⦄ := by
+  unfold decoder_v1.read_var_i32_with_sign_sink
+  step with read_var_i32_with_sign_at_total input pos as ⟨r, hr⟩
+  cases r with
+  | Ok val =>
+    simp only [spec_ok]
+    exact ⟨hSink, hr⟩
+  | Err e =>
+    dsimp only
+    split_ifs with hle
+    · step as ⟨i1, hi1⟩
+      step with fail_with_spec V Inv input hV sink e i1 0#u64 hSink as ⟨ce, sink1, hInv1⟩
+      simp [spec_ok, hInv1]
+    · step with fail_with_spec V Inv input hV sink e 0#usize 0#u64 hSink as ⟨ce, sink1, hInv1⟩
+      simp [spec_ok, hInv1]
+
+theorem read_bytes_slice_at_spec
+    {S : Type _} (V : decoder_v1.V1Sink S) (Inv : S → Prop)
+    (input : Slice Std.U8) (hV : V1SinkSpanSafe input V Inv)
+    (pos : Std.Usize) (sink : S) (hSink : Inv sink) :
+    decoder_v1.read_bytes_slice_at V input pos sink ⦃ (r, sink') =>
+      Inv sink' ∧
+      match r with
+      | .Ok sp => pos.val ≤ sp.start.val ∧ SpanOk input sp
       | .Err _ => True ⦄ := by
   unfold decoder_v1.read_bytes_slice_at
-  step with read_var_u64_at_total input pos as ⟨r, hr⟩
+  step with read_var_u64_sink_spec V Inv input hV pos sink hSink as ⟨r, sink1, hInv1, hr⟩
   cases r with
   | Ok val =>
     simp only [core_ops_try_branch_ok, bind_ok]; try dsimp only
     rcases val with ⟨len_u64, next⟩
     dsimp only at hr ⊢
-    step with checked_usize_from_u64_total len_u64 as ⟨r1⟩
-    cases r1 with
-    | Ok val1 =>
-      simp only [core_ops_try_branch_ok, bind_ok]; try dsimp only
+    step as ⟨i, hi⟩
+    split_ifs with hof
+    · simp [spec_ok, hInv1]
+    · step as ⟨len, hlen⟩
       step as ⟨i1, hi1⟩
-      split_ifs with hgt
-      · simp [spec_ok]
-      · step as ⟨i2, hi2⟩
-        simp [spec_ok]
-        exact ⟨by scalar_tac, by scalar_tac⟩
-    | Err e =>
-      simp only [core_ops_try_branch_err, bind_ok, core_ops_try_from_residual_err, spec_ok]
+      split_ifs with hlo
+      · simp [spec_ok, hInv1]
+      · step as ⟨i3, hi3⟩
+        split_ifs with hgt
+        · simp [spec_ok, hInv1]
+        · step as ⟨i4, hi4⟩
+          simp [spec_ok, SpanOk]
+          exact ⟨hInv1, by scalar_tac, by scalar_tac, by scalar_tac⟩
   | Err e =>
     simp only [core_ops_try_branch_err, bind_ok, core_ops_try_from_residual_err, spec_ok]
+    exact ⟨hInv1, trivial⟩
 
-@[local step]
-theorem read_str_slice_at_total (input : Slice Std.U8) (pos : Std.Usize) :
-    decoder_v1.read_str_slice_at input pos ⦃ r =>
+theorem read_str_slice_at_spec
+    {S : Type _} (V : decoder_v1.V1Sink S) (Inv : S → Prop)
+    (input : Slice Std.U8) (hV : V1SinkSpanSafe input V Inv)
+    (pos : Std.Usize) (sink : S) (hSink : Inv sink) :
+    decoder_v1.read_str_slice_at V input pos sink ⦃ (r, sink') =>
+      Inv sink' ∧
       match r with
-      | .Ok (s, e) => s.val ≤ e.val ∧ e.val ≤ input.length
+      | .Ok sp => pos.val ≤ sp.start.val ∧ SpanOk input sp
       | .Err _ => True ⦄ := by
   unfold decoder_v1.read_str_slice_at
-  step with read_bytes_slice_at_total input pos as ⟨r, hr⟩
+  step with read_bytes_slice_at_spec V Inv input hV pos sink hSink as ⟨r, sink1, hInv1, hr⟩
   cases r with
   | Ok val =>
     simp only [core_ops_try_branch_ok, bind_ok]; try dsimp only
-    rcases val with ⟨start, «end»⟩
-    dsimp only at hr ⊢
-    step as ⟨s, hs⟩
-    step with Utf16.is_valid_utf8_total s as ⟨b⟩
-    split_ifs <;> simp [spec_ok]
-    exact ⟨by scalar_tac, by scalar_tac⟩
+    dsimp only [SpanOk] at hr ⊢
+    step with hV.core_validates_utf8 sink1 as ⟨b⟩
+    split_ifs
+    · step as ⟨s, hs⟩
+      step with Utf16.is_valid_utf8_total s as ⟨b1⟩
+      split_ifs <;> simp [spec_ok, SpanOk, hInv1]
+      exact ⟨by scalar_tac, by scalar_tac, by scalar_tac⟩
+    · simp [spec_ok, SpanOk, hInv1]
+      exact ⟨by scalar_tac, by scalar_tac, by scalar_tac⟩
   | Err e =>
     simp only [core_ops_try_branch_err, bind_ok, core_ops_try_from_residual_err, spec_ok]
+    exact ⟨hInv1, trivial⟩
 
-@[local step]
-theorem skip_fixed_at_total (input : Slice Std.U8) (pos width : Std.Usize) :
-    decoder_v1.skip_fixed_at input pos width ⦃ _ => True ⦄ := by
-  unfold decoder_v1.skip_fixed_at
-  step*
+theorem read_early_str_slice_at_spec
+    {S : Type _} (V : decoder_v1.V1Sink S) (Inv : S → Prop)
+    (input : Slice Std.U8) (hV : V1SinkSpanSafe input V Inv)
+    (pos : Std.Usize) (slot : Std.U8) (sink : S) (hSink : Inv sink) :
+    decoder_v1.read_early_str_slice_at V input pos slot sink ⦃ (r, sink') =>
+      Inv sink' ∧
+      match r with
+      | .Ok sp => pos.val ≤ sp.start.val ∧ SpanOk input sp
+      | .Err _ => True ⦄ := by
+  unfold decoder_v1.read_early_str_slice_at
+  step with read_bytes_slice_at_spec V Inv input hV pos sink hSink as ⟨r, sink1, hInv1, hr⟩
+  cases r with
+  | Ok val =>
+    simp only [core_ops_try_branch_ok, bind_ok]; try dsimp only
+    dsimp only [SpanOk] at hr ⊢
+    step with hV.core_validates_utf8 sink1 as ⟨b⟩
+    split_ifs
+    · step as ⟨s, hs⟩
+      step with Utf16.is_valid_utf8_total s as ⟨b1⟩
+      split_ifs <;> simp [spec_ok, SpanOk, hInv1]
+      exact ⟨by scalar_tac, by scalar_tac, by scalar_tac⟩
+    · step with hV.validate_utf8_early sink1 slot val hInv1 hr.2 as ⟨r1, sink2, hInv2⟩
+      cases r1 with
+      | Ok _ =>
+        simp only [core_ops_try_branch_ok, bind_ok, spec_ok, SpanOk]
+        try dsimp only
+        exact ⟨hInv2, by scalar_tac, by scalar_tac, by scalar_tac⟩
+      | Err e =>
+        simp only [core_ops_try_branch_err, bind_ok, core_ops_try_from_residual_err, spec_ok]
+        try dsimp only
+        exact ⟨hInv2, trivial⟩
+  | Err e =>
+    simp only [core_ops_try_branch_err, bind_ok, core_ops_try_from_residual_err, spec_ok]
+    exact ⟨hInv1, trivial⟩
 
-@[local step]
-theorem advance_clock_total (clock len : Std.U64) :
-    decoder_v1.advance_clock clock len ⦃ _ => True ⦄ := by
-  unfold decoder_v1.advance_clock
+theorem read_wire_id_at_spec
+    {S : Type _} (V : decoder_v1.V1Sink S) (Inv : S → Prop)
+    (input : Slice Std.U8) (hV : V1SinkSpanSafe input V Inv)
+    (pos : Std.Usize) (sink : S) (hSink : Inv sink) :
+    decoder_v1.read_wire_id_at V input pos sink ⦃ (r, sink') =>
+      Inv sink' ∧
+      match r with
+      | .Ok (_, nxt) => pos.val ≤ nxt.val ∧ nxt.val ≤ input.length
+      | .Err _ => True ⦄ := by
+  unfold decoder_v1.read_wire_id_at
+  step with read_var_u64_sink_spec V Inv input hV pos sink hSink as ⟨r, sink1, hInv1, hr⟩
+  cases r with
+  | Ok val =>
+    simp only [core_ops_try_branch_ok, bind_ok]; try dsimp only
+    rcases val with ⟨client, p1⟩
+    dsimp only at hr
+    step with read_var_u64_sink_spec V Inv input hV p1 sink1 hInv1 as ⟨r1, sink2, hInv2, hr1⟩
+    cases r1 with
+    | Ok val1 =>
+      simp only [core_ops_try_branch_ok, bind_ok]; try dsimp only
+      rcases val1 with ⟨clock, p2⟩
+      dsimp only at hr1 ⊢
+      simp [spec_ok]
+      exact ⟨hInv2, by omega, hr1.2⟩
+    | Err e =>
+      simp only [core_ops_try_branch_err, bind_ok, core_ops_try_from_residual_err, spec_ok]
+      exact ⟨hInv2, trivial⟩
+  | Err e =>
+    simp only [core_ops_try_branch_err, bind_ok, core_ops_try_from_residual_err, spec_ok]
+    exact ⟨hInv1, trivial⟩
+
+theorem advance_clock_sink_spec {S : Type _} (V : decoder_v1.V1Sink S) (Inv : S → Prop)
+    (input : Slice Std.U8) (hV : V1SinkSpanSafe input V Inv)
+    (clock len : Std.U64) (sink : S) (hSink : Inv sink) :
+    decoder_v1.advance_clock_sink V clock len sink ⦃ (_, sink') => Inv sink' ⦄ := by
+  unfold decoder_v1.advance_clock_sink
   split_ifs with hz
-  · simp [spec_ok]
+  · simp [spec_ok, hSink]
   · have hMax : Std.U64.max = 2 ^ 64 - 1 := by simp [Std.U64.max, Std.U64.numBits]
     have hCoreMax : core.num.U64.MAX.val = 2 ^ 64 - 1 := by decide
     have hClkLe : clock.val ≤ core.num.U64.MAX.val := by
@@ -260,22 +623,12 @@ theorem advance_clock_total (clock len : Std.U64) :
       rw [hnb] at this
       omega
     step as ⟨i, hi⟩
-    split_ifs <;> step*
-
-@[local step]
-theorem contains_u64_total (items : Slice Std.U64) (target : Std.U64) :
-    decoder_v1.contains_u64 items target ⦃ _ => True ⦄ := by
-  unfold decoder_v1.contains_u64
-  unfold decoder_v1.contains_u64_loop
-  refine loop.spec_decr_nat
-    (fun i => items.length - i.val) (fun i => i.val ≤ items.length)
-    (fun _ => True) _ 0#usize ?_ (by scalar_tac)
-  intro i hi
-  unfold decoder_v1.contains_u64_loop.body
-  dsimp only
-  split_ifs with hlt
-  · step* <;> simp [spec_ok] <;> scalar_tac
-  · simp [spec_ok]
+    split_ifs with hgt
+    · step with fail_with_spec V Inv input hV sink CodecError.ClockOverflow 0#usize clock hSink
+        as ⟨ce, sink1, hInv1⟩
+      try simp [spec_ok, hInv1]
+    · step*
+      try simp [spec_ok, hSink]
 
 @[local step]
 theorem read_sv_entry_total (input : Slice Std.U8) (cur : Std.Usize) :
@@ -296,6 +649,80 @@ theorem read_sv_entry_total (input : Slice Std.U8) (cur : Std.Usize) :
       simp only [core_ops_try_branch_err, bind_ok, core_ops_try_from_residual_err, spec_ok]
   | Err e =>
     simp only [core_ops_try_branch_err, bind_ok, core_ops_try_from_residual_err, spec_ok]
+
+theorem read_state_vector_v1_with_total
+    {S : Type _} (V : decoder_v1.SvSink S) (Inv : S → Prop) (hV : SvSinkTotal V Inv)
+    (input : Slice Std.U8) (pos : Std.Usize) (sink : S) (hSink : Inv sink) :
+    decoder_v1.read_state_vector_v1_with V input pos sink ⦃ (_, sink') => Inv sink' ⦄ := by
+  unfold decoder_v1.read_state_vector_v1_with
+  dsimp only
+  split_ifs with hgt
+  · simp [spec_ok, hSink]
+  · step with read_var_u64_at_total input pos as ⟨r, hr⟩
+    cases r with
+    | Ok val =>
+      simp only [core_ops_try_branch_ok, bind_ok]; try dsimp only
+      rcases val with ⟨count_u64, cur⟩
+      dsimp only at hr
+      step as ⟨i2, hi2⟩
+      step as ⟨i3, hi3⟩
+      step as ⟨i4, hi4⟩
+      split_ifs with hcnt
+      · simp [spec_ok, hSink]
+      · step with checked_usize_limit_total count_u64 LimitKind.Clients as ⟨r1⟩
+        cases r1 with
+        | Ok val1 =>
+          simp only [core_ops_try_branch_ok, bind_ok]; try dsimp only
+          step with hV.on_sv_len sink val1 hSink as ⟨r2, sink1, hSink1⟩
+          cases r2 with
+          | Ok _ =>
+            simp only [core_ops_try_branch_ok, bind_ok]; try dsimp only
+            have hLoop :
+                decoder_v1.read_state_vector_v1_with_loop V input sink1 cur val1 none 0#usize
+                  ⦃ (sink2, _, _) => Inv sink2 ⦄ := by
+              unfold decoder_v1.read_state_vector_v1_with_loop
+              let inv : S × Std.Usize × Option CodecError × Std.Usize → Prop :=
+                fun (sinkk, _, _, i) => Inv sinkk ∧ i.val ≤ val1.val
+              refine loop.spec_decr_nat
+                (fun (_, _, err, i) => errFlag err + (val1.val - i.val))
+                inv _ _ (sink1, cur, none, 0#usize) ?_
+                ⟨hSink1, by scalar_tac⟩
+              intro ⟨sinkk, cur1, err1, i1⟩ ⟨hInvK, hiLe⟩
+              unfold decoder_v1.read_state_vector_v1_with_loop.body
+              dsimp only
+              split_ifs with hlt hnone
+              · have herr : err1 = none := (is_none_eq_true_iff err1).1 hnone
+                subst herr
+                step with read_sv_entry_total input cur1 as ⟨r3⟩
+                cases r3 with
+                | Ok t =>
+                  rcases t with ⟨client, clock, p2⟩
+                  dsimp only
+                  step with hV.on_sv_entry sinkk client clock hInvK as ⟨r4, sinkNext, hInvNext⟩
+                  cases r4 with
+                  | Ok _ =>
+                    step as ⟨iNext, hiNext⟩
+                    try simp only [spec_ok]
+                    exact ⟨⟨hInvNext, by scalar_tac⟩, by simp [hiNext]; scalar_tac⟩
+                  | Err e =>
+                    try simp only [spec_ok]
+                    exact ⟨⟨hInvNext, hiLe⟩, by simp⟩
+                | Err e =>
+                  try simp only [spec_ok]
+                  exact ⟨⟨hInvK, hiLe⟩, by simp⟩
+              · simp [spec_ok, hInvK]
+              · simp [spec_ok, hInvK]
+            step with hLoop as ⟨sink2, cur1, err, hSink2⟩
+            cases err <;> simp [spec_ok, hSink2]
+          | Err e =>
+            simp only [core_ops_try_branch_err, bind_ok, core_ops_try_from_residual_err, spec_ok]
+            exact hSink1
+        | Err e =>
+          simp only [core_ops_try_branch_err, bind_ok, core_ops_try_from_residual_err, spec_ok]
+          exact hSink
+    | Err e =>
+      simp only [core_ops_try_branch_err, bind_ok, core_ops_try_from_residual_err, spec_ok]
+      exact hSink
 
 @[local step]
 theorem read_state_vector_v1_total (input : Slice Std.U8) (pos : Std.Usize) :
@@ -375,18 +802,22 @@ theorem decode_state_vector_v1_total (input : Slice Std.U8) :
 
 @[local step]
 theorem read_one_delete_range_total (input : Slice Std.U8) (cur : Std.Usize) :
-    decoder_v1.read_one_delete_range input cur ⦃ _ => True ⦄ := by
+    decoder_v1.read_one_delete_range input cur ⦃ r =>
+      match r with
+      | .Ok (_, _, q2) => q2.val ≤ input.length
+      | .Err _ => True ⦄ := by
   unfold decoder_v1.read_one_delete_range
   step with read_var_u64_at_total input cur as ⟨r⟩
   cases r with
   | Ok val =>
     simp only [core_ops_try_branch_ok, bind_ok]; try dsimp only
     rcases val with ⟨start, q1⟩
-    step with read_var_u64_at_total input q1 as ⟨r1⟩
+    step with read_var_u64_at_total input q1 as ⟨r1, hr1⟩
     cases r1 with
     | Ok val1 =>
       simp only [core_ops_try_branch_ok, bind_ok]; try dsimp only
       rcases val1 with ⟨len, q2⟩
+      dsimp only at hr1
       have hMax : Std.U64.max = 2 ^ 64 - 1 := by simp [Std.U64.max, Std.U64.numBits]
       have hCoreMax : core.num.U64.MAX.val = 2 ^ 64 - 1 := by decide
       have hStLe : start.val ≤ core.num.U64.MAX.val := by
@@ -395,11 +826,49 @@ theorem read_one_delete_range_total (input : Slice Std.U8) (cur : Std.Usize) :
         rw [hnb] at this
         omega
       step as ⟨i, hi⟩
-      split_ifs <;> step*
+      split_ifs <;> (try simp only [spec_ok]) <;> (try exact hr1.2) <;> step*
     | Err e =>
       simp only [core_ops_try_branch_err, bind_ok, core_ops_try_from_residual_err, spec_ok]
   | Err e =>
     simp only [core_ops_try_branch_err, bind_ok, core_ops_try_from_residual_err, spec_ok]
+
+theorem read_one_delete_range_sink_spec {S : Type _} (V : decoder_v1.V1Sink S) (Inv : S → Prop)
+    (input : Slice Std.U8) (hV : V1SinkSpanSafe input V Inv)
+    (cur : Std.Usize) (sink : S) (hSink : Inv sink) :
+    decoder_v1.read_one_delete_range_sink V input cur sink ⦃ (r, sink') =>
+      Inv sink' ∧ match r with | .Ok (_, _, q2) => q2.val ≤ input.length | .Err _ => True ⦄ := by
+  unfold decoder_v1.read_one_delete_range_sink
+  step with read_var_u64_sink_spec V Inv input hV cur sink hSink as ⟨r, sink1, hInv1, hr⟩
+  cases r with
+  | Ok val =>
+    simp only [core_ops_try_branch_ok, bind_ok]; try dsimp only
+    rcases val with ⟨start, q1⟩
+    step with read_var_u64_sink_spec V Inv input hV q1 sink1 hInv1 as ⟨r1, sink2, hInv2, hr1⟩
+    cases r1 with
+    | Ok val1 =>
+      simp only [core_ops_try_branch_ok, bind_ok]; try dsimp only
+      rcases val1 with ⟨len, q2⟩
+      dsimp only at hr1
+      have hMax : Std.U64.max = 2 ^ 64 - 1 := by simp [Std.U64.max, Std.U64.numBits]
+      have hCoreMax : core.num.U64.MAX.val = 2 ^ 64 - 1 := by decide
+      have hStLe : start.val ≤ core.num.U64.MAX.val := by
+        have := start.hBounds
+        have hnb : UScalarTy.U64.numBits = 64 := rfl
+        rw [hnb] at this
+        omega
+      step as ⟨i, hi⟩
+      split_ifs with hgt
+      · step with fail_with_spec V Inv input hV sink2 CodecError.ClockOverflow 0#usize start hInv2
+          as ⟨ce, sink3, hInv3⟩
+        simp [spec_ok, hInv3]
+      · step as ⟨s1, _⟩
+        simp [spec_ok, hInv2, hr1.2]
+    | Err e =>
+      simp only [core_ops_try_branch_err, bind_ok, core_ops_try_from_residual_err, spec_ok]
+      exact ⟨hInv2, trivial⟩
+  | Err e =>
+    simp only [core_ops_try_branch_err, bind_ok, core_ops_try_from_residual_err, spec_ok]
+    exact ⟨hInv1, trivial⟩
 
 theorem read_delete_ranges_for_client_spec
     (input : Slice Std.U8) (start_pos : Std.Usize) (client : Std.U64)
@@ -434,20 +903,26 @@ theorem read_delete_ranges_for_client_spec
         rcases t with ⟨start, «end», q2⟩
         dsimp only
         have hDs1 :
-            (if start != «end»
-             then delete_set.DeleteSetCore.insert ds1 client start «end»
-             else ok ds1)
-              ⦃ ds2 => DeleteSet.Canonical ds2 ∧ DeleteSet.totalRanges ds2 ≤ DeleteSet.totalRanges ds1 + 1 ⦄ := by
-          split_ifs with hne
+            (if start != «end» then do
+               let (status, ds2) ← delete_set.DeleteSetCore.try_insert ds1 client start «end»
+               let err ← match status with
+                         | .Ok _ => ok none
+                         | .Err e => ok (some e)
+               ok (ds2, err)
+             else ok (ds1, none))
+              ⦃ (ds2, _) => DeleteSet.Canonical ds2 ∧
+                DeleteSet.totalRanges ds2 ≤ DeleteSet.totalRanges ds1 + 1 ⦄ := by
+          split_ifs
           · have hCapStep : DeleteSet.totalRanges ds1 < Std.Usize.max := by scalar_tac
-            step with DeleteSet.insert_spec ds1 client start «end» hCan1 hCapStep as ⟨ds2, hDs2Can, hDs2Tot, _⟩
-            exact ⟨hDs2Can, hDs2Tot⟩
+            step with DeleteSet.try_insert_spec ds1 client start «end» hCan1 hCapStep as
+              ⟨status, ds2, hc, ht, _⟩
+            cases status <;> simpa [bind_ok, spec_ok] using And.intro hc ht
           · simp only [spec_ok]; exact ⟨hCan1, by omega⟩
-        step with hDs1 as ⟨ds2, hDs2Can, hDs2Tot⟩
+        step with hDs1 as ⟨ds2, err2, hDs2Can, hDs2Tot⟩
         step as ⟨rIdx1, hrIdx1⟩
         try simp only [spec_ok]
         refine ⟨⟨hDs2Can, by scalar_tac, by omega⟩, ?_⟩
-        simp [hrIdx1]; scalar_tac
+        cases err2 <;> simp [errFlag, hrIdx1] <;> scalar_tac
       | Err e =>
         try simp only [spec_ok]
         exact ⟨⟨hCan1, hrLe, hTot1⟩, by simp⟩
@@ -462,9 +937,10 @@ theorem read_delete_client_header_total
     (limits : decoder_v1.DecodeLimitsCore) (total_entries : Std.Usize) :
     decoder_v1.read_delete_client_header input cur limits total_entries ⦃ r =>
       match r with
-      | .Ok (_, rc, nxtEnt, _) =>
+      | .Ok (_, rc, nxtEnt, nxtCur) =>
         nxtEnt.val = total_entries.val + rc.val ∧
-        nxtEnt.val ≤ limits.max_collection_entries.val
+        nxtEnt.val ≤ limits.max_collection_entries.val ∧
+        nxtCur.val ≤ input.length
       | .Err _ => True ⦄ := by
   unfold decoder_v1.read_delete_client_header
   step with read_var_u64_at_total input cur as ⟨r, hr⟩
@@ -478,25 +954,19 @@ theorem read_delete_client_header_total
       simp only [core_ops_try_branch_ok, bind_ok]; try dsimp only
       rcases val1 with ⟨ranges_u64, p2⟩
       dsimp only at hr1
-      step with checked_usize_from_u64_total ranges_u64 as ⟨r2⟩
+      step with checked_usize_limit_total ranges_u64 LimitKind.DeleteRanges as ⟨r2⟩
       cases r2 with
       | Ok val2 =>
         simp only [core_ops_try_branch_ok, bind_ok]; try dsimp only
-        step with checked_add_usize_total total_entries val2 as ⟨r3, hr3⟩
+        step with checked_add_limit_total total_entries val2 LimitKind.CollectionEntries as ⟨r3, hr3⟩
         cases r3 with
         | Ok val3 =>
           simp only [core_ops_try_branch_ok, bind_ok]; try dsimp only
           dsimp only at hr3
           split_ifs with hlim
           · simp [spec_ok]
-          · step as ⟨i1, hi1⟩
-            step with check_fits_min_delete_range_total i1 val2 as ⟨r4⟩
-            cases r4 with
-            | Ok _ =>
-              simp only [core_ops_try_branch_ok, bind_ok]; try dsimp only
-              simp [spec_ok]; exact ⟨hr3, by scalar_tac⟩
-            | Err e =>
-              simp only [core_ops_try_branch_err, bind_ok, core_ops_try_from_residual_err, spec_ok]
+          · simp [spec_ok]
+            exact ⟨hr3, by scalar_tac, hr1.2⟩
         | Err e =>
           simp only [core_ops_try_branch_err, bind_ok, core_ops_try_from_residual_err, spec_ok]
       | Err e =>
@@ -521,14 +991,14 @@ theorem read_delete_set_v1_total
       simp only [core_ops_try_branch_ok, bind_ok]; try dsimp only
       rcases val with ⟨clients_u64, cur⟩
       dsimp only at hr
-      step with checked_usize_from_u64_total clients_u64 as ⟨r1⟩
+      step with checked_usize_limit_total clients_u64 LimitKind.DeleteClients as ⟨r1⟩
       cases r1 with
       | Ok val1 =>
         simp only [core_ops_try_branch_ok, bind_ok]; try dsimp only
         split_ifs with hlim
         · simp [spec_ok]
         · step as ⟨i2, hi2⟩
-          step with check_fits_min_delete_client_total i2 val1 as ⟨r2⟩
+          step with check_fits_kind_min_delete_client_total i2 val1 LimitKind.DeleteClients as ⟨r2⟩
           cases r2 with
           | Ok _ =>
             simp only [core_ops_try_branch_ok, bind_ok]; try dsimp only
@@ -557,24 +1027,31 @@ theorem read_delete_set_v1_total
                 | Ok t =>
                   rcases t with ⟨client, rc, nxtEnt, next_cur⟩
                   dsimp only at hr3 ⊢
-                  have hNxtLe : nxtEnt.val ≤ Std.Usize.max := by scalar_tac
-                  have hCapStep : DeleteSet.totalRanges ds1 + rc.val ≤ Std.Usize.max := by omega
-                  step with read_delete_ranges_for_client_spec input next_cur client rc ds1 hCan1 hCapStep
-                    as ⟨r4, ds2, hDs2Can, hDs2Tot⟩
-                  cases r4 with
-                  | Ok next_cur2 =>
-                    step with checked_add_usize_total totRng rc as ⟨r5⟩
-                    cases r5 with
-                    | Ok next_ranges =>
-                      step as ⟨cIdx1, hcIdx1⟩
-                      try simp only [spec_ok]
-                      exact ⟨⟨hDs2Can, by scalar_tac, by omega⟩, by simp [hcIdx1]; scalar_tac⟩
+                  step as ⟨i5, _⟩
+                  step with check_fits_kind_min_delete_range_total i5 rc LimitKind.DeleteRanges as ⟨rFit⟩
+                  cases rFit with
+                  | Ok _ =>
+                    have hNxtLe : nxtEnt.val ≤ Std.Usize.max := by scalar_tac
+                    have hCapStep : DeleteSet.totalRanges ds1 + rc.val ≤ Std.Usize.max := by omega
+                    step with read_delete_ranges_for_client_spec input next_cur client rc ds1 hCan1 hCapStep
+                      as ⟨r4, ds2, hDs2Can, hDs2Tot⟩
+                    cases r4 with
+                    | Ok next_cur2 =>
+                      step with checked_add_usize_total totRng rc as ⟨r5⟩
+                      cases r5 with
+                      | Ok next_ranges =>
+                        step as ⟨cIdx1, hcIdx1⟩
+                        try simp only [spec_ok]
+                        exact ⟨⟨hDs2Can, by scalar_tac, by omega⟩, by simp [hcIdx1]; scalar_tac⟩
+                      | Err e =>
+                        try simp only [spec_ok]
+                        exact ⟨⟨hDs2Can, hcLe, by omega⟩, by simp⟩
                     | Err e =>
                       try simp only [spec_ok]
                       exact ⟨⟨hDs2Can, hcLe, by omega⟩, by simp⟩
                   | Err e =>
                     try simp only [spec_ok]
-                    exact ⟨⟨hDs2Can, hcLe, by omega⟩, by simp⟩
+                    exact ⟨⟨hCan1, hcLe, hTot1⟩, by simp⟩
                 | Err e =>
                   try simp only [spec_ok]
                   exact ⟨⟨hCan1, hcLe, hTot1⟩, by simp⟩
@@ -589,164 +1066,732 @@ theorem read_delete_set_v1_total
     | Err e =>
       simp only [core_ops_try_branch_err, bind_ok, core_ops_try_from_residual_err, spec_ok]
 
-@[local step]
-theorem pop_open_stack_spec («open» : Slice (Std.Usize × Bool))
-    (hPos : 0 < «open».length) :
-    decoder_v1.pop_open_stack «open» ⦃ next_open => next_open.length = «open».length - 1 ⦄ := by
-  unfold decoder_v1.pop_open_stack
-  step as ⟨target, htarget⟩
-  have hTargetEq : target.val = «open».length - 1 := by scalar_tac
+theorem decode_delete_ranges_for_client_spec
+    {S : Type _} (V : decoder_v1.V1Sink S) (Inv : S → Prop)
+    (input : Slice Std.U8) (hV : V1SinkSpanSafe input V Inv)
+    (start_pos : Std.Usize) (client : Std.U64)
+    (range_count : Std.Usize) (sink : S) (hSink : Inv sink)
+    (hStart : start_pos.val ≤ input.length) :
+    decoder_v1.decode_delete_ranges_for_client V input start_pos client range_count sink
+      ⦃ (r, sink') => Inv sink' ∧ match r with | .Ok nxt => nxt.val ≤ input.length | .Err _ => True ⦄ := by
+  unfold decoder_v1.decode_delete_ranges_for_client
+  let inv : S × Std.Usize × Std.Usize × Option CodecError → Prop :=
+    fun (sink1, cur1, rIdx, _) => Inv sink1 ∧ rIdx.val ≤ range_count.val ∧ cur1.val ≤ input.length
   have hLoop :
-      decoder_v1.pop_open_stack_loop «open» (alloc.vec.Vec.new (Std.Usize × Bool)) 0#usize target
-        ⦃ next_open => next_open.length = «open».length - 1 ⦄ := by
-    unfold decoder_v1.pop_open_stack_loop
-    let inv : alloc.vec.Vec (Std.Usize × Bool) × Std.Usize → Prop := fun (v, k) =>
-      k.val ≤ target.val ∧ v.length = k.val
+      decoder_v1.decode_delete_ranges_for_client_loop V input client range_count sink start_pos 0#usize none
+        ⦃ (sink1, cur1, _) => Inv sink1 ∧ cur1.val ≤ input.length ⦄ := by
+    unfold decoder_v1.decode_delete_ranges_for_client_loop
     refine loop.spec_decr_nat
-      (fun (_, k) => target.val - k.val) inv
-      (fun (v : alloc.vec.Vec (Std.Usize × Bool)) => v.length = «open».length - 1) _
-      (alloc.vec.Vec.new (Std.Usize × Bool), 0#usize) ?_
-      ⟨by scalar_tac, by simp [alloc.vec.Vec.new, alloc.vec.Vec.length]⟩
-    intro ⟨v, k⟩ ⟨hkLe, hvLen⟩
-    unfold decoder_v1.pop_open_stack_loop.body
+      (fun (_, _, rIdx, err) => errFlag err + (range_count.val - rIdx.val))
+      inv _ _ (sink, start_pos, 0#usize, none) ?_
+      ⟨hSink, by scalar_tac, hStart⟩
+    intro ⟨sink1, cur1, rIdx, err1⟩ ⟨hInv1, hrLe, hCur1⟩
+    unfold decoder_v1.decode_delete_ranges_for_client_loop.body
     dsimp only
-    split_ifs with hlt
-    · have hCap : v.length < Std.Usize.max := by scalar_tac
-      step*
-      try simp only [spec_ok]
-      exact ⟨⟨by scalar_tac, by scalar_tac⟩, by scalar_tac⟩
-    · simp only [spec_ok]; scalar_tac
-  exact hLoop
+    split_ifs with hlt hnone
+    · have herr : err1 = none := (is_none_eq_true_iff err1).1 hnone
+      subst herr
+      step with read_one_delete_range_sink_spec V Inv input hV cur1 sink1 hInv1 as ⟨r, sink1', hInv1', hr⟩
+      cases r with
+      | Ok t =>
+        rcases t with ⟨start, «end», q2⟩
+        dsimp only [uncurry] at hr ⊢
+        split_ifs with hne
+        · step with hV.on_delete_range sink1' client start «end» hInv1' as ⟨r1, sink2, hInv2⟩
+          cases r1 with
+          | Ok _ =>
+            step as ⟨rIdx1, hrIdx1⟩
+            try simp only [spec_ok]
+            exact ⟨⟨hInv2, by scalar_tac, hr⟩, by simp [hrIdx1]; scalar_tac⟩
+          | Err e =>
+            try simp only [spec_ok]
+            exact ⟨⟨hInv2, hrLe, hCur1⟩, by simp⟩
+        · step as ⟨rIdx1, hrIdx1⟩
+          try simp only [spec_ok]
+          exact ⟨⟨hInv1', by scalar_tac, hr⟩, by simp [hrIdx1]; scalar_tac⟩
+      | Err e =>
+        try simp only [spec_ok]
+        exact ⟨⟨hInv1', hrLe, hCur1⟩, by simp⟩
+    · simp only [spec_ok]; exact ⟨hInv1, hCur1⟩
+    · simp only [spec_ok]; exact ⟨hInv1, hCur1⟩
+  step with hLoop as ⟨sink1, cur, err, hInv1, hCur⟩
+  cases err <;> simp [spec_ok]
+  · exact ⟨hInv1, hCur⟩
+  · exact hInv1
+
+theorem decode_delete_client_header_spec
+    {S : Type _} (V : decoder_v1.V1Sink S) (Inv : S → Prop)
+    (input : Slice Std.U8) (hV : V1SinkSpanSafe input V Inv)
+    (cur : Std.Usize) (limits : decoder_v1.DecodeLimitsCore) (total_entries : Std.Usize)
+    (sink : S) (hSink : Inv sink) :
+    decoder_v1.decode_delete_client_header V input cur limits total_entries sink ⦃ (r, sink') =>
+      Inv sink' ∧
+      match r with
+      | .Ok (_, rc, nxtEnt, nxtCur) =>
+        nxtEnt.val = total_entries.val + rc.val ∧
+        nxtEnt.val ≤ limits.max_collection_entries.val ∧
+        nxtCur.val ≤ input.length
+      | .Err _ => True ⦄ := by
+  unfold decoder_v1.decode_delete_client_header
+  step with read_var_u64_sink_spec V Inv input hV cur sink hSink as ⟨r, sink1, hInv1, hr⟩
+  cases r with
+  | Ok val =>
+    simp only [core_ops_try_branch_ok, bind_ok]; try dsimp only
+    rcases val with ⟨client, p1⟩
+    step with read_var_u64_sink_spec V Inv input hV p1 sink1 hInv1 as ⟨r1, sink2, hInv2, hr1⟩
+    cases r1 with
+    | Ok val1 =>
+      simp only [core_ops_try_branch_ok, bind_ok]; try dsimp only
+      rcases val1 with ⟨ranges_u64, p2⟩
+      dsimp only at hr1
+      step with checked_usize_limit_total ranges_u64 LimitKind.DeleteRanges as ⟨r2⟩
+      cases r2 with
+      | Ok val2 =>
+        simp only [core_ops_try_branch_ok, bind_ok]; try dsimp only
+        step with checked_add_limit_total total_entries val2 LimitKind.CollectionEntries as ⟨r3, hr3⟩
+        cases r3 with
+        | Ok val3 =>
+          simp only [core_ops_try_branch_ok, bind_ok]; try dsimp only
+          dsimp only at hr3
+          split_ifs with hlim
+          · simp [spec_ok, hInv2]
+          · simp [spec_ok, hInv2]
+            exact ⟨hr3, by scalar_tac, hr1.2⟩
+        | Err e =>
+          simp only [core_ops_try_branch_err, bind_ok, core_ops_try_from_residual_err, spec_ok]
+          exact ⟨hInv2, trivial⟩
+      | Err e =>
+        simp only [core_ops_try_branch_err, bind_ok, core_ops_try_from_residual_err, spec_ok]
+        exact ⟨hInv2, trivial⟩
+    | Err e =>
+      simp only [core_ops_try_branch_err, bind_ok, core_ops_try_from_residual_err, spec_ok]
+      exact ⟨hInv2, trivial⟩
+  | Err e =>
+    simp only [core_ops_try_branch_err, bind_ok, core_ops_try_from_residual_err, spec_ok]
+    exact ⟨hInv1, trivial⟩
+
+theorem decode_delete_set_v1_spec
+    {S : Type _} (V : decoder_v1.V1Sink S) (Inv : S → Prop)
+    (input : Slice Std.U8) (hV : V1SinkSpanSafe input V Inv)
+    (pos : Std.Usize) (limits : decoder_v1.DecodeLimitsCore)
+    (entries_acc : Std.Usize) (sink : S) (hSink : Inv sink) :
+    decoder_v1.decode_delete_set_v1 V input pos limits entries_acc sink
+      ⦃ (r, sink') => Inv sink' ∧ match r with | .Ok nxt => nxt.val ≤ input.length | .Err _ => True ⦄ := by
+  unfold decoder_v1.decode_delete_set_v1
+  dsimp only
+  split_ifs with hgt
+  · step with fail_with_spec V Inv input hV sink CodecError.UnexpectedEof 0#usize 0#u64 hSink
+      as ⟨ce, sink0, hSink0⟩
+    simp [spec_ok, hSink0]
+  · step with read_var_u64_sink_spec V Inv input hV pos sink hSink as ⟨r, sink_v, hSink_v, hr⟩
+    cases r with
+    | Ok val =>
+      simp only [core_ops_try_branch_ok, bind_ok]; try dsimp only
+      rcases val with ⟨clients_u64, cur⟩
+      dsimp only at hr
+      step with checked_usize_limit_total clients_u64 LimitKind.DeleteClients as ⟨r1⟩
+      cases r1 with
+      | Ok val1 =>
+        simp only [core_ops_try_branch_ok, bind_ok]; try dsimp only
+        split_ifs with hlim
+        · simp [spec_ok, hSink_v]
+        · step as ⟨i2, hi2⟩
+          step with check_fits_kind_sink_spec V Inv input hV i2 val1
+            decoder_v1.MIN_DELETE_CLIENT_BYTES LimitKind.DeleteClients sink_v
+            (by simp [decoder_v1.MIN_DELETE_CLIENT_BYTES]) hSink_v as ⟨r2, sink0, hSink0⟩
+          cases r2 with
+          | Ok _ =>
+            simp only [core_ops_try_branch_ok, bind_ok]; try dsimp only
+            have hLoop :
+                decoder_v1.decode_delete_set_v1_loop V input limits.max_structs limits.max_clients
+                  limits.max_collection_entries limits.max_any_depth limits.max_content_bytes
+                  sink0 cur val1 entries_acc 0#usize none ⦃ (sink1, cur1, _) => Inv sink1 ∧ cur1.val ≤ input.length ⦄ := by
+              unfold decoder_v1.decode_delete_set_v1_loop
+              let inv : S × Std.Usize × Std.Usize × Std.Usize × Option CodecError → Prop :=
+                fun (sink1, cur1, _, cIdx, _) => Inv sink1 ∧ cIdx.val ≤ val1.val ∧ cur1.val ≤ input.length
+              refine loop.spec_decr_nat
+                (fun (_, _, _, cIdx, err) => errFlag err + (val1.val - cIdx.val))
+                inv _ _ (sink0, cur, entries_acc, 0#usize, none) ?_
+                ⟨hSink0, by scalar_tac, hr.2⟩
+              intro ⟨sink1, cur1, totEnt, cIdx, err1⟩ ⟨hInv1, hcLe, hCur1⟩
+              unfold decoder_v1.decode_delete_set_v1_loop.body
+              dsimp only
+              split_ifs with hlt hnone
+              · have herr : err1 = none := (is_none_eq_true_iff err1).1 hnone
+                subst herr
+                step with decode_delete_client_header_spec V Inv input hV cur1
+                  { limits with } totEnt sink1 hInv1 as ⟨r3, sink1a, hInv1a, hr3⟩
+                cases r3 with
+                | Ok t =>
+                  rcases t with ⟨client, rc, nxtEnt, next_cur⟩
+                  dsimp only at hr3 ⊢
+                  step as ⟨i5, _⟩
+                  step with check_fits_kind_sink_spec V Inv input hV i5 rc
+                    decoder_v1.MIN_DELETE_RANGE_BYTES LimitKind.DeleteRanges sink1a
+                    (by simp [decoder_v1.MIN_DELETE_RANGE_BYTES]) hInv1a as ⟨rFit, sink1', hInv1'⟩
+                  cases rFit with
+                  | Ok _ =>
+                    step with hV.begin_delete_client sink1' client rc hInv1' as ⟨r4, sink2, hInv2⟩
+                    cases r4 with
+                    | Ok _ =>
+                      step with decode_delete_ranges_for_client_spec V Inv input hV next_cur client rc sink2 hInv2 hr3.2.2
+                        as ⟨r5, sink3, hInv3, hNxt5⟩
+                      cases r5 with
+                      | Ok next_cur2 =>
+                        step as ⟨cIdx1, hcIdx1⟩
+                        try simp only [spec_ok]
+                        exact ⟨⟨hInv3, by scalar_tac, hNxt5⟩, by simp [hcIdx1]; scalar_tac⟩
+                      | Err e =>
+                        try simp only [spec_ok]
+                        exact ⟨⟨hInv3, hcLe, hCur1⟩, by simp⟩
+                    | Err e =>
+                      try simp only [spec_ok]
+                      exact ⟨⟨hInv2, hcLe, hCur1⟩, by simp⟩
+                  | Err e =>
+                    try simp only [spec_ok]
+                    exact ⟨⟨hInv1', hcLe, hCur1⟩, by simp⟩
+                | Err e =>
+                  try simp only [spec_ok]
+                  exact ⟨⟨hInv1a, hcLe, hCur1⟩, by simp⟩
+              · simp [spec_ok, hInv1, hCur1]
+              · simp [spec_ok, hInv1, hCur1]
+            step with hLoop as ⟨sink1, cur1, err, hInv1, hCur1⟩
+            cases err <;> simp [spec_ok]
+            · exact ⟨hInv1, hCur1⟩
+            · exact hInv1
+          | Err e =>
+            simp only [core_ops_try_branch_err, bind_ok, core_ops_try_from_residual_err, spec_ok, Aeneas.Std.uncurry]
+            (try dsimp); exact ⟨hSink0, trivial⟩
+      | Err e =>
+        simp only [core_ops_try_branch_err, bind_ok, core_ops_try_from_residual_err, spec_ok, Aeneas.Std.uncurry]
+        (try dsimp); exact ⟨hSink_v, trivial⟩
+    | Err e =>
+      simp only [core_ops_try_branch_err, bind_ok, core_ops_try_from_residual_err, spec_ok, Aeneas.Std.uncurry]
+      (try dsimp); exact ⟨hSink_v, trivial⟩
+
+theorem decode_delete_set_v1_total
+    {S : Type _} (V : decoder_v1.V1Sink S) (Inv : S → Prop)
+    (input : Slice Std.U8) (hV : V1SinkTotal V Inv)
+    (pos : Std.Usize) (limits : decoder_v1.DecodeLimitsCore)
+    (entries_acc : Std.Usize) (sink : S) (hSink : Inv sink) :
+    decoder_v1.decode_delete_set_v1 V input pos limits entries_acc sink
+      ⦃ (_, sink') => Inv sink' ⦄ := by
+  step with decode_delete_set_v1_spec V Inv input (hV.toSpanSafe input) pos limits entries_acc sink hSink
+    as ⟨_, sink', hInv, _⟩
+  exact hInv
 
 private theorem min_bytes_any_total (tag : Std.U8) :
     (if tag = 9#u8 then ok decoder_v1.MIN_OBJECT_ENTRY_BYTES
      else ok decoder_v1.MIN_ENTRY_BYTES) ⦃ mb => 0 < mb.val ⦄ := by
   split_ifs <;> simp [spec_ok, decoder_v1.MIN_OBJECT_ENTRY_BYTES, decoder_v1.MIN_ENTRY_BYTES]
 
-private theorem step_any_atom_branches
-    (input : Slice Std.U8) (pos : Std.Usize)
-    (limits : decoder_v1.DecodeLimitsCore) (entries_acc : Std.Usize)
-    («open» : alloc.vec.Vec (Std.Usize × Bool))
-    (hCap : «open».length < Std.Usize.max) :
-    decoder_v1.skip_any_atom input pos limits entries_acc «open» ⦃ (_, open1) =>
-      open1.length ≤ «open».length + 1 ⦄ := by
-  unfold decoder_v1.skip_any_atom
+private theorem kind_any_total (tag : Std.U8) :
+    (if tag = 9#u8 then ok LimitKind.AnyObjectEntries
+     else ok LimitKind.AnyArrayEntries) ⦃ _ => True ⦄ := by
+  split_ifs <;> simp [spec_ok]
+
+private theorem sat_sub_usize_total (a b : Std.Usize) :
+    (if a >= b then a - b else ok 0#usize) ⦃ _ => True ⦄ := by
+  split_ifs <;> step*
+
+theorem decode_any_scalar_spec
+    {S : Type _} (V : decoder_v1.V1Sink S) (Inv : S → Prop)
+    (input : Slice Std.U8) (hV : V1SinkSpanSafe input V Inv)
+    (start_pos : Std.Usize) (tag : Std.U8) (cur : Std.Usize) (sink : S)
+    (hSink : Inv sink) (hCur : start_pos.val ≤ cur.val ∧ cur.val ≤ input.length) :
+    decoder_v1.decode_any_scalar V input tag cur sink ⦃ (r, sink') =>
+      Inv sink' ∧
+      match r with
+      | .Ok nxt => start_pos.val ≤ nxt.val ∧ nxt.val ≤ input.length
+      | .Err _ => True ⦄ := by
+  unfold decoder_v1.decode_any_scalar
+  try dsimp only; try simp only [Aeneas.Std.uncurry]
+  repeat (any_goals (
+    first
+    | (simp only [spec_ok, Aeneas.Std.uncurry]; (try dsimp only at *); (try simp only [SpanOk] at *);
+        (first
+        | done
+        | (exact ⟨by assumption, by omega, by omega⟩)
+        | (exact ⟨by assumption, trivial⟩)
+        | (scalar_tac; done)
+        | (omega; done)))
+    | (apply ite_wp_split <;> intro _)
+    | (split_ifs <;> try dsimp only at * <;> try simp only [Aeneas.Std.uncurry])
+    | (cases_prod_hyp <;> try dsimp only at * <;> try simp only [Aeneas.Std.uncurry])
+    | (cases_result_err <;>
+        simp only [core_ops_try_branch_ok, core_ops_try_branch_err, bind_ok,
+          core_ops_try_from_residual_err, Aeneas.Std.uncurry] <;>
+        try dsimp only at *)
+    | (step with (hV.on_any_undefined))
+    | (step with (hV.on_any_null))
+    | (step with (hV.on_any_i32))
+    | (step with (hV.on_any_f32_bits))
+    | (step with (hV.on_any_f64_bits))
+    | (step with (hV.on_any_i64_bits))
+    | (step with (hV.on_any_bool))
+    | (step with (hV.on_any_str))
+    | (step with (hV.on_any_bytes))
+    | (step with (read_var_i32_with_sign_sink_spec V Inv input hV))
+    | (step with (read_str_slice_at_spec V Inv input hV))
+    | (step with (read_bytes_slice_at_spec V Inv input hV))
+    | step
+    | ((try simp only [SpanOk, Slice.length] at *);
+        cases_and_hyps;
+        (first
+        | done
+        | (assumption; done)
+        | (exact ⟨by omega, by omega⟩; done)
+        | (omega; done)))
+  ))
+  all_goals try simp only [spec_ok, Aeneas.Std.uncurry]
+  all_goals try (simp only [SpanOk] at *; exact ⟨by assumption, by omega, by omega⟩)
+  all_goals try exact ⟨by assumption, trivial⟩
+
+private theorem set_or_push_open_spec
+    («open» : alloc.vec.Vec (Std.Usize × Bool)) (depth val1 : Std.Usize) (is_obj : Bool)
+    (hDepth : depth.val ≤ «open».length) (hDepMax : depth.val < Std.Usize.max) :
+    (if depth < «open».len
+     then do
+       let (_, index_mut_back) ← «open».index_mut_usize depth
+       ok (index_mut_back (val1, is_obj))
+     else «open».push (val1, is_obj))
+      ⦃ open1 => depth.val + 1 ≤ open1.length ⦄ := by
+  split_ifs with hlt
+  · have hLt : depth.val < «open».length := by scalar_tac
+    step as ⟨_, back, _, hback⟩
+    have hLen : (back (val1, is_obj)).length = «open».length := by
+      rw [hback]; simp [alloc.vec.Vec.set, alloc.vec.Vec.length]
+    omega
+  · have hGe : «open».length ≤ depth.val := by scalar_tac
+    have hPushCap : «open».length + 1 ≤ Std.Usize.max := by omega
+    step as ⟨open1, hOpen1⟩
+    simp [hOpen1, alloc.vec.Vec.push, alloc.vec.Vec.length]
+    omega
+
+theorem open_any_container_spec
+    {S : Type _} (V : decoder_v1.V1Sink S) (Inv : S → Prop)
+    (input : Slice Std.U8) (hV : V1SinkSpanSafe input V Inv)
+    (start_pos : Std.Usize) (is_obj : Bool) (cur : Std.Usize)
+    (limits : decoder_v1.DecodeLimitsCore)
+    (entries depth : Std.Usize) («open» : alloc.vec.Vec (Std.Usize × Bool)) (sink : S)
+    (hSink : Inv sink) (hDepth : depth.val ≤ «open».length)
+    (hCur : start_pos.val ≤ cur.val ∧ cur.val ≤ input.length) :
+    decoder_v1.open_any_container V input is_obj cur limits entries depth «open» sink
+      ⦃ (r, open1, sink1) =>
+        Inv sink1 ∧
+        match r with
+        | .Ok (nxt_cur, _, nxt_depth, empty) =>
+          nxt_depth.val ≤ open1.length ∧
+          (empty = true → 0 < nxt_depth.val) ∧
+          start_pos.val ≤ nxt_cur.val ∧ nxt_cur.val ≤ input.length
+        | .Err _ => True ⦄ := by
+  unfold decoder_v1.open_any_container
   dsimp only
-  by_cases hgt : alloc.vec.Vec.len «open» > limits.max_any_depth
-  · simp [hgt, spec_ok]
-  · simp only [hgt, ite_false]
-    step with read_u8_at_total input pos as ⟨r⟩
-    cases r with
-    | Ok val =>
-      simp only [core_ops_try_branch_ok, bind_ok]
-      rcases val with ⟨raw_tag, cur⟩
-      step as ⟨tag, htag⟩
-      try dsimp only; try simp only [Aeneas.Std.uncurry]
-      repeat (any_goals (
-        first
-        | (simp only [spec_ok, Aeneas.Std.uncurry]; try dsimp only; first | done | (scalar_tac; done) | (omega; done))
-        | (apply ite_wp_split <;> intro _)
-        | (split_ifs <;> try dsimp only <;> try simp only [Aeneas.Std.uncurry])
-        | (cases_prod_hyp <;> try dsimp only <;> try simp only [Aeneas.Std.uncurry])
-        | (cases_result_err <;>
-            simp only [core_ops_try_branch_ok, core_ops_try_branch_err, bind_ok,
-              core_ops_try_from_residual_err, Aeneas.Std.uncurry] <;>
-            try dsimp only)
-        | (step with min_bytes_any_total)
-        | (step with check_fits_total _ _ _ (by assumption))
-        | step
-      ))
-      all_goals try simp only [spec_ok, Aeneas.Std.uncurry]
-      all_goals try dsimp only
-      all_goals try scalar_tac
+  have hKind :
+      (if is_obj then ok LimitKind.AnyObjectEntries else ok LimitKind.AnyArrayEntries) ⦃ _ => True ⦄ := by
+    cases is_obj <;> simp [spec_ok]
+  have hMinSpec :
+      (if is_obj then ok decoder_v1.MIN_OBJECT_ENTRY_BYTES else ok decoder_v1.MIN_ENTRY_BYTES)
+        ⦃ mb => 0 < mb.val ⦄ := by
+    cases is_obj <;> simp [spec_ok, decoder_v1.MIN_OBJECT_ENTRY_BYTES, decoder_v1.MIN_ENTRY_BYTES]
+  step with hKind as ⟨kind⟩
+  step with hMinSpec as ⟨min_bytes, hMinPos⟩
+  step with read_var_u64_sink_spec V Inv input hV cur sink hSink as ⟨r, sink1, hInv1, hr⟩
+  cases r with
+  | Ok val =>
+    simp only [core_ops_try_branch_ok, bind_ok]; try dsimp only
+    rcases val with ⟨cnt_u64, p⟩
+    dsimp only at hr
+    step with checked_usize_limit_total cnt_u64 kind as ⟨r1⟩
+    cases r1 with
+    | Ok val1 =>
+      simp only [core_ops_try_branch_ok, bind_ok]; try dsimp only
+      step with checked_add_limit_total entries val1 LimitKind.CollectionEntries as ⟨r2⟩
+      cases r2 with
+      | Ok val2 =>
+        simp only [core_ops_try_branch_ok, bind_ok]; try dsimp only
+        by_cases hlim : val2 > limits.max_collection_entries
+        · simp only [hlim, ↓reduceIte, spec_ok]
+          exact ⟨hInv1, trivial⟩
+        · simp only [hlim, ↓reduceIte]
+          step as ⟨i1, hi1⟩
+          step with check_fits_kind_sink_spec V Inv input hV i1 val1 min_bytes kind sink1
+            hMinPos hInv1 as ⟨r3, sink2, hInv2⟩
+          cases r3 with
+          | Ok _ =>
+            simp only [core_ops_try_branch_ok, bind_ok]; try dsimp only
+            have hUsizeMax : core.num.Usize.MAX.val = Std.Usize.max := by
+              simp [core.num.Usize.MAX]
+            by_cases hmaxd : depth = core.num.Usize.MAX
+            · simp only [hmaxd, ↓reduceIte, spec_ok]
+              exact ⟨hInv2, trivial⟩
+            · simp only [hmaxd, ↓reduceIte]
+              have hDepMax : depth.val < Std.Usize.max := by
+                have hNe : depth.val ≠ Std.Usize.max := fun hEq => hmaxd (by scalar_tac)
+                scalar_tac
+              cases is_obj with
+              | true =>
+                simp only [↓reduceIte]
+                step with hV.on_any_begin_object sink2 val1 hInv2 as ⟨r4, sink3, hInv3⟩
+                cases r4 with
+                | Ok _ =>
+                  simp only [core_ops_try_branch_ok, bind_ok]; try dsimp only
+                  step with set_or_push_open_spec «open» depth val1 true hDepth hDepMax as ⟨open1, hOpen1⟩
+                  step as ⟨i3, hi3⟩
+                  exact ⟨hInv3, by omega, fun _ => by omega, by omega, hr.2⟩
+                | Err e =>
+                  simp only [core_ops_try_branch_err, bind_ok, core_ops_try_from_residual_err, spec_ok]
+                  exact ⟨hInv3, trivial⟩
+              | false =>
+                simp only [Bool.false_eq_true, ↓reduceIte]
+                step with hV.on_any_begin_array sink2 val1 hInv2 as ⟨r4, sink3, hInv3⟩
+                cases r4 with
+                | Ok _ =>
+                  simp only [core_ops_try_branch_ok, bind_ok]; try dsimp only
+                  step with set_or_push_open_spec «open» depth val1 false hDepth hDepMax as ⟨open1, hOpen1⟩
+                  step as ⟨i3, hi3⟩
+                  exact ⟨hInv3, by omega, fun _ => by omega, by omega, hr.2⟩
+                | Err e =>
+                  simp only [core_ops_try_branch_err, bind_ok, core_ops_try_from_residual_err, spec_ok]
+                  exact ⟨hInv3, trivial⟩
+          | Err e =>
+            simp only [core_ops_try_branch_err, bind_ok, core_ops_try_from_residual_err, spec_ok]
+            exact ⟨hInv2, trivial⟩
+      | Err e =>
+        simp only [core_ops_try_branch_err, bind_ok, core_ops_try_from_residual_err, spec_ok]
+        exact ⟨hInv1, trivial⟩
     | Err e =>
-      simp only [core_ops_try_branch_err, bind_ok, core_ops_try_from_residual_err, spec_ok, Aeneas.Std.uncurry]
-      try dsimp only
-      omega
+      simp only [core_ops_try_branch_err, bind_ok, core_ops_try_from_residual_err, spec_ok]
+      exact ⟨hInv1, trivial⟩
+  | Err e =>
+    simp only [core_ops_try_branch_err, bind_ok, core_ops_try_from_residual_err, spec_ok]
+    exact ⟨hInv1, trivial⟩
 
-@[local step]
-theorem skip_any_atom_spec
-    (input : Slice Std.U8) (pos : Std.Usize)
-    (limits : decoder_v1.DecodeLimitsCore) (entries_acc : Std.Usize)
-    («open» : alloc.vec.Vec (Std.Usize × Bool))
-    (hCap : «open».length < Std.Usize.max) :
-    decoder_v1.skip_any_atom input pos limits entries_acc «open» ⦃ (_, open1) =>
-      open1.length ≤ «open».length + 1 ⦄ :=
-  step_any_atom_branches input pos limits entries_acc «open» hCap
+theorem close_finished_containers_spec
+    {S : Type _} (V : decoder_v1.V1Sink S) (Inv : S → Prop)
+    (input : Slice Std.U8) (hV : V1SinkSpanSafe input V Inv)
+    («open» : Slice (Std.Usize × Bool)) (start_depth : Std.Usize) (sink : S)
+    (hSink : Inv sink) (hStartDepth : start_depth.val ≤ «open».length) :
+    decoder_v1.close_finished_containers V «open» start_depth sink
+      ⦃ (r, sink') =>
+        Inv sink' ∧
+        match r with
+        | .Ok d => d.val ≤ «open».length
+        | .Err _ => True ⦄ := by
+  unfold decoder_v1.close_finished_containers
+  let inv : S × Std.Usize × Bool × Option CodecError → Prop :=
+    fun (sinkk, depthk, _, _) => Inv sinkk ∧ depthk.val ≤ «open».length
+  have hLoop :
+      decoder_v1.close_finished_containers_loop V «open» sink start_depth false none
+        ⦃ (sink1, depth1, _) => Inv sink1 ∧ depth1.val ≤ «open».length ⦄ := by
+    unfold decoder_v1.close_finished_containers_loop
+    refine loop.spec_decr_nat
+      (fun (_, depthk, stopk, errk) => stepFlag stopk errk + depthk.val)
+      inv _ _ (sink, start_depth, false, none) ?_ ⟨hSink, hStartDepth⟩
+    intro ⟨sinkk, depthk, stopk, errk⟩ ⟨hInvK, hDepK⟩
+    unfold decoder_v1.close_finished_containers_loop.body
+    dsimp only
+    split_ifs with hgt hstop hnone
+    · simp [spec_ok, hInvK, hDepK]
+    · have herr : errk = none := (is_none_eq_true_iff errk).1 hnone
+      subst herr
+      step as ⟨i, hi⟩
+      step as ⟨p, hp⟩
+      split_ifs with hzero
+      · step with hV.on_any_end_container sinkk hInvK as ⟨r, sink1, hInv1⟩
+        cases r with
+        | Ok _ =>
+          try simp only [spec_ok]
+          exact ⟨⟨hInv1, by omega⟩, by simp [stepFlag, hstop]; omega⟩
+        | Err e =>
+          try simp only [spec_ok]
+          exact ⟨⟨hInv1, hDepK⟩, by simp [stepFlag, hstop]⟩
+      · try simp only [spec_ok]
+        exact ⟨⟨hInvK, hDepK⟩, by simp [stepFlag, hstop]⟩
+    · simp [spec_ok, hInvK, hDepK]
+    · simp [spec_ok, hInvK, hDepK]
+  step with hLoop as ⟨sink1, depth1, err, hInv1, hDep1⟩
+  cases err <;> simp [spec_ok, hInv1, hDep1]
 
-theorem skip_any_step_spec
-    (input : Slice Std.U8) (cur : Std.Usize)
-    (limits : decoder_v1.DecodeLimitsCore) (entries_acc : Std.Usize)
-    («open» : alloc.vec.Vec (Std.Usize × Bool))
-    (hCap : «open».length < Std.Usize.max) :
-    decoder_v1.skip_any_step input cur limits entries_acc «open» ⦃ (_, open1) =>
-      open1.length ≤ «open».length + 1 ⦄ := by
-  unfold decoder_v1.skip_any_step
-  simp only [alloc.vec.Vec.len]
-  split_ifs with hpos
-  · have hOpenPos : 0 < «open».length := by scalar_tac
-    step as ⟨i, hi⟩
-    step as ⟨pair, hpair⟩
-    split_ifs with hzero hb
-    · have hDerefPos : 0 < (alloc.vec.Vec.deref «open»).length := by
-        simp [alloc.vec.Vec.deref, alloc.vec.Vec.length, Slice.length]; exact hOpenPos
-      step with pop_open_stack_spec _ hDerefPos as ⟨open1, hopen1⟩
-      step as ⟨b1, hb1⟩
-      simp only [alloc.vec.Vec.deref, alloc.vec.Vec.length, Slice.length] at hopen1
-      simp only [spec_ok, alloc.vec.Vec.length]
-      try simp at hopen1 ⊢
-      omega
-    · step as ⟨i2, hi2⟩
-      step as ⟨v2, b1, back, hpair2, hback⟩
-      try simp only [Aeneas.Std.uncurry]
-      step with read_str_slice_at_total input cur as ⟨r⟩
+theorem decode_any_step_spec
+    {S : Type _} (V : decoder_v1.V1Sink S) (Inv : S → Prop)
+    (input : Slice Std.U8) (hV : V1SinkSpanSafe input V Inv)
+    (start_pos start_cur : Std.Usize) (limits : decoder_v1.DecodeLimitsCore)
+    (entries depth : Std.Usize) («open» : alloc.vec.Vec (Std.Usize × Bool)) (sink : S)
+    (hSink : Inv sink) (hDepthPos : 0 < depth.val) (hDepth : depth.val ≤ «open».length)
+    (hCur : start_pos.val ≤ start_cur.val ∧ start_cur.val ≤ input.length) :
+    decoder_v1.decode_any_step V input start_cur limits entries depth «open» sink
+      ⦃ (r, open1, sink1) =>
+        Inv sink1 ∧
+        match r with
+        | .Ok (next_cur, _, next_depth) =>
+          next_depth.val ≤ open1.length ∧
+          start_pos.val ≤ next_cur.val ∧ next_cur.val ≤ input.length
+        | .Err _ => True ⦄ := by
+  unfold decoder_v1.decode_any_step
+  dsimp only
+  step as ⟨i, hi⟩
+  step as ⟨p, hp⟩
+  by_cases hzero : p = 0#usize
+  · simp only [hzero, ↓reduceIte]
+    step with hV.on_any_end_container sink hSink as ⟨r, sink1, hSink1⟩
+    cases r with
+    | Ok _ =>
+      simp only [core_ops_try_branch_ok, bind_ok, spec_ok]
+      exact ⟨hSink1, by omega, hCur.1, hCur.2⟩
+    | Err e =>
+      simp only [core_ops_try_branch_err, bind_ok, core_ops_try_from_residual_err, spec_ok]
+      exact ⟨hSink1, trivial⟩
+  · simp only [hzero, ↓reduceIte]
+    step as ⟨i2, hi2⟩
+    step as ⟨v2, b1, back, hpair2, hback⟩
+    try simp only [Aeneas.Std.uncurry]
+    have hLenOpen : (back (i2, b1)).length = «open».length := by
+      rw [hback]; simp [alloc.vec.Vec.set, alloc.vec.Vec.length]
+    cases hp with
+    | true =>
+      simp only [↓reduceIte]
+      step with read_str_slice_at_spec V Inv input hV start_cur sink hSink as ⟨r, sink1, hSink1, hr⟩
       cases r with
       | Ok val =>
         simp only [core_ops_try_branch_ok, bind_ok]; try dsimp only
-        rcases val with ⟨_, end_k⟩
-        have hLenOpen : (back (i2, b1)).length = «open».length := by
-          rw [hback]; simp [alloc.vec.Vec.set, alloc.vec.Vec.length]
-        step with skip_any_atom_spec input end_k limits entries_acc (back (i2, b1)) (by omega) as ⟨r1, open1, hopen1⟩
-        try simp only [spec_ok, Aeneas.Std.uncurry]; try dsimp only
-        all_goals omega
+        dsimp only [SpanOk] at hr
+        step with hV.on_any_object_key sink1 val hSink1 hr.2 as ⟨r1, sink2, hSink2⟩
+        cases r1 with
+        | Ok _ =>
+          simp only [core_ops_try_branch_ok, bind_ok]; try dsimp only
+          split_ifs with hdep
+          · simp [spec_ok, hSink2]
+          · step with read_u8_at_total input val.«end» as ⟨r2, hr2⟩
+            cases r2 with
+            | Ok val1 =>
+              simp only [core_ops_try_branch_ok, bind_ok]; try dsimp only
+              rcases val1 with ⟨raw_tag, after_tag⟩
+              dsimp only at hr2
+              step as ⟨tag, htag⟩
+              have hDepthBack : depth.val ≤ (back (i2, b1)).length := by omega
+              have hAfterCur : start_pos.val ≤ after_tag.val ∧ after_tag.val ≤ input.length :=
+                ⟨by omega, hr2.2⟩
+              split_ifs with h9 h10
+              · step with open_any_container_spec V Inv input hV start_pos (decide (tag = 9#u8)) after_tag
+                  limits entries depth (back (i2, b1)) sink2 hSink2 hDepthBack hAfterCur
+                  as ⟨r3, open2, sink3, hSink3, hRes3⟩
+                cases r3 with
+                | Ok val2 =>
+                  simp only [core_ops_try_branch_ok, bind_ok]; try dsimp only
+                  rcases val2 with ⟨next_cur, next_entries, next_depth, empty⟩
+                  dsimp only at hRes3
+                  split_ifs with hemp
+                  · have hStartDep : next_depth.val ≤ (alloc.vec.Vec.deref open2).length := by
+                      simpa [alloc.vec.Vec.deref, Slice.length] using hRes3.1
+                    step with close_finished_containers_spec V Inv input hV (alloc.vec.Vec.deref open2)
+                      next_depth sink3 hSink3 hStartDep as ⟨r4, sink4, hSink4, hRes4⟩
+                    cases r4 with
+                    | Ok val3 =>
+                      simp only [core_ops_try_branch_ok, bind_ok, spec_ok]
+                      have hV3 : val3.val ≤ open2.length := by
+                        simpa [alloc.vec.Vec.deref, Slice.length] using hRes4
+                      exact ⟨hSink4, hV3, hRes3.2.2.1, hRes3.2.2.2⟩
+                    | Err e =>
+                      simp only [core_ops_try_branch_err, bind_ok, core_ops_try_from_residual_err, spec_ok]
+                      exact ⟨hSink4, trivial⟩
+                  · simp only [spec_ok]
+                    exact ⟨hSink3, hRes3.1, hRes3.2.2.1, hRes3.2.2.2⟩
+                | Err e =>
+                  simp only [core_ops_try_branch_err, bind_ok, core_ops_try_from_residual_err, spec_ok]
+                  exact ⟨hSink3, trivial⟩
+              · step with open_any_container_spec V Inv input hV start_pos (decide (tag = 9#u8)) after_tag
+                  limits entries depth (back (i2, b1)) sink2 hSink2 hDepthBack hAfterCur
+                  as ⟨r3, open2, sink3, hSink3, hRes3⟩
+                cases r3 with
+                | Ok val2 =>
+                  simp only [core_ops_try_branch_ok, bind_ok]; try dsimp only
+                  rcases val2 with ⟨next_cur, next_entries, next_depth, empty⟩
+                  dsimp only at hRes3
+                  split_ifs with hemp
+                  · have hStartDep : next_depth.val ≤ (alloc.vec.Vec.deref open2).length := by
+                      simpa [alloc.vec.Vec.deref, Slice.length] using hRes3.1
+                    step with close_finished_containers_spec V Inv input hV (alloc.vec.Vec.deref open2)
+                      next_depth sink3 hSink3 hStartDep as ⟨r4, sink4, hSink4, hRes4⟩
+                    cases r4 with
+                    | Ok val3 =>
+                      simp only [core_ops_try_branch_ok, bind_ok, spec_ok]
+                      have hV3 : val3.val ≤ open2.length := by
+                        simpa [alloc.vec.Vec.deref, Slice.length] using hRes4
+                      exact ⟨hSink4, hV3, hRes3.2.2.1, hRes3.2.2.2⟩
+                    | Err e =>
+                      simp only [core_ops_try_branch_err, bind_ok, core_ops_try_from_residual_err, spec_ok]
+                      exact ⟨hSink4, trivial⟩
+                  · simp only [spec_ok]
+                    exact ⟨hSink3, hRes3.1, hRes3.2.2.1, hRes3.2.2.2⟩
+                | Err e =>
+                  simp only [core_ops_try_branch_err, bind_ok, core_ops_try_from_residual_err, spec_ok]
+                  exact ⟨hSink3, trivial⟩
+              · step with decode_any_scalar_spec V Inv input hV start_pos tag after_tag sink2
+                  hSink2 hAfterCur as ⟨r3, sink3, hSink3, hRes3⟩
+                cases r3 with
+                | Ok val2 =>
+                  simp only [core_ops_try_branch_ok, bind_ok]; try dsimp only
+                  step as ⟨p3, hp3⟩
+                  split_ifs with hz3
+                  · have hStartDep : depth.val ≤ (alloc.vec.Vec.deref (back (i2, b1))).length := by
+                      simpa [alloc.vec.Vec.deref, Slice.length, hLenOpen] using hDepth
+                    step with close_finished_containers_spec V Inv input hV
+                      (alloc.vec.Vec.deref (back (i2, b1))) depth sink3
+                      hSink3 hStartDep as ⟨r4, sink4, hSink4, hRes4⟩
+                    cases r4 with
+                    | Ok val3 =>
+                      simp only [core_ops_try_branch_ok, bind_ok, spec_ok]
+                      have hV3 : val3.val ≤ (back (i2, b1)).length := by
+                        simpa [alloc.vec.Vec.deref, Slice.length] using hRes4
+                      exact ⟨hSink4, hV3, hRes3.1, hRes3.2⟩
+                    | Err e =>
+                      simp only [core_ops_try_branch_err, bind_ok, core_ops_try_from_residual_err, spec_ok]
+                      exact ⟨hSink4, trivial⟩
+                  · simp only [spec_ok]
+                    exact ⟨hSink3, by omega, hRes3.1, hRes3.2⟩
+                | Err e =>
+                  simp only [core_ops_try_branch_err, bind_ok, core_ops_try_from_residual_err, spec_ok]
+                  exact ⟨hSink3, trivial⟩
+            | Err e =>
+              simp only [core_ops_try_branch_err, bind_ok, core_ops_try_from_residual_err, spec_ok]
+              exact ⟨hSink2, trivial⟩
+        | Err e =>
+          simp only [core_ops_try_branch_err, bind_ok, core_ops_try_from_residual_err, spec_ok]
+          exact ⟨hSink2, trivial⟩
       | Err e =>
-        simp only [core_ops_try_branch_err, bind_ok, core_ops_try_from_residual_err]
-        try dsimp only
-        have hLenOpen : (back (i2, b1)).length = «open».length := by
-          rw [hback]; simp [alloc.vec.Vec.set, alloc.vec.Vec.length]
-        try simp only [spec_ok, Aeneas.Std.uncurry]; try dsimp only
-        try rw [hLenOpen]
-        omega
-    · step as ⟨i2, hi2⟩
-      step as ⟨v2, b1, back, hpair2, hback⟩
-      try simp only [Aeneas.Std.uncurry]
-      have hLenOpen : (back (i2, b1)).length = «open».length := by
-        rw [hback]; simp [alloc.vec.Vec.set, alloc.vec.Vec.length]
-      step with skip_any_atom_spec input cur limits entries_acc (back (i2, b1)) (by omega) as ⟨r1, open1, hopen1⟩
-      try simp only [spec_ok, Aeneas.Std.uncurry]; try dsimp only
-      all_goals omega
-  · exact skip_any_atom_spec input cur limits entries_acc «open» hCap
+        simp only [core_ops_try_branch_err, bind_ok, core_ops_try_from_residual_err, spec_ok]
+        exact ⟨hSink1, trivial⟩
+    | false =>
+      simp only [Bool.false_eq_true, ↓reduceIte]
+      by_cases hdep : depth > limits.max_any_depth
+      · simp only [hdep, ↓reduceIte, spec_ok]
+        exact ⟨hSink, trivial⟩
+      · simp only [hdep, ↓reduceIte]
+        step with read_u8_at_total input start_cur as ⟨r, hr⟩
+        cases r with
+        | Ok val =>
+          simp only [core_ops_try_branch_ok, bind_ok]; try dsimp only
+          rcases val with ⟨raw_tag, after_tag⟩
+          dsimp only at hr
+          step as ⟨tag, htag⟩
+          have hDepthBack : depth.val ≤ (back (i2, b1)).length := by omega
+          have hAfterCur : start_pos.val ≤ after_tag.val ∧ after_tag.val ≤ input.length :=
+            ⟨by omega, hr.2⟩
+          split_ifs with h9 h10
+          · step with open_any_container_spec V Inv input hV start_pos (decide (tag = 9#u8)) after_tag
+              limits entries depth (back (i2, b1)) sink hSink hDepthBack hAfterCur
+              as ⟨r1, open2, sink1, hSink1, hRes1⟩
+            cases r1 with
+            | Ok val1 =>
+              simp only [core_ops_try_branch_ok, bind_ok]; try dsimp only
+              rcases val1 with ⟨next_cur, next_entries, next_depth, empty⟩
+              dsimp only at hRes1
+              split_ifs with hemp
+              · have hStartDep : next_depth.val ≤ (alloc.vec.Vec.deref open2).length := by
+                  simpa [alloc.vec.Vec.deref, Slice.length] using hRes1.1
+                step with close_finished_containers_spec V Inv input hV (alloc.vec.Vec.deref open2)
+                  next_depth sink1 hSink1 hStartDep as ⟨r2, sink2, hSink2, hRes2⟩
+                cases r2 with
+                | Ok val2 =>
+                  simp only [core_ops_try_branch_ok, bind_ok, spec_ok]
+                  have hV2 : val2.val ≤ open2.length := by
+                    simpa [alloc.vec.Vec.deref, Slice.length] using hRes2
+                  exact ⟨hSink2, hV2, hRes1.2.2.1, hRes1.2.2.2⟩
+                | Err e =>
+                  simp only [core_ops_try_branch_err, bind_ok, core_ops_try_from_residual_err, spec_ok]
+                  exact ⟨hSink2, trivial⟩
+              · simp only [spec_ok]
+                exact ⟨hSink1, hRes1.1, hRes1.2.2.1, hRes1.2.2.2⟩
+            | Err e =>
+              simp only [core_ops_try_branch_err, bind_ok, core_ops_try_from_residual_err, spec_ok]
+              exact ⟨hSink1, trivial⟩
+          · step with open_any_container_spec V Inv input hV start_pos (decide (tag = 9#u8)) after_tag
+              limits entries depth (back (i2, b1)) sink hSink hDepthBack hAfterCur
+              as ⟨r1, open2, sink1, hSink1, hRes1⟩
+            cases r1 with
+            | Ok val1 =>
+              simp only [core_ops_try_branch_ok, bind_ok]; try dsimp only
+              rcases val1 with ⟨next_cur, next_entries, next_depth, empty⟩
+              dsimp only at hRes1
+              split_ifs with hemp
+              · have hStartDep : next_depth.val ≤ (alloc.vec.Vec.deref open2).length := by
+                  simpa [alloc.vec.Vec.deref, Slice.length] using hRes1.1
+                step with close_finished_containers_spec V Inv input hV (alloc.vec.Vec.deref open2)
+                  next_depth sink1 hSink1 hStartDep as ⟨r2, sink2, hSink2, hRes2⟩
+                cases r2 with
+                | Ok val2 =>
+                  simp only [core_ops_try_branch_ok, bind_ok, spec_ok]
+                  have hV2 : val2.val ≤ open2.length := by
+                    simpa [alloc.vec.Vec.deref, Slice.length] using hRes2
+                  exact ⟨hSink2, hV2, hRes1.2.2.1, hRes1.2.2.2⟩
+                | Err e =>
+                  simp only [core_ops_try_branch_err, bind_ok, core_ops_try_from_residual_err, spec_ok]
+                  exact ⟨hSink2, trivial⟩
+              · simp only [spec_ok]
+                exact ⟨hSink1, hRes1.1, hRes1.2.2.1, hRes1.2.2.2⟩
+            | Err e =>
+              simp only [core_ops_try_branch_err, bind_ok, core_ops_try_from_residual_err, spec_ok]
+              exact ⟨hSink1, trivial⟩
+          · step with decode_any_scalar_spec V Inv input hV start_pos tag after_tag sink
+              hSink hAfterCur as ⟨r1, sink1, hSink1, hRes1⟩
+            cases r1 with
+            | Ok val1 =>
+              simp only [core_ops_try_branch_ok, bind_ok]; try dsimp only
+              step as ⟨p3, hp3⟩
+              split_ifs with hz3
+              · have hStartDep : depth.val ≤ (alloc.vec.Vec.deref (back (i2, b1))).length := by
+                  simpa [alloc.vec.Vec.deref, Slice.length, hLenOpen] using hDepth
+                step with close_finished_containers_spec V Inv input hV
+                  (alloc.vec.Vec.deref (back (i2, b1))) depth sink1
+                  hSink1 hStartDep as ⟨r2, sink2, hSink2, hRes2⟩
+                cases r2 with
+                | Ok val2 =>
+                  simp only [core_ops_try_branch_ok, bind_ok, spec_ok]
+                  have hV2 : val2.val ≤ (back (i2, b1)).length := by
+                    simpa [alloc.vec.Vec.deref, Slice.length] using hRes2
+                  exact ⟨hSink2, hV2, hRes1.1, hRes1.2⟩
+                | Err e =>
+                  simp only [core_ops_try_branch_err, bind_ok, core_ops_try_from_residual_err, spec_ok]
+                  exact ⟨hSink2, trivial⟩
+              · simp only [spec_ok]
+                exact ⟨hSink1, by omega, hRes1.1, hRes1.2⟩
+            | Err e =>
+              simp only [core_ops_try_branch_err, bind_ok, core_ops_try_from_residual_err, spec_ok]
+              exact ⟨hSink1, trivial⟩
+        | Err e =>
+          simp only [core_ops_try_branch_err, bind_ok, core_ops_try_from_residual_err, spec_ok]
+          exact ⟨hSink, trivial⟩
 
-@[local step]
-theorem skip_any_v1_total
-    (input : Slice Std.U8) (start_pos : Std.Usize)
-    (limits : decoder_v1.DecodeLimitsCore) (entries_acc : Std.Usize) :
-    decoder_v1.skip_any_v1 input start_pos limits entries_acc ⦃ _ => True ⦄ := by
-  unfold decoder_v1.skip_any_v1
-  dsimp only
+private theorem decode_any_max_steps_cont_total {α : Type _}
+    (input : Slice Std.U8) (cur max_any_depth : Std.Usize)
+    (k : Std.Usize → Result α) (P : α → Prop)
+    (hk : ∀ max_steps, k max_steps ⦃ P ⦄) :
+    (do
+      let i := Slice.len input
+      let rem ←
+        if i >= cur then
+          let i1 := Slice.len input
+          i1 - cur
+        else ok 0#usize
+      let i1 ← core.num.Usize.MAX / 2#usize
+      let rem2 ← if rem <= i1 then rem * 2#usize else ok core.num.Usize.MAX
+      let i2 ← core.num.Usize.MAX - rem2
+      let rem_d ← if max_any_depth <= i2 then rem2 + max_any_depth else ok core.num.Usize.MAX
+      let i3 ← core.num.Usize.MAX - rem_d
+      let max_steps ← if 2#usize <= i3 then rem_d + 2#usize else ok core.num.Usize.MAX
+      k max_steps) ⦃ P ⦄ := by
   have hUsizeMax : core.num.Usize.MAX.val = Std.Usize.max := by
     simp [core.num.Usize.MAX]
   have hRemSpec :
-      (if Slice.len input >= start_pos
-       then let i1 := Slice.len input; i1 - start_pos
-       else ok 0#usize) ⦃ _ => True ⦄ := by
+      (if Slice.len input >= cur then let i1 := Slice.len input; i1 - cur else ok 0#usize)
+        ⦃ _ => True ⦄ := by
     split_ifs
     · dsimp only; step*
     · simp [spec_ok]
   step with hRemSpec as ⟨rem⟩
   step as ⟨i1, hi1⟩
-  have hRem2Spec :
-      (if rem <= i1 then rem * 2#usize else ok core.num.Usize.MAX) ⦃ _ => True ⦄ := by
+  have hRem2Spec : (if rem <= i1 then rem * 2#usize else ok core.num.Usize.MAX) ⦃ _ => True ⦄ := by
     split_ifs with hle
     · have : rem.val * 2 ≤ Std.Usize.max := by scalar_tac
       step*
@@ -756,10 +1801,9 @@ theorem skip_any_v1_total
     have := rem2.hBounds; scalar_tac
   step as ⟨i2, hi2⟩
   have hRemDSpec :
-      (if limits.max_any_depth <= i2 then rem2 + limits.max_any_depth else ok core.num.Usize.MAX)
-        ⦃ _ => True ⦄ := by
+      (if max_any_depth <= i2 then rem2 + max_any_depth else ok core.num.Usize.MAX) ⦃ _ => True ⦄ := by
     split_ifs with hle
-    · have : rem2.val + limits.max_any_depth.val ≤ Std.Usize.max := by scalar_tac
+    · have : rem2.val + max_any_depth.val ≤ Std.Usize.max := by scalar_tac
       step*
     · simp [spec_ok]
   step with hRemDSpec as ⟨rem_d⟩
@@ -773,350 +1817,1065 @@ theorem skip_any_v1_total
       step*
     · simp [spec_ok]
   step with hMaxStepsSpec as ⟨max_steps⟩
-  have hLoop :
-      decoder_v1.skip_any_v1_loop input limits.max_structs limits.max_clients
-        limits.max_collection_entries limits.max_any_depth limits.max_content_bytes
-        start_pos entries_acc (alloc.vec.Vec.new (Std.Usize × Bool)) max_steps 0#usize false none
-        ⦃ _ => True ⦄ := by
-    unfold decoder_v1.skip_any_v1_loop
-    let inv : Std.Usize × Std.Usize × alloc.vec.Vec (Std.Usize × Bool) × Std.Usize × Bool × Option CodecError → Prop :=
-      fun (_, _, open1, step1, _, _) =>
-        step1.val ≤ max_steps.val ∧ open1.length ≤ step1.val
-    refine loop.spec_decr_nat
-      (fun (_, _, _, step1, done1, err1) =>
-        stepFlag done1 err1 + (max_steps.val - step1.val))
-      inv (fun _ => True) _
-      (start_pos, entries_acc, alloc.vec.Vec.new (Std.Usize × Bool), 0#usize, false, none) ?_
-      ⟨by scalar_tac, by simp [alloc.vec.Vec.new, alloc.vec.Vec.length]⟩
-    intro ⟨cur1, tot1, open1, step1, done1, err1⟩ ⟨hStep, hOpenLen⟩
-    unfold decoder_v1.skip_any_v1_loop.body
-    dsimp only
-    split_ifs with hlt hdone hnone
-    · simp [spec_ok]
-    · have herr : err1 = none := (is_none_eq_true_iff err1).1 hnone
-      subst herr
-      have hCapStep : open1.length < Std.Usize.max := by scalar_tac
-      step as ⟨step2, hStep2⟩
-      step with skip_any_step_spec input cur1
-        ⟨limits.max_structs, limits.max_clients, limits.max_collection_entries,
-          limits.max_any_depth, limits.max_content_bytes⟩
-        tot1 open1 hCapStep as ⟨r, open2, hOpen2⟩
-      cases r with
-      | Ok t =>
-        rcases t with ⟨nc, ne, b⟩
-        dsimp only
-        try simp only [Aeneas.Std.uncurry]
-        try simp only [spec_ok]
-        refine ⟨⟨by scalar_tac, by omega⟩, ?_⟩
-        by_cases hb : b <;> simp [stepFlag, hb, hStep2] <;> scalar_tac
-      | Err e =>
-        dsimp only
-        try simp only [Aeneas.Std.uncurry]
-        try simp only [spec_ok]
-        refine ⟨⟨by scalar_tac, by omega⟩, ?_⟩
-        simp [stepFlag, hStep2]; scalar_tac
-    · simp [spec_ok]
-    · simp [spec_ok]
-  step with hLoop as ⟨cur, tot, done1, err⟩
-  cases err with
-  | none => split_ifs <;> simp [spec_ok]
-  | some e => simp [spec_ok]
+  exact hk max_steps
 
-@[local step]
-theorem skip_id_at_total (input : Slice Std.U8) (pos : Std.Usize) :
-    decoder_v1.skip_id_at input pos ⦃ _ => True ⦄ := by
-  unfold decoder_v1.skip_id_at
-  step with read_var_u64_at_total input pos as ⟨r⟩
-  cases r with
-  | Ok val =>
-    simp only [core_ops_try_branch_ok, bind_ok]; try dsimp only
-    rcases val with ⟨_, p1⟩
-    step with read_var_u64_at_total input p1 as ⟨r1⟩
+private theorem decode_any_v1_loop_body_spec
+    {S : Type _} (V : decoder_v1.V1Sink S) (Inv : S → Prop)
+    (input : Slice Std.U8) (hV : V1SinkSpanSafe input V Inv)
+    (start_pos : Std.Usize) (limits : decoder_v1.DecodeLimitsCore) (max_steps : Std.Usize)
+    (sinkk : S) (openk : alloc.vec.Vec (Std.Usize × Bool))
+    (curk entk depthk stepk : Std.Usize) (errk : Option CodecError)
+    (hState : Inv sinkk ∧ stepk.val ≤ max_steps.val ∧
+      (errk = none → depthk.val ≤ openk.length) ∧ start_pos.val ≤ curk.val ∧ curk.val ≤ input.length) :
+    (if stepk < max_steps then
+      if depthk > 0#usize then
+        if errk.isNone = true then do
+          let step1 ← stepk + 1#usize
+          let (r, open1, sink1) ← decoder_v1.decode_any_step V input curk limits entk depthk openk sinkk
+          match r with
+          | .Ok t =>
+            let (next_cur, next_entries, next_depth) := t
+            ok (cont (sink1, open1, next_cur, next_entries, next_depth, step1, errk))
+          | .Err e =>
+            ok (cont (sink1, open1, curk, entk, depthk, step1, some e))
+        else ok (done (sinkk, curk, entk, depthk, errk))
+      else ok (done (sinkk, curk, entk, depthk, errk))
+    else ok (done (sinkk, curk, entk, depthk, errk)))
+      ⦃ cf =>
+        match cf with
+        | .cont (sink2, open2, cur2, _, depth2, step2, err2) =>
+          (Inv sink2 ∧ step2.val ≤ max_steps.val ∧
+            (err2 = none → depth2.val ≤ open2.length) ∧ start_pos.val ≤ cur2.val ∧ cur2.val ≤ input.length) ∧
+          (errFlag err2 + (max_steps.val - step2.val)) <
+            (errFlag errk + (max_steps.val - stepk.val))
+        | .done (sink2, cur2, _, _, _) =>
+          Inv sink2 ∧ start_pos.val ≤ cur2.val ∧ cur2.val ≤ input.length ⦄ := by
+  rcases hState with ⟨hInvK, hStep, hDepthK, hCurLo, hCurHi⟩
+  split_ifs with hlt hdep hnone
+  · have herr : errk = none := by cases errk <;> simp_all
+    subst herr
+    have hDepthPos : 0 < depthk.val := by scalar_tac
+    step as ⟨step2, hStep2⟩
+    step with decode_any_step_spec V Inv input hV start_pos curk limits entk depthk openk sinkk
+      hInvK hDepthPos (hDepthK rfl) ⟨hCurLo, hCurHi⟩ as ⟨r1, open2, sink2, hInv2, hRes2⟩
     cases r1 with
-    | Ok val1 =>
-      simp only [core_ops_try_branch_ok, bind_ok]; try dsimp only
-      rcases val1 with ⟨_, p2⟩
+    | Ok t =>
+      rcases t with ⟨next_cur, next_entries, next_depth⟩
       simp [spec_ok]
+      refine ⟨hInv2, by scalar_tac, hRes2.1, hRes2.2.1, hRes2.2.2, ?_⟩
+      simp [hStep2]; scalar_tac
+    | Err e =>
+      simp [spec_ok]
+      refine ⟨hInv2, by scalar_tac, hCurLo, hCurHi, ?_⟩
+      simp [hStep2]; scalar_tac
+  · simp [spec_ok, hInvK, hCurLo, hCurHi]
+  · simp [spec_ok, hInvK, hCurLo, hCurHi]
+  · simp [spec_ok, hInvK, hCurLo, hCurHi]
+
+theorem decode_any_v1_spec
+    {S : Type _} (V : decoder_v1.V1Sink S) (Inv : S → Prop)
+    (input : Slice Std.U8) (hV : V1SinkSpanSafe input V Inv)
+    (start_pos : Std.Usize) (limits : decoder_v1.DecodeLimitsCore)
+    (entries_acc : Std.Usize) (sink : S) (hSink : Inv sink)
+    (hStart : start_pos.val ≤ input.length) :
+    decoder_v1.decode_any_v1 V input start_pos limits entries_acc sink ⦃ (r, sink') =>
+      Inv sink' ∧
+      match r with
+      | .Ok (nxt, _) => start_pos.val ≤ nxt.val ∧ nxt.val ≤ input.length
+      | .Err _ => True ⦄ := by
+  unfold decoder_v1.decode_any_v1
+  dsimp only
+  step with hV.on_any_start sink hSink as ⟨r, sink1, hSink1⟩
+  cases r with
+  | Ok _ =>
+    simp only [core_ops_try_branch_ok, bind_ok]; try dsimp only
+    step with read_u8_at_total input start_pos as ⟨r1, hr1⟩
+    cases r1 with
+    | Ok val =>
+      simp only [core_ops_try_branch_ok, bind_ok]; try dsimp only
+      rcases val with ⟨raw_tag, after_tag⟩
+      dsimp only at hr1
+      step as ⟨first_tag, _⟩
+      have hAfter : start_pos.val ≤ after_tag.val ∧ after_tag.val ≤ input.length := ⟨by omega, hr1.2⟩
+      split_ifs with hnot9 hnot10
+      · step with decode_any_scalar_spec V Inv input hV start_pos first_tag after_tag sink1
+          hSink1 hAfter as ⟨r2, sink2, hSink2, hRes2⟩
+        cases r2 with
+        | Ok val1 =>
+          simp only [core_ops_try_branch_ok, bind_ok]; try dsimp only
+          step with hV.on_any_finish sink2 { start := start_pos, «end» := val1 } hSink2
+            hRes2 as ⟨r3, sink3, hSink3⟩
+          cases r3 with
+          | Ok _ =>
+            simp only [core_ops_try_branch_ok, bind_ok, spec_ok]
+            exact ⟨hSink3, hRes2⟩
+          | Err e =>
+            simp only [core_ops_try_branch_err, bind_ok, core_ops_try_from_residual_err, spec_ok]
+            exact ⟨hSink3, trivial⟩
+        | Err e =>
+          simp only [core_ops_try_branch_err, bind_ok, core_ops_try_from_residual_err, spec_ok]
+          exact ⟨hSink2, trivial⟩
+      · step with open_any_container_spec V Inv input hV start_pos (decide (first_tag = 9#u8)) after_tag
+          limits entries_acc 0#usize (alloc.vec.Vec.new (Std.Usize × Bool)) sink1 hSink1
+          (by simp [alloc.vec.Vec.new, alloc.vec.Vec.length]) hAfter as ⟨r2, «open», sink2, hSink2, hOpen2⟩
+        cases r2 with
+        | Ok val1 =>
+          simp only [core_ops_try_branch_ok, bind_ok]; try dsimp only
+          rcases val1 with ⟨cur, entries, depth, empty⟩
+          try dsimp only at hOpen2
+          try simp only [Aeneas.Std.uncurry]
+          try dsimp only
+          by_cases hemp : empty = true
+          · simp only [hemp, ↓reduceIte]
+            have hStartDep : depth.val ≤ (alloc.vec.Vec.deref «open»).length := by
+              simpa [alloc.vec.Vec.deref, Slice.length] using hOpen2.1
+            step with close_finished_containers_spec V Inv input hV (alloc.vec.Vec.deref «open»)
+              depth sink2 hSink2 hStartDep as ⟨r3, sink3, hSink3, hClose3⟩
+            cases r3 with
+            | Ok val2 =>
+              simp only [core_ops_try_branch_ok, bind_ok]; try dsimp only
+              refine decode_any_max_steps_cont_total input cur limits.max_any_depth _ _ (fun max_steps => ?_)
+              have hDepVal2 : val2.val ≤ «open».length := by
+                simpa [alloc.vec.Vec.deref, Slice.length] using hClose3
+              have hLoop :
+                  decoder_v1.decode_any_v1_loop0 V input limits.max_structs limits.max_clients
+                    limits.max_collection_entries limits.max_any_depth limits.max_content_bytes
+                    sink3 «open» cur entries val2 max_steps 0#usize none
+                    ⦃ (sink4, cur1, _, _, _) =>
+                      Inv sink4 ∧ start_pos.val ≤ cur1.val ∧ cur1.val ≤ input.length ⦄ := by
+                unfold decoder_v1.decode_any_v1_loop0
+                let inv : S × alloc.vec.Vec (Std.Usize × Bool) × Std.Usize × Std.Usize × Std.Usize × Std.Usize × Option CodecError → Prop :=
+                  fun (sinkk, openk, curk, _, depthk, stepk, errk) =>
+                    Inv sinkk ∧ stepk.val ≤ max_steps.val ∧ (errk = none → depthk.val ≤ openk.length) ∧
+                    start_pos.val ≤ curk.val ∧ curk.val ≤ input.length
+                refine loop.spec_decr_nat
+                  (fun (_, _, _, _, _, stepk, errk) => errFlag errk + (max_steps.val - stepk.val))
+                  inv _ _ (sink3, «open», cur, entries, val2, 0#usize, none) ?_
+                  ⟨hSink3, by scalar_tac, fun _ => hDepVal2, hOpen2.2.2.1, hOpen2.2.2.2⟩
+                intro ⟨sinkk, openk, curk, entk, depthk, stepk, errk⟩ hInvK
+                unfold decoder_v1.decode_any_v1_loop0.body
+                dsimp only [inv]
+                try simp only [letFun]
+                refine spec_mono (decode_any_v1_loop_body_spec V Inv input hV start_pos
+                  ⟨limits.max_structs, limits.max_clients, limits.max_collection_entries,
+                    limits.max_any_depth, limits.max_content_bytes⟩
+                  max_steps sinkk openk curk entk depthk stepk errk hInvK) (fun cf hcf => ?_)
+                cases cf with
+                | cont x =>
+                  rcases x with ⟨_, _, _, _, _, _, _⟩
+                  dsimp only at hcf ⊢
+                  exact hcf
+                | done y =>
+                  rcases y with ⟨_, _, _, _, _⟩
+                  dsimp only at hcf ⊢
+                  exact hcf
+              step with hLoop as ⟨sink4, cur1, entries1, depth1, err, hSink4, hLo4, hHi4⟩
+              cases err with
+              | none =>
+                split_ifs with hnz
+                · simp [spec_ok, hSink4]
+                · step with hV.on_any_finish sink4 { start := start_pos, «end» := cur1 } hSink4
+                    ⟨hLo4, hHi4⟩ as ⟨r4, sink5, hSink5⟩
+                  cases r4 with
+                  | Ok _ => simp only [core_ops_try_branch_ok, bind_ok, spec_ok]; exact ⟨hSink5, hLo4, hHi4⟩
+                  | Err e => simp only [core_ops_try_branch_err, bind_ok, core_ops_try_from_residual_err, spec_ok]; exact ⟨hSink5, trivial⟩
+              | some e => simp [spec_ok, hSink4]
+            | Err e =>
+              simp only [core_ops_try_branch_err, bind_ok, core_ops_try_from_residual_err, spec_ok]
+              exact ⟨hSink3, trivial⟩
+          · simp only [hemp, Bool.false_eq_true, ↓reduceIte]
+            refine decode_any_max_steps_cont_total input cur limits.max_any_depth _ _ (fun max_steps => ?_)
+            have hLoop :
+                decoder_v1.decode_any_v1_loop1 V input limits.max_structs limits.max_clients
+                  limits.max_collection_entries limits.max_any_depth limits.max_content_bytes
+                  sink2 «open» cur entries depth max_steps 0#usize none
+                  ⦃ (sink3, cur1, _, _, _) =>
+                    Inv sink3 ∧ start_pos.val ≤ cur1.val ∧ cur1.val ≤ input.length ⦄ := by
+              unfold decoder_v1.decode_any_v1_loop1
+              let inv : S × alloc.vec.Vec (Std.Usize × Bool) × Std.Usize × Std.Usize × Std.Usize × Std.Usize × Option CodecError → Prop :=
+                fun (sinkk, openk, curk, _, depthk, stepk, errk) =>
+                  Inv sinkk ∧ stepk.val ≤ max_steps.val ∧ (errk = none → depthk.val ≤ openk.length) ∧
+                  start_pos.val ≤ curk.val ∧ curk.val ≤ input.length
+              refine loop.spec_decr_nat
+                (fun (_, _, _, _, _, stepk, errk) => errFlag errk + (max_steps.val - stepk.val))
+                inv _ _ (sink2, «open», cur, entries, depth, 0#usize, none) ?_
+                ⟨hSink2, by scalar_tac, fun _ => hOpen2.1, hOpen2.2.2.1, hOpen2.2.2.2⟩
+              intro ⟨sinkk, openk, curk, entk, depthk, stepk, errk⟩ hInvK
+              unfold decoder_v1.decode_any_v1_loop1.body
+              dsimp only [inv]
+              try simp only [letFun]
+              refine spec_mono (decode_any_v1_loop_body_spec V Inv input hV start_pos
+                ⟨limits.max_structs, limits.max_clients, limits.max_collection_entries,
+                  limits.max_any_depth, limits.max_content_bytes⟩
+                max_steps sinkk openk curk entk depthk stepk errk hInvK) (fun cf hcf => ?_)
+              cases cf with
+              | cont x =>
+                rcases x with ⟨_, _, _, _, _, _, _⟩
+                dsimp only at hcf ⊢
+                exact hcf
+              | done y =>
+                rcases y with ⟨_, _, _, _, _⟩
+                dsimp only at hcf ⊢
+                exact hcf
+            step with hLoop as ⟨sink3, cur1, entries1, depth1, err, hSink3, hLo3, hHi3⟩
+            cases err with
+            | none =>
+              split_ifs with hnz
+              · simp [spec_ok, hSink3]
+              · step with hV.on_any_finish sink3 { start := start_pos, «end» := cur1 } hSink3
+                  ⟨hLo3, hHi3⟩ as ⟨r3, sink4, hSink4⟩
+                cases r3 with
+                | Ok _ => simp only [core_ops_try_branch_ok, bind_ok, spec_ok]; exact ⟨hSink4, hLo3, hHi3⟩
+                | Err e => simp only [core_ops_try_branch_err, bind_ok, core_ops_try_from_residual_err, spec_ok]; exact ⟨hSink4, trivial⟩
+            | some e => simp [spec_ok, hSink3]
+        | Err e =>
+          simp only [core_ops_try_branch_err, bind_ok, core_ops_try_from_residual_err, spec_ok]
+          exact ⟨hSink2, trivial⟩
+      · step with open_any_container_spec V Inv input hV start_pos (decide (first_tag = 9#u8)) after_tag
+          limits entries_acc 0#usize (alloc.vec.Vec.new (Std.Usize × Bool)) sink1 hSink1
+          (by simp [alloc.vec.Vec.new, alloc.vec.Vec.length]) hAfter as ⟨r2, «open», sink2, hSink2, hOpen2⟩
+        cases r2 with
+        | Ok val1 =>
+          simp only [core_ops_try_branch_ok, bind_ok]; try dsimp only
+          rcases val1 with ⟨cur, entries, depth, empty⟩
+          try dsimp only at hOpen2
+          try simp only [Aeneas.Std.uncurry]
+          try dsimp only
+          by_cases hemp : empty = true
+          · simp only [hemp, ↓reduceIte]
+            have hStartDep : depth.val ≤ (alloc.vec.Vec.deref «open»).length := by
+              simpa [alloc.vec.Vec.deref, Slice.length] using hOpen2.1
+            step with close_finished_containers_spec V Inv input hV (alloc.vec.Vec.deref «open»)
+              depth sink2 hSink2 hStartDep as ⟨r3, sink3, hSink3, hClose3⟩
+            cases r3 with
+            | Ok val2 =>
+              simp only [core_ops_try_branch_ok, bind_ok]; try dsimp only
+              refine decode_any_max_steps_cont_total input cur limits.max_any_depth _ _ (fun max_steps => ?_)
+              have hDepVal2 : val2.val ≤ «open».length := by
+                simpa [alloc.vec.Vec.deref, Slice.length] using hClose3
+              have hLoop :
+                  decoder_v1.decode_any_v1_loop2 V input limits.max_structs limits.max_clients
+                    limits.max_collection_entries limits.max_any_depth limits.max_content_bytes
+                    sink3 «open» cur entries val2 max_steps 0#usize none
+                    ⦃ (sink4, cur1, _, _, _) =>
+                      Inv sink4 ∧ start_pos.val ≤ cur1.val ∧ cur1.val ≤ input.length ⦄ := by
+                unfold decoder_v1.decode_any_v1_loop2
+                let inv : S × alloc.vec.Vec (Std.Usize × Bool) × Std.Usize × Std.Usize × Std.Usize × Std.Usize × Option CodecError → Prop :=
+                  fun (sinkk, openk, curk, _, depthk, stepk, errk) =>
+                    Inv sinkk ∧ stepk.val ≤ max_steps.val ∧ (errk = none → depthk.val ≤ openk.length) ∧
+                    start_pos.val ≤ curk.val ∧ curk.val ≤ input.length
+                refine loop.spec_decr_nat
+                  (fun (_, _, _, _, _, stepk, errk) => errFlag errk + (max_steps.val - stepk.val))
+                  inv _ _ (sink3, «open», cur, entries, val2, 0#usize, none) ?_
+                  ⟨hSink3, by scalar_tac, fun _ => hDepVal2, hOpen2.2.2.1, hOpen2.2.2.2⟩
+                intro ⟨sinkk, openk, curk, entk, depthk, stepk, errk⟩ hInvK
+                unfold decoder_v1.decode_any_v1_loop2.body
+                dsimp only [inv]
+                try simp only [letFun]
+                refine spec_mono (decode_any_v1_loop_body_spec V Inv input hV start_pos
+                  ⟨limits.max_structs, limits.max_clients, limits.max_collection_entries,
+                    limits.max_any_depth, limits.max_content_bytes⟩
+                  max_steps sinkk openk curk entk depthk stepk errk hInvK) (fun cf hcf => ?_)
+                cases cf with
+                | cont x =>
+                  rcases x with ⟨_, _, _, _, _, _, _⟩
+                  dsimp only at hcf ⊢
+                  exact hcf
+                | done y =>
+                  rcases y with ⟨_, _, _, _, _⟩
+                  dsimp only at hcf ⊢
+                  exact hcf
+              step with hLoop as ⟨sink4, cur1, entries1, depth1, err, hSink4, hLo4, hHi4⟩
+              cases err with
+              | none =>
+                split_ifs with hnz
+                · simp [spec_ok, hSink4]
+                · step with hV.on_any_finish sink4 { start := start_pos, «end» := cur1 } hSink4
+                    ⟨hLo4, hHi4⟩ as ⟨r4, sink5, hSink5⟩
+                  cases r4 with
+                  | Ok _ => simp only [core_ops_try_branch_ok, bind_ok, spec_ok]; exact ⟨hSink5, hLo4, hHi4⟩
+                  | Err e => simp only [core_ops_try_branch_err, bind_ok, core_ops_try_from_residual_err, spec_ok]; exact ⟨hSink5, trivial⟩
+              | some e => simp [spec_ok, hSink4]
+            | Err e =>
+              simp only [core_ops_try_branch_err, bind_ok, core_ops_try_from_residual_err, spec_ok]
+              exact ⟨hSink3, trivial⟩
+          · simp only [hemp, Bool.false_eq_true, ↓reduceIte]
+            refine decode_any_max_steps_cont_total input cur limits.max_any_depth _ _ (fun max_steps => ?_)
+            have hLoop :
+                decoder_v1.decode_any_v1_loop3 V input limits.max_structs limits.max_clients
+                  limits.max_collection_entries limits.max_any_depth limits.max_content_bytes
+                  sink2 «open» cur entries depth max_steps 0#usize none
+                  ⦃ (sink3, cur1, _, _, _) =>
+                    Inv sink3 ∧ start_pos.val ≤ cur1.val ∧ cur1.val ≤ input.length ⦄ := by
+              unfold decoder_v1.decode_any_v1_loop3
+              let inv : S × alloc.vec.Vec (Std.Usize × Bool) × Std.Usize × Std.Usize × Std.Usize × Std.Usize × Option CodecError → Prop :=
+                fun (sinkk, openk, curk, _, depthk, stepk, errk) =>
+                  Inv sinkk ∧ stepk.val ≤ max_steps.val ∧ (errk = none → depthk.val ≤ openk.length) ∧
+                  start_pos.val ≤ curk.val ∧ curk.val ≤ input.length
+              refine loop.spec_decr_nat
+                (fun (_, _, _, _, _, stepk, errk) => errFlag errk + (max_steps.val - stepk.val))
+                inv _ _ (sink2, «open», cur, entries, depth, 0#usize, none) ?_
+                ⟨hSink2, by scalar_tac, fun _ => hOpen2.1, hOpen2.2.2.1, hOpen2.2.2.2⟩
+              intro ⟨sinkk, openk, curk, entk, depthk, stepk, errk⟩ hInvK
+              unfold decoder_v1.decode_any_v1_loop3.body
+              dsimp only [inv]
+              try simp only [letFun]
+              refine spec_mono (decode_any_v1_loop_body_spec V Inv input hV start_pos
+                ⟨limits.max_structs, limits.max_clients, limits.max_collection_entries,
+                  limits.max_any_depth, limits.max_content_bytes⟩
+                max_steps sinkk openk curk entk depthk stepk errk hInvK) (fun cf hcf => ?_)
+              cases cf with
+              | cont x =>
+                rcases x with ⟨_, _, _, _, _, _, _⟩
+                dsimp only at hcf ⊢
+                exact hcf
+              | done y =>
+                rcases y with ⟨_, _, _, _, _⟩
+                dsimp only at hcf ⊢
+                exact hcf
+            step with hLoop as ⟨sink3, cur1, entries1, depth1, err, hSink3, hLo3, hHi3⟩
+            cases err with
+            | none =>
+              split_ifs with hnz
+              · simp [spec_ok, hSink3]
+              · step with hV.on_any_finish sink3 { start := start_pos, «end» := cur1 } hSink3
+                  ⟨hLo3, hHi3⟩ as ⟨r3, sink4, hSink4⟩
+                cases r3 with
+                | Ok _ => simp only [core_ops_try_branch_ok, bind_ok, spec_ok]; exact ⟨hSink4, hLo3, hHi3⟩
+                | Err e => simp only [core_ops_try_branch_err, bind_ok, core_ops_try_from_residual_err, spec_ok]; exact ⟨hSink4, trivial⟩
+            | some e => simp [spec_ok, hSink3]
+        | Err e =>
+          simp only [core_ops_try_branch_err, bind_ok, core_ops_try_from_residual_err, spec_ok]
+          exact ⟨hSink2, trivial⟩
     | Err e =>
       simp only [core_ops_try_branch_err, bind_ok, core_ops_try_from_residual_err, spec_ok]
+      exact ⟨hSink1, trivial⟩
   | Err e =>
     simp only [core_ops_try_branch_err, bind_ok, core_ops_try_from_residual_err, spec_ok]
+    exact ⟨hSink1, trivial⟩
 
-@[local step]
-theorem read_json_entries_total (input : Slice Std.U8) (start_pos count : Std.Usize) :
-    decoder_v1.read_json_entries input start_pos count ⦃ _ => True ⦄ := by
-  unfold decoder_v1.read_json_entries
-  have hLoop :
-      decoder_v1.read_json_entries_loop input count start_pos 0#usize none ⦃ _ => True ⦄ := by
-    unfold decoder_v1.read_json_entries_loop
-    refine loop.spec_decr_nat
-      (fun (_, i, err) => errFlag err + (count.val - i.val))
-      (fun (_, i, _) => i.val ≤ count.val)
-      (fun _ => True) _ (start_pos, 0#usize, none) ?_ (by scalar_tac)
-    intro ⟨cur1, i1, err1⟩ hi
-    unfold decoder_v1.read_json_entries_loop.body
-    dsimp only
-    split_ifs with hlt hnone
-    · have herr : err1 = none := (is_none_eq_true_iff err1).1 hnone
-      subst herr
-      step with read_str_slice_at_total input cur1 as ⟨r⟩
-      cases r with
-      | Ok p =>
-        rcases p with ⟨_, end_j⟩
-        dsimp
-        step as ⟨i2, hi2⟩
-        try simp only [spec_ok]
-        exact ⟨by scalar_tac, by simp [hi2]; scalar_tac⟩
-      | Err e =>
-        simp only [spec_ok]
-        exact ⟨hi, by simp⟩
-    · simp [spec_ok]
-    · simp [spec_ok]
-  step with hLoop as ⟨cur, err⟩
-  cases err <;> simp [spec_ok]
+theorem decode_any_v1_total
+    {S : Type _} (V : decoder_v1.V1Sink S) (Inv : S → Prop)
+    (input : Slice Std.U8) (hV : V1SinkTotal V Inv)
+    (start_pos : Std.Usize) (limits : decoder_v1.DecodeLimitsCore)
+    (entries_acc : Std.Usize) (sink : S) (hSink : Inv sink)
+    (hStart : start_pos.val ≤ input.length) :
+    decoder_v1.decode_any_v1 V input start_pos limits entries_acc sink
+      ⦃ (_, sink') => Inv sink' ⦄ := by
+  step with decode_any_v1_spec V Inv input (hV.toSpanSafe input) start_pos limits entries_acc sink
+    hSink hStart as ⟨_, sink', hInv, _⟩
+  exact hInv
 
-@[local step]
-theorem read_any_entries_total
-    (input : Slice Std.U8) (start_pos count : Std.Usize)
-    (limits : decoder_v1.DecodeLimitsCore) (entries_acc : Std.Usize) :
-    decoder_v1.read_any_entries input start_pos count limits entries_acc ⦃ _ => True ⦄ := by
-  unfold decoder_v1.read_any_entries
+theorem decode_json_entries_spec
+    {S : Type _} (V : decoder_v1.V1Sink S) (Inv : S → Prop)
+    (input : Slice Std.U8) (hV : V1SinkSpanSafe input V Inv)
+    (start_pos count : Std.Usize) (sink : S) (hSink : Inv sink)
+    (hStart : start_pos.val ≤ input.length) :
+    decoder_v1.decode_json_entries V input start_pos count sink ⦃ (r, sink') =>
+      Inv sink' ∧
+      match r with
+      | .Ok nxt => start_pos.val ≤ nxt.val ∧ nxt.val ≤ input.length
+      | .Err _ => True ⦄ := by
+  unfold decoder_v1.decode_json_entries
+  let inv : S × Std.Usize × Std.Usize × Option CodecError → Prop :=
+    fun (sink1, cur1, i1, _) =>
+      Inv sink1 ∧ i1.val ≤ count.val ∧ start_pos.val ≤ cur1.val ∧ cur1.val ≤ input.length
   have hLoop :
-      decoder_v1.read_any_entries_loop input count limits start_pos entries_acc 0#usize none ⦃ _ => True ⦄ := by
-    unfold decoder_v1.read_any_entries_loop
+      decoder_v1.decode_json_entries_loop V input count sink start_pos 0#usize none
+        ⦃ (sink1, cur1, _) =>
+          Inv sink1 ∧ start_pos.val ≤ cur1.val ∧ cur1.val ≤ input.length ⦄ := by
+    unfold decoder_v1.decode_json_entries_loop
     refine loop.spec_decr_nat
       (fun (_, _, i, err) => errFlag err + (count.val - i.val))
-      (fun (_, _, i, _) => i.val ≤ count.val)
-      (fun _ => True) _ (start_pos, entries_acc, 0#usize, none) ?_ (by scalar_tac)
-    intro ⟨cur1, ent1, i1, err1⟩ hi
-    unfold decoder_v1.read_any_entries_loop.body
+      inv _ _
+      (sink, start_pos, 0#usize, none) ?_ ⟨hSink, by scalar_tac, le_rfl, hStart⟩
+    intro ⟨sink1, cur1, i1, err1⟩ ⟨hInv1, hi, hLo, hHi⟩
+    unfold decoder_v1.decode_json_entries_loop.body
     dsimp only
     split_ifs with hlt hnone
     · have herr : err1 = none := (is_none_eq_true_iff err1).1 hnone
       subst herr
-      step with skip_any_v1_total input cur1 limits ent1 as ⟨r⟩
+      step with read_str_slice_at_spec V Inv input hV cur1 sink1 hInv1 as ⟨r, sink1', hInv1', hr⟩
+      cases r with
+      | Ok sp =>
+        dsimp only [SpanOk] at hr
+        step with hV.on_json_value sink1' sp hInv1' hr.2 as ⟨r1, sink2, hInv2⟩
+        cases r1 with
+        | Ok _ =>
+          step as ⟨i2, hi2⟩
+          try simp only [spec_ok]
+          exact ⟨⟨hInv2, by scalar_tac, by omega, by omega⟩, by simp [hi2]; scalar_tac⟩
+        | Err e =>
+          try simp only [spec_ok]
+          exact ⟨⟨hInv2, hi, hLo, hHi⟩, by simp⟩
+      | Err e =>
+        try simp only [spec_ok]
+        exact ⟨⟨hInv1', hi, hLo, hHi⟩, by simp⟩
+    · simp only [spec_ok]; exact ⟨hInv1, hLo, hHi⟩
+    · simp only [spec_ok]; exact ⟨hInv1, hLo, hHi⟩
+  step with hLoop as ⟨sink1, cur, err, hInv1, hLo, hHi⟩
+  cases err <;> simp [spec_ok]
+  · exact ⟨hInv1, hLo, hHi⟩
+  · exact hInv1
+
+theorem decode_any_entries_spec
+    {S : Type _} (V : decoder_v1.V1Sink S) (Inv : S → Prop)
+    (input : Slice Std.U8) (hV : V1SinkSpanSafe input V Inv)
+    (start_pos count : Std.Usize)
+    (limits : decoder_v1.DecodeLimitsCore) (entries_acc : Std.Usize)
+    (sink : S) (hSink : Inv sink) (hStart : start_pos.val ≤ input.length) :
+    decoder_v1.decode_any_entries V input start_pos count limits entries_acc sink ⦃ (r, sink') =>
+      Inv sink' ∧
+      match r with
+      | .Ok (nxt, _) => start_pos.val ≤ nxt.val ∧ nxt.val ≤ input.length
+      | .Err _ => True ⦄ := by
+  unfold decoder_v1.decode_any_entries
+  let inv : S × Std.Usize × Std.Usize × Std.Usize × Option CodecError → Prop :=
+    fun (sink1, cur1, _, i1, _) =>
+      Inv sink1 ∧ i1.val ≤ count.val ∧ start_pos.val ≤ cur1.val ∧ cur1.val ≤ input.length
+  have hLoop :
+      decoder_v1.decode_any_entries_loop V input count limits sink start_pos entries_acc 0#usize none
+        ⦃ (sink1, cur1, _, _) =>
+          Inv sink1 ∧ start_pos.val ≤ cur1.val ∧ cur1.val ≤ input.length ⦄ := by
+    unfold decoder_v1.decode_any_entries_loop
+    refine loop.spec_decr_nat
+      (fun (_, _, _, i, err) => errFlag err + (count.val - i.val))
+      inv _ _
+      (sink, start_pos, entries_acc, 0#usize, none) ?_ ⟨hSink, by scalar_tac, le_rfl, hStart⟩
+    intro ⟨sink1, cur1, ent1, i1, err1⟩ ⟨hInv1, hi, hLo, hHi⟩
+    unfold decoder_v1.decode_any_entries_loop.body
+    dsimp only
+    split_ifs with hlt hnone
+    · have herr : err1 = none := (is_none_eq_true_iff err1).1 hnone
+      subst herr
+      step with decode_any_v1_spec V Inv input hV cur1 limits ent1 sink1 hInv1 hHi
+        as ⟨r, sink2, hInv2, hRes⟩
       cases r with
       | Ok p =>
-        rcases p with ⟨_, end_j⟩
-        dsimp
-        step as ⟨i2, hi2⟩
-        try simp only [spec_ok]
-        exact ⟨by scalar_tac, by simp [hi2]; scalar_tac⟩
+        rcases p with ⟨next_c, next_e⟩
+        dsimp only at hRes
+        step with hV.on_any_content_value sink2 hInv2 as ⟨r1, sink3, hInv3⟩
+        cases r1 with
+        | Ok _ =>
+          step as ⟨i2, hi2⟩
+          try simp only [spec_ok]
+          exact ⟨⟨hInv3, by scalar_tac, by omega, hRes.2⟩, by simp [hi2]; scalar_tac⟩
+        | Err e =>
+          try simp only [spec_ok]
+          exact ⟨⟨hInv3, hi, hLo, hHi⟩, by simp⟩
       | Err e =>
-        simp only [spec_ok]
-        exact ⟨hi, by simp⟩
-    · simp [spec_ok]
-    · simp [spec_ok]
-  step with hLoop as ⟨cur, entries, err⟩
+        try simp only [spec_ok]
+        exact ⟨⟨hInv2, hi, hLo, hHi⟩, by simp⟩
+    · simp only [spec_ok]; exact ⟨hInv1, hLo, hHi⟩
+    · simp only [spec_ok]; exact ⟨hInv1, hLo, hHi⟩
+  step with hLoop as ⟨sink1, cur, entries, err, hInv1, hLo, hHi⟩
   cases err <;> simp [spec_ok]
+  · exact ⟨hInv1, hLo, hHi⟩
+  · exact hInv1
 
-@[local step]
-theorem skip_item_header_total (input : Slice Std.U8) (start_pos : Std.Usize) (info : Std.U8) :
-    decoder_v1.skip_item_header input start_pos info ⦃ _ => True ⦄ := by
-  unfold decoder_v1.skip_item_header
+theorem decode_item_header_spec
+    {S : Type _} (V : decoder_v1.V1Sink S) (Inv : S → Prop)
+    (input : Slice Std.U8) (hV : V1SinkSpanSafe input V Inv)
+    (start_pos : Std.Usize) (info : Std.U8) (sink : S) (hSink : Inv sink)
+    (hStart : start_pos.val ≤ input.length) :
+    decoder_v1.decode_item_header V input start_pos info sink ⦃ (r, sink') =>
+      Inv sink' ∧
+      match r with
+      | .Ok (hdr, nxt) =>
+        start_pos.val ≤ nxt.val ∧ nxt.val ≤ input.length ∧
+        WireParentOk input hdr.parent ∧ OptSpanOk input hdr.parent_sub
+      | .Err _ => True ⦄ := by
+  unfold decoder_v1.decode_item_header
   repeat (any_goals (
     first
-    | (simp only [spec_ok, Aeneas.Std.uncurry]; try dsimp only; first | done | (scalar_tac; done) | (omega; done))
+    | (simp only [spec_ok, Aeneas.Std.uncurry]; (try dsimp only at *); (try simp only [SpanOk] at *);
+        (first
+        | done
+        | (exact ⟨by assumption, by omega, by omega, trivial, trivial⟩)
+        | (exact ⟨by assumption, trivial⟩)
+        | (refine ⟨by assumption, by omega, by omega, ?_, ?_⟩ <;>
+            (simp only [WireParentOk, OptSpanOk, SpanOk] <;>
+             first | trivial | exact ⟨by omega, by omega⟩))
+        | (scalar_tac; done)
+        | (omega; done)))
     | (apply ite_wp_split <;> intro _)
-    | (split_ifs <;> try dsimp only <;> try simp only [Aeneas.Std.uncurry])
-    | (cases_prod_hyp <;> try dsimp only <;> try simp only [Aeneas.Std.uncurry])
+    | (split_ifs <;> try dsimp only at * <;> try simp only [Aeneas.Std.uncurry])
+    | (cases_prod_hyp <;> try dsimp only at * <;> try simp only [Aeneas.Std.uncurry])
     | (cases_result_err <;>
         simp only [core_ops_try_branch_ok, core_ops_try_branch_err, bind_ok,
           core_ops_try_from_residual_err, Aeneas.Std.uncurry] <;>
-        try dsimp only)
+        try dsimp only at *)
+    | (step with (read_var_u64_sink_spec V Inv input hV))
+    | (step with (read_wire_id_at_spec V Inv input hV))
+    | (step with (read_early_str_slice_at_spec V Inv input hV))
     | step
   ))
   all_goals try simp only [spec_ok, Aeneas.Std.uncurry]
+  all_goals try exact ⟨by assumption, trivial⟩
 
-@[local step]
-theorem skip_item_content_total
-    (input : Slice Std.U8) (cur : Std.Usize) (tag : Std.U8)
-    (limits : decoder_v1.DecodeLimitsCore) (entries_acc : Std.Usize) :
-    decoder_v1.skip_item_content input cur tag limits entries_acc ⦃ _ => True ⦄ := by
-  unfold decoder_v1.skip_item_content
+theorem decode_item_content_spec
+    {S : Type _} (V : decoder_v1.V1Sink S) (Inv : S → Prop)
+    (input : Slice Std.U8) (hV : V1SinkSpanSafe input V Inv)
+    (cur : Std.Usize) (tag : Std.U8)
+    (limits : decoder_v1.DecodeLimitsCore) (entries_acc : Std.Usize)
+    (sink : S) (hSink : Inv sink) (hCur : cur.val ≤ input.length) :
+    decoder_v1.decode_item_content V input cur tag limits entries_acc sink ⦃ (r, sink') =>
+      Inv sink' ∧
+      match r with
+      | .Ok (_, nxt, _) => cur.val ≤ nxt.val ∧ nxt.val ≤ input.length
+      | .Err _ => True ⦄ := by
+  unfold decoder_v1.decode_item_content
   try dsimp only; try simp only [Aeneas.Std.uncurry]
-  repeat (
+  repeat (any_goals (
     first
-    | (simp only [spec_ok, Aeneas.Std.uncurry]; try dsimp only; first | done | (scalar_tac; done) | (omega; done))
+    | (simp only [spec_ok, Aeneas.Std.uncurry]; (try dsimp only at *); (try simp only [SpanOk] at *);
+        (first
+        | done
+        | (exact ⟨by assumption, by omega, by omega⟩)
+        | (exact ⟨by assumption, trivial⟩)
+        | (scalar_tac; done)
+        | (omega; done)))
     | (apply ite_wp_split <;> intro _)
-    | (split_ifs <;> try dsimp only <;> try simp only [Aeneas.Std.uncurry])
-    | (cases_prod_hyp <;> try dsimp only <;> try simp only [Aeneas.Std.uncurry])
+    | (split_ifs <;> try dsimp only at * <;> try simp only [Aeneas.Std.uncurry])
+    | (cases_prod_hyp <;> try dsimp only at * <;> try simp only [Aeneas.Std.uncurry])
     | (cases_result_err <;>
         simp only [core_ops_try_branch_ok, core_ops_try_branch_err, bind_ok,
           core_ops_try_from_residual_err, Aeneas.Std.uncurry] <;>
-        try dsimp only)
-    | (step with Utf16.utf16_len_total)
+        try dsimp only at *)
+    | (step with (Utf16.utf16_len_total))
+    | (step with (read_bytes_slice_at_spec V Inv input hV))
+    | (step with (read_str_slice_at_spec V Inv input hV))
+    | (step with (read_var_u64_sink_spec V Inv input hV))
+    | (step with (read_wire_id_at_spec V Inv input hV))
+    | (step with (read_early_str_slice_at_spec V Inv input hV))
+    | (step with (check_fits_kind_sink_spec V Inv input hV))
+    | (step with (fail_with_spec V Inv input hV))
+    | (step with (decode_json_entries_spec V Inv input hV))
+    | (step with (decode_any_entries_spec V Inv input hV))
+    | (step with (decode_any_v1_spec V Inv input hV))
+    | (step with (hV.on_deleted))
+    | (step with (hV.on_json_start))
+    | (step with (hV.on_json_finish))
+    | (step with (hV.on_binary))
+    | (step with (hV.on_string))
+    | (step with (hV.on_embed))
+    | (step with (hV.on_format))
+    | (step with (hV.on_type))
+    | (step with (hV.on_any_content_start))
+    | (step with (hV.on_any_content_finish))
+    | (step with (hV.on_doc))
     | step
-  )
+    | ((try dsimp only at *); (try simp only [ItemMetaOk, WireParentOk, OptSpanOk, SpanOk] at *);
+        (try dsimp);
+        (first
+        | done
+        | (assumption; done)
+        | (trivial; done)
+        | (simp [decoder_v1.MIN_ENTRY_BYTES]; done)
+        | (exact ⟨by omega, by omega⟩; done)
+        | (exact ⟨by assumption, by assumption, by omega, by omega⟩; done)
+        | (tauto; done)
+        | (omega; done)))
+  ))
   all_goals try simp only [spec_ok, Aeneas.Std.uncurry]
+  all_goals try (simp only [SpanOk] at *; exact ⟨by assumption, by omega, by omega⟩)
+  all_goals try exact ⟨by assumption, trivial⟩
 
-private theorem sat_sub_usize_total (a b : Std.Usize) :
-    (if a >= b then a - b else ok 0#usize) ⦃ _ => True ⦄ := by
-  split_ifs <;> step*
-
-@[local step]
-theorem read_struct_frame_total
-    (input : Slice Std.U8) (pos : Std.Usize) (clock : Std.U64)
-    (limits : decoder_v1.DecodeLimitsCore) (entries_acc content_bytes_acc : Std.Usize) :
-    decoder_v1.read_struct_frame input pos clock limits entries_acc content_bytes_acc ⦃ _ => True ⦄ := by
-  unfold decoder_v1.read_struct_frame
+theorem decode_struct_frame_spec
+    {S : Type _} (V : decoder_v1.V1Sink S) (Inv : S → Prop)
+    (input : Slice Std.U8) (hV : V1SinkSpanSafe input V Inv)
+    (pos : Std.Usize) (id : decoder_v1.WireId)
+    (limits : decoder_v1.DecodeLimitsCore) (acc : decoder_v1.DecodeAcc)
+    (sink : S) (hSink : Inv sink) :
+    decoder_v1.decode_struct_frame V input pos id limits acc sink ⦃ (r, sink') =>
+      Inv sink' ∧
+      match r with
+      | .Ok (_, nxt, _) => pos.val ≤ nxt.val ∧ nxt.val ≤ input.length
+      | .Err _ => True ⦄ := by
+  unfold decoder_v1.decode_struct_frame
   try dsimp only; try simp only [Aeneas.Std.uncurry]
-  repeat (
+  repeat (any_goals (
     first
-    | (simp only [spec_ok, Aeneas.Std.uncurry]; try dsimp only; first | done | (scalar_tac; done) | (omega; done))
+    | (simp only [spec_ok, Aeneas.Std.uncurry]; (try dsimp only at *); (try simp only [SpanOk] at *);
+        (first
+        | done
+        | (exact ⟨by assumption, by omega, by omega⟩)
+        | (exact ⟨by assumption, trivial⟩)
+        | (scalar_tac; done)
+        | (omega; done)))
     | (apply ite_wp_split <;> intro _)
-    | (split_ifs <;> try dsimp only <;> try simp only [Aeneas.Std.uncurry])
-    | (cases_prod_hyp <;> try dsimp only <;> try simp only [Aeneas.Std.uncurry])
+    | (split_ifs <;> try dsimp only at * <;> try simp only [Aeneas.Std.uncurry])
+    | (cases_prod_hyp <;> try dsimp only at * <;> try simp only [Aeneas.Std.uncurry])
     | (cases_result_err <;>
         simp only [core_ops_try_branch_ok, core_ops_try_branch_err, bind_ok,
           core_ops_try_from_residual_err, Aeneas.Std.uncurry] <;>
-        try dsimp only)
-    | (step with sat_sub_usize_total)
+        try dsimp only at *)
+    | (step with (sat_sub_usize_total))
+    | (step with (read_var_u64_sink_spec V Inv input hV))
+    | (step with (advance_clock_sink_spec V Inv input hV))
+    | (step with (decode_item_header_spec V Inv input hV))
+    | (step with (decode_item_content_spec V Inv input hV))
+    | (step with (hV.on_gc))
+    | (step with (hV.on_skip))
+    | (step with (hV.on_item))
     | step
-  )
+    | ((try dsimp only at *); (try simp only [ItemMetaOk, WireParentOk, OptSpanOk, SpanOk, Slice.length] at *);
+        (try dsimp);
+        cases_and_hyps;
+        (first
+        | done
+        | (assumption; done)
+        | (trivial; done)
+        | (exact ⟨by omega, by omega⟩; done)
+        | (refine ⟨by assumption, by assumption, by omega, by omega⟩; done)
+        | (omega; done)))
+  ))
   all_goals try simp only [spec_ok, Aeneas.Std.uncurry]
+  all_goals try (simp only [SpanOk] at *; exact ⟨by assumption, by omega, by omega⟩)
+  all_goals try exact ⟨by assumption, trivial⟩
 
-@[local step]
-theorem read_client_structs_total
-    (input : Slice Std.U8) (start_pos : Std.Usize) (start_clock : Std.U64)
-    (count : Std.Usize) (limits : decoder_v1.DecodeLimitsCore)
-    (entries_acc content_bytes_acc : Std.Usize) :
-    decoder_v1.read_client_structs input start_pos start_clock count limits entries_acc content_bytes_acc ⦃ _ => True ⦄ := by
-  unfold decoder_v1.read_client_structs
+theorem decode_struct_frame_total
+    {S : Type _} (V : decoder_v1.V1Sink S) (Inv : S → Prop)
+    (input : Slice Std.U8) (hV : V1SinkTotal V Inv)
+    (pos : Std.Usize) (id : decoder_v1.WireId)
+    (limits : decoder_v1.DecodeLimitsCore) (acc : decoder_v1.DecodeAcc)
+    (sink : S) (hSink : Inv sink) :
+    decoder_v1.decode_struct_frame V input pos id limits acc sink ⦃ (_, sink') => Inv sink' ⦄ := by
+  step with decode_struct_frame_spec V Inv input (hV.toSpanSafe input) pos id limits acc sink hSink
+    as ⟨_, sink', hInv, _⟩
+  exact hInv
+
+theorem decode_client_structs_spec
+    {S : Type _} (V : decoder_v1.V1Sink S) (Inv : S → Prop)
+    (input : Slice Std.U8) (hV : V1SinkSpanSafe input V Inv)
+    (start_pos : Std.Usize) (start_id : decoder_v1.WireId) (count : Std.Usize)
+    (limits : decoder_v1.DecodeLimitsCore) (start_acc : decoder_v1.DecodeAcc)
+    (sink : S) (hSink : Inv sink) :
+    decoder_v1.decode_client_structs V input start_pos start_id count limits start_acc sink
+      ⦃ (_, sink') => Inv sink' ⦄ := by
+  unfold decoder_v1.decode_client_structs
+  let inv : S × Std.Usize × Std.U64 × decoder_v1.DecodeAcc × Std.Usize × Option CodecError → Prop :=
+    fun (sink1, _, _, _, sIdx, _) => Inv sink1 ∧ sIdx.val ≤ count.val
   have hLoop :
-      decoder_v1.read_client_structs_loop input count limits start_pos start_clock
-        entries_acc content_bytes_acc 0#usize none ⦃ _ => True ⦄ := by
-    unfold decoder_v1.read_client_structs_loop
+      decoder_v1.decode_client_structs_loop V input start_id.client count limits sink
+        start_pos start_id.clock start_acc 0#usize none ⦃ (sink1, _, _, _) => Inv sink1 ⦄ := by
+    unfold decoder_v1.decode_client_structs_loop
     refine loop.spec_decr_nat
       (fun (_, _, _, _, sIdx, err) => errFlag err + (count.val - sIdx.val))
-      (fun (_, _, _, _, sIdx, _) => sIdx.val ≤ count.val)
-      (fun _ => True) _ (start_pos, start_clock, entries_acc, content_bytes_acc, 0#usize, none) ?_
-      (by scalar_tac)
-    intro ⟨cur1, clk1, ent1, bytes1, sIdx, err1⟩ hs
-    unfold decoder_v1.read_client_structs_loop.body
+      inv _ _
+      (sink, start_pos, start_id.clock, start_acc, 0#usize, none) ?_ ⟨hSink, by scalar_tac⟩
+    intro ⟨sink1, cur1, clk1, acc1, sIdx, err1⟩ ⟨hInv1, hs⟩
+    unfold decoder_v1.decode_client_structs_loop.body
     dsimp only
     split_ifs with hlt hnone
     · have herr : err1 = none := (is_none_eq_true_iff err1).1 hnone
       subst herr
-      step with read_struct_frame_total input cur1 clk1 limits ent1 bytes1 as ⟨r⟩
+      step with decode_struct_frame_spec V Inv input hV cur1
+        { client := start_id.client, clock := clk1 } limits acc1 sink1 hInv1
+        as ⟨r, sink2, hInv2, _⟩
       cases r with
       | Ok t =>
-        rcases t with ⟨nc, nk, ne, nb⟩
+        rcases t with ⟨next_clk, next_cur, next_acc⟩
         dsimp
         step as ⟨sIdx1, hsIdx1⟩
         try simp only [spec_ok]
-        exact ⟨by scalar_tac, by simp [hsIdx1]; scalar_tac⟩
+        exact ⟨⟨hInv2, by scalar_tac⟩, by simp [hsIdx1]; scalar_tac⟩
       | Err e =>
         try simp only [spec_ok]
-        exact ⟨hs, by simp⟩
-    · simp [spec_ok]
-    · simp [spec_ok]
-  step with hLoop as ⟨cur, entries, content_bytes, err⟩
-  cases err <;> simp [spec_ok]
+        exact ⟨⟨hInv2, hs⟩, by simp⟩
+    · simp [spec_ok, hInv1]
+    · simp [spec_ok, hInv1]
+  step with hLoop as ⟨sink1, cur, acc, err, hInv1⟩
+  cases err <;> simp [spec_ok, hInv1]
 
-@[local step]
-theorem decode_one_client_block_total
-    (input : Slice Std.U8) (cur : Std.Usize)
-    (limits : decoder_v1.DecodeLimitsCore) (seen_clients : alloc.vec.Vec Std.U64)
-    (total_structs total_entries total_content_bytes : Std.Usize)
-    (hCap : seen_clients.length < Std.Usize.max) :
-    decoder_v1.decode_one_client_block input cur limits seen_clients
-      total_structs total_entries total_content_bytes ⦃ (_, seen1) =>
-        seen1.length ≤ seen_clients.length + 1 ⦄ := by
+theorem decode_client_structs_total
+    {S : Type _} (V : decoder_v1.V1Sink S) (Inv : S → Prop)
+    (input : Slice Std.U8) (hV : V1SinkTotal V Inv)
+    (start_pos : Std.Usize) (start_id : decoder_v1.WireId) (count : Std.Usize)
+    (limits : decoder_v1.DecodeLimitsCore) (start_acc : decoder_v1.DecodeAcc)
+    (sink : S) (hSink : Inv sink) :
+    decoder_v1.decode_client_structs V input start_pos start_id count limits start_acc sink
+      ⦃ (_, sink') => Inv sink' ⦄ :=
+  decode_client_structs_spec V Inv input (hV.toSpanSafe input) start_pos start_id count limits
+    start_acc sink hSink
+
+theorem decode_one_client_block_spec
+    {S : Type _} (V : decoder_v1.V1Sink S) (Inv : S → Prop)
+    (input : Slice Std.U8) (hV : V1SinkSpanSafe input V Inv)
+    (cur : Std.Usize) (limits : decoder_v1.DecodeLimitsCore)
+    (acc : decoder_v1.DecodeAcc) (sink : S) (hSink : Inv sink) :
+    decoder_v1.decode_one_client_block V input cur limits acc sink
+      ⦃ (_, sink') => Inv sink' ⦄ := by
   unfold decoder_v1.decode_one_client_block
-  try dsimp only; try simp only [Aeneas.Std.uncurry]
-  repeat (any_goals (
-    first
-    | (simp only [spec_ok, Aeneas.Std.uncurry]; try dsimp only; first | done | (scalar_tac; done) | (omega; done))
-    | (apply ite_wp_split <;> intro _)
-    | (split_ifs <;> try dsimp only <;> try simp only [Aeneas.Std.uncurry])
-    | (cases_prod_hyp <;> try dsimp only <;> try simp only [Aeneas.Std.uncurry])
-    | (cases_result_err <;>
-        simp only [core_ops_try_branch_ok, core_ops_try_branch_err, bind_ok,
-          core_ops_try_from_residual_err, Aeneas.Std.uncurry] <;>
-        try dsimp only)
-    | step
-  ))
-  all_goals try simp only [spec_ok, Aeneas.Std.uncurry]
-  all_goals try dsimp only
-  all_goals try scalar_tac
+  step with read_var_u64_sink_spec V Inv input hV cur sink hSink as ⟨r, sink_a, hSink_a, hr⟩
+  cases r with
+  | Ok val =>
+    simp only [core_ops_try_branch_ok, bind_ok]; (try dsimp)
+    rcases val with ⟨count_u64, p1⟩
+    dsimp only at hr
+    step with checked_usize_limit_total count_u64 LimitKind.Structs as ⟨r1⟩
+    cases r1 with
+    | Ok val1 =>
+      simp only [core_ops_try_branch_ok, bind_ok]; (try dsimp)
+      step with checked_add_limit_total acc.structs val1 LimitKind.Structs as ⟨r2⟩
+      cases r2 with
+      | Ok val2 =>
+        simp only [core_ops_try_branch_ok, bind_ok]; (try dsimp)
+        split_ifs with hmaxs
+        · simp [spec_ok, hSink_a]
+        · step with checked_add_limit_total acc.entries val1 LimitKind.CollectionEntries as ⟨r3⟩
+          cases r3 with
+          | Ok val3 =>
+            simp only [core_ops_try_branch_ok, bind_ok]; (try dsimp)
+            split_ifs with hmaxe
+            · simp [spec_ok, hSink_a]
+            · step as ⟨i1, hi1⟩
+              step with check_fits_kind_sink_spec V Inv input hV i1 val1
+                decoder_v1.MIN_STRUCT_BYTES LimitKind.Structs sink_a
+                (by simp [decoder_v1.MIN_STRUCT_BYTES]) hSink_a as ⟨r4, sink0, hSink0⟩
+              cases r4 with
+              | Ok _ =>
+                simp only [core_ops_try_branch_ok, bind_ok]; (try dsimp)
+                step with read_var_u64_sink_spec V Inv input hV p1 sink0 hSink0 as ⟨r5, sink_b, hSink_b, hr5⟩
+                cases r5 with
+                | Ok val4 =>
+                  simp only [core_ops_try_branch_ok, bind_ok]; (try dsimp)
+                  rcases val4 with ⟨client, p2⟩
+                  dsimp only at hr5
+                  step with hV.record_client sink_b client hSink_b as ⟨r6, sink1, hSink1⟩
+                  cases r6 with
+                  | Ok val5 =>
+                    simp only [core_ops_try_branch_ok, bind_ok]; (try dsimp)
+                    split_ifs with hrec
+                    · step with read_var_u64_sink_spec V Inv input hV p2 sink1 hSink1 as ⟨r7, sink_c, hSink_c, hr7⟩
+                      cases r7 with
+                      | Ok val6 =>
+                        simp only [core_ops_try_branch_ok, bind_ok]; (try dsimp)
+                        rcases val6 with ⟨clock, p3⟩
+                        dsimp only at hr7
+                        step with hV.begin_client sink_c client val1 hSink_c as ⟨r8, sink2, hSink2⟩
+                        cases r8 with
+                        | Ok _ =>
+                          simp only [core_ops_try_branch_ok, bind_ok]; (try dsimp)
+                          exact decode_client_structs_spec V Inv input hV p3
+                            { client, clock } val1 limits
+                            { acc with structs := val2, entries := val3 } sink2 hSink2
+                        | Err e =>
+                          simp only [core_ops_try_branch_err, bind_ok,
+                            core_ops_try_from_residual_err, spec_ok, Aeneas.Std.uncurry]
+                          (try dsimp); exact hSink2
+                      | Err e =>
+                        simp only [core_ops_try_branch_err, bind_ok,
+                          core_ops_try_from_residual_err, spec_ok, Aeneas.Std.uncurry]
+                        (try dsimp); exact hSink_c
+                    · simp [spec_ok, hSink1]
+                  | Err e =>
+                    simp only [core_ops_try_branch_err, bind_ok,
+                      core_ops_try_from_residual_err, spec_ok, Aeneas.Std.uncurry]
+                    (try dsimp); exact hSink1
+                | Err e =>
+                  simp only [core_ops_try_branch_err, bind_ok,
+                    core_ops_try_from_residual_err, spec_ok, Aeneas.Std.uncurry]
+                  (try dsimp); exact hSink_b
+              | Err e =>
+                simp only [core_ops_try_branch_err, bind_ok,
+                  core_ops_try_from_residual_err, spec_ok, Aeneas.Std.uncurry]
+                (try dsimp); exact hSink0
+          | Err e =>
+            simp only [core_ops_try_branch_err, bind_ok,
+              core_ops_try_from_residual_err, spec_ok, Aeneas.Std.uncurry]
+            (try dsimp); exact hSink_a
+      | Err e =>
+        simp only [core_ops_try_branch_err, bind_ok,
+          core_ops_try_from_residual_err, spec_ok, Aeneas.Std.uncurry]
+        (try dsimp); exact hSink_a
+    | Err e =>
+      simp only [core_ops_try_branch_err, bind_ok,
+        core_ops_try_from_residual_err, spec_ok, Aeneas.Std.uncurry]
+      (try dsimp); exact hSink_a
+  | Err e =>
+    simp only [core_ops_try_branch_err, bind_ok,
+      core_ops_try_from_residual_err, spec_ok, Aeneas.Std.uncurry]
+    (try dsimp); exact hSink_a
 
-theorem decode_update_v1_frame_total
-    (input : Slice Std.U8) (limits : decoder_v1.DecodeLimitsCore) :
-    decoder_v1.decode_update_v1_frame input limits ⦃ _ => True ⦄ := by
-  unfold decoder_v1.decode_update_v1_frame
-  step with read_var_u64_at_total input 0#usize as ⟨r, hr⟩
+theorem decode_one_client_block_total
+    {S : Type _} (V : decoder_v1.V1Sink S) (Inv : S → Prop)
+    (input : Slice Std.U8) (hV : V1SinkTotal V Inv)
+    (cur : Std.Usize) (limits : decoder_v1.DecodeLimitsCore)
+    (acc : decoder_v1.DecodeAcc) (sink : S) (hSink : Inv sink) :
+    decoder_v1.decode_one_client_block V input cur limits acc sink
+      ⦃ (_, sink') => Inv sink' ⦄ :=
+  decode_one_client_block_spec V Inv input (hV.toSpanSafe input) cur limits acc sink hSink
+
+theorem decode_update_v1_spec
+    {S : Type _} (V : decoder_v1.V1Sink S) (Inv : S → Prop)
+    (input : Slice Std.U8) (hV : V1SinkSpanSafe input V Inv)
+    (sink : S) (hSink : Inv sink) (limits : decoder_v1.DecodeLimitsCore) :
+    decoder_v1.decode_update_v1 V input sink limits ⦃ (_, sink') => Inv sink' ⦄ := by
+  unfold decoder_v1.decode_update_v1
+  step with read_var_u64_sink_spec V Inv input hV 0#usize sink hSink as ⟨r, sink_a, hSink_a, hr⟩
   cases r with
   | Ok val =>
     simp only [core_ops_try_branch_ok, bind_ok]; try dsimp only
     rcases val with ⟨clients_u64, cur⟩
     dsimp only at hr
-    step with checked_usize_from_u64_total clients_u64 as ⟨r1⟩
+    step with checked_usize_limit_total clients_u64 LimitKind.Clients as ⟨r1⟩
     cases r1 with
     | Ok val1 =>
       simp only [core_ops_try_branch_ok, bind_ok]; try dsimp only
       split_ifs with hlim
-      · simp [spec_ok]
+      · simp [spec_ok, hSink_a]
       · step as ⟨i1, hi1⟩
-        step with check_fits_min_client_total i1 val1 as ⟨r2⟩
+        step with check_fits_kind_sink_spec V Inv input hV i1 val1
+          decoder_v1.MIN_CLIENT_BYTES LimitKind.Clients sink_a
+          (by simp [decoder_v1.MIN_CLIENT_BYTES]) hSink_a as ⟨r2, sink0, hSink0⟩
         cases r2 with
         | Ok _ =>
           simp only [core_ops_try_branch_ok, bind_ok]; try dsimp only
           have hLoop :
-              decoder_v1.decode_update_v1_frame_loop input limits.max_structs limits.max_clients
+              decoder_v1.decode_update_v1_loop V input sink0 limits.max_structs limits.max_clients
                 limits.max_collection_entries limits.max_any_depth limits.max_content_bytes
-                cur val1 (alloc.vec.Vec.new Std.U64) 0#usize 0#usize 0#usize 0#usize none ⦃ _ => True ⦄ := by
-            unfold decoder_v1.decode_update_v1_frame_loop
-            let inv : Std.Usize × alloc.vec.Vec Std.U64 × Std.Usize × Std.Usize × Std.Usize × Std.Usize × Option CodecError → Prop :=
-              fun (_, seen, _, _, _, cIdx, err) =>
-                cIdx.val ≤ val1.val ∧ seen.length ≤ cIdx.val + (1 - errFlag err)
+                cur val1 { structs := 0#usize, entries := 0#usize, content_bytes := 0#usize }
+                0#usize none ⦃ (sink1, _, _, _) => Inv sink1 ⦄ := by
+            unfold decoder_v1.decode_update_v1_loop
+            let inv : S × Std.Usize × decoder_v1.DecodeAcc × Std.Usize × Option CodecError → Prop :=
+              fun (sink1, _, _, cIdx, _) => Inv sink1 ∧ cIdx.val ≤ val1.val
             refine loop.spec_decr_nat
-              (fun (_, _, _, _, _, cIdx, err) => errFlag err + (val1.val - cIdx.val))
-              inv (fun _ => True) _
-              (cur, alloc.vec.Vec.new Std.U64, 0#usize, 0#usize, 0#usize, 0#usize, none) ?_
-              ⟨by scalar_tac, by simp [alloc.vec.Vec.new, alloc.vec.Vec.length]⟩
-            intro ⟨cur1, seen1, structs1, ent1, bytes1, cIdx, err1⟩ ⟨hcLe, hSeenLen⟩
-            unfold decoder_v1.decode_update_v1_frame_loop.body
+              (fun (_, _, _, cIdx, err) => errFlag err + (val1.val - cIdx.val))
+              inv _ _
+              (sink0, cur, { structs := 0#usize, entries := 0#usize, content_bytes := 0#usize },
+                0#usize, none) ?_
+              ⟨hSink0, by scalar_tac⟩
+            intro ⟨sink1, cur1, acc1, cIdx, err1⟩ ⟨hInv1, hcLe⟩
+            unfold decoder_v1.decode_update_v1_loop.body
             dsimp only
             split_ifs with hlt hnone
             · have herr : err1 = none := (is_none_eq_true_iff err1).1 hnone
               subst herr
-              simp only [errFlag_none, Nat.sub_self, Nat.add_zero] at hSeenLen
-              have hCapStep : seen1.length < Std.Usize.max := by scalar_tac
-              step with decode_one_client_block_total input cur1
+              step with decode_one_client_block_spec V Inv input hV cur1
                 ⟨limits.max_structs, limits.max_clients, limits.max_collection_entries,
                   limits.max_any_depth, limits.max_content_bytes⟩
-                seen1 structs1 ent1 bytes1 hCapStep as ⟨rBlock, seen2, hSeen2⟩
+                acc1 sink1 hInv1 as ⟨rBlock, sink2, hInv2⟩
               cases rBlock with
-              | Ok t =>
-                rcases t with ⟨nc, ns, ne, nb⟩
+              | Ok p =>
+                rcases p with ⟨nc, na⟩
                 dsimp only
                 step as ⟨cIdx1, hcIdx1⟩
                 try simp only [spec_ok]
-                exact ⟨⟨by scalar_tac, by simp only [errFlag_none, hcIdx1]; omega⟩, by simp only [errFlag_none, hcIdx1]; scalar_tac⟩
+                exact ⟨⟨hInv2, by scalar_tac⟩, by simp [hcIdx1]; scalar_tac⟩
               | Err e =>
                 try simp only [spec_ok]
-                exact ⟨⟨hcLe, by simp only [errFlag_some]; omega⟩, by simp⟩
-            · simp [spec_ok]
-            · simp [spec_ok]
-          step with hLoop as ⟨cur1, total_structs, total_entries, err⟩
+                exact ⟨⟨hInv2, hcLe⟩, by simp⟩
+            · simp [spec_ok, hInv1]
+            · simp [spec_ok, hInv1]
+          step with hLoop as ⟨sink1, cur1, acc1, err, hInv1⟩
           cases err with
           | none =>
-            step with read_delete_set_v1_total input cur1 limits total_entries as ⟨r3⟩
+            step with decode_delete_set_v1_spec V Inv input hV cur1 limits acc1.entries sink1 hInv1
+              as ⟨r3, sink2, hInv2, hNxt2⟩
             cases r3 with
             | Ok val2 =>
               simp only [core_ops_try_branch_ok, bind_ok]
-              rcases val2 with ⟨ds, end_d⟩
-              try simp only [Aeneas.Std.uncurry]
-              split_ifs <;> simp [spec_ok]
+              dsimp only at hNxt2
+              split_ifs
+              · step as ⟨rem, _⟩
+                step with fail_with_spec V Inv input hV sink2 CodecError.TrailingBytes rem 0#u64 hInv2
+                  as ⟨ce, sink3, hInv3⟩
+                simp [spec_ok, hInv3]
+              · simp [spec_ok, hInv2]
             | Err e =>
               simp only [core_ops_try_branch_err, bind_ok, core_ops_try_from_residual_err, spec_ok]
+              exact hInv2
           | some e =>
-            simp [spec_ok]
+            simp [spec_ok, hInv1]
         | Err e =>
-          simp only [core_ops_try_branch_err, bind_ok, core_ops_try_from_residual_err, spec_ok]
+          simp only [core_ops_try_branch_err, bind_ok, core_ops_try_from_residual_err, spec_ok, Aeneas.Std.uncurry]
+          (try dsimp); exact hSink0
     | Err e =>
-      simp only [core_ops_try_branch_err, bind_ok, core_ops_try_from_residual_err, spec_ok]
+      simp only [core_ops_try_branch_err, bind_ok, core_ops_try_from_residual_err, spec_ok, Aeneas.Std.uncurry]
+      (try dsimp); exact hSink_a
+  | Err e =>
+    simp only [core_ops_try_branch_err, bind_ok, core_ops_try_from_residual_err, spec_ok, Aeneas.Std.uncurry]
+    (try dsimp); exact hSink_a
+
+theorem decode_update_v1_total
+    {S : Type _} (V : decoder_v1.V1Sink S) (Inv : S → Prop)
+    (input : Slice Std.U8) (hV : V1SinkTotal V Inv)
+    (sink : S) (hSink : Inv sink) (limits : decoder_v1.DecodeLimitsCore) :
+    decoder_v1.decode_update_v1 V input sink limits ⦃ (_, sink') => Inv sink' ⦄ :=
+  decode_update_v1_spec V Inv input (hV.toSpanSafe input) sink hSink limits
+
+@[local step]
+theorem find_u64_index_spec (items : Slice Std.U64) (target : Std.U64) :
+    decoder_v1.find_u64_index items target ⦃ p =>
+      p.2.val ≤ items.length ∧ (p.1 = true → p.2.val < items.length) ⦄ := by
+  unfold decoder_v1.find_u64_index
+  unfold decoder_v1.find_u64_index_loop
+  refine loop.spec_decr_nat
+    (fun (low, high) => high.val - low.val)
+    (fun (low, high) => low.val ≤ high.val ∧ high.val ≤ items.length)
+    (fun (p : Bool × Std.Usize) => p.2.val ≤ items.length ∧ (p.1 = true → p.2.val < items.length))
+    _ (0#usize, Slice.len items) ?_ ⟨by scalar_tac, by scalar_tac⟩
+  intro ⟨low, high⟩ ⟨hLoHi, hHiLen⟩
+  unfold decoder_v1.find_u64_index_loop.body
+  dsimp only
+  split_ifs with hlt
+  · step as ⟨i, hi⟩
+    step as ⟨i1, hi1⟩
+    step as ⟨mid, hmid⟩
+    have hMidLt : mid.val < items.length := by scalar_tac
+    step as ⟨c, hc⟩
+    split_ifs with heq hclt
+    · simp only [spec_ok]
+      exact ⟨by omega, fun _ => hMidLt⟩
+    · step as ⟨low1, hlow1⟩
+      try simp only [spec_ok]
+      exact ⟨by scalar_tac, hHiLen, by scalar_tac⟩
+    · try simp only [spec_ok]
+      exact ⟨by scalar_tac, by scalar_tac, by scalar_tac⟩
+  · simp only [spec_ok]
+    exact ⟨by omega, fun h => by contradiction⟩
+
+@[local step]
+theorem insert_u64_sorted_spec
+    (items : alloc.vec.Vec Std.U64) (target : Std.U64)
+    (hCap : items.length < Std.Usize.max) :
+    decoder_v1.insert_u64_sorted items target ⦃ _ => True ⦄ := by
+  unfold decoder_v1.insert_u64_sorted
+  step with find_u64_index_spec (alloc.vec.Vec.deref items) target as ⟨found, idx, hIdxLe, hFound⟩
+  simp only [alloc.vec.Vec.deref, Slice.length] at hIdxLe hFound
+  split_ifs with hf heq
+  · simp [spec_ok]
+  · step*
+  · step*
+
+theorem summary_sink_v1sink_total :
+    V1SinkTotal decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink (fun _ => True) :=
+  { core_validates_utf8 := by
+      intro s
+      simp [decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink,
+        decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.core_validates_utf8, spec_ok]
+    validate_utf8_early := by
+      intro s _ _ _
+      simp [decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink,
+        decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.validate_utf8_early, spec_ok]
+    on_decode_error := by
+      intro s _ _ _ _
+      simp [decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink,
+        decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.on_decode_error, spec_ok]
+    record_client := by
+      intro s client _
+      simp only [decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink]
+      unfold decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.record_client
+      dsimp only
+      split_ifs with hmax
+      · simp [spec_ok]
+      · have hCap : s.seen_clients.length < Std.Usize.max := by
+          simp only [alloc.vec.Vec.len] at hmax
+          scalar_tac
+        step with insert_u64_sorted_spec s.seen_clients client hCap as ⟨b, v⟩
+    begin_client := by
+      intro s _ _ _
+      simp only [decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink]
+      unfold decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.begin_client
+      dsimp only; split_ifs <;> step*
+    on_gc := by
+      intro s _ _ _
+      simp only [decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink]
+      unfold decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.on_gc
+      dsimp only; split_ifs <;> step*
+    on_skip := by
+      intro s _ _ _
+      simp only [decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink]
+      unfold decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.on_skip
+      dsimp only; split_ifs <;> step*
+    on_item := by
+      intro s _ _ _ _
+      simp only [decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink]
+      unfold decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.on_item
+      dsimp only; split_ifs <;> step*
+    on_deleted := by
+      intro s _ _; simp [decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink, decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.on_deleted, spec_ok]
+    on_json_start := by
+      intro s _ _; simp [decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink, decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.on_json_start, spec_ok]
+    on_json_value := by
+      intro s _ _; simp [decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink, decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.on_json_value, spec_ok]
+    on_json_finish := by
+      intro s _; simp [decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink, decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.on_json_finish, spec_ok]
+    on_binary := by
+      intro s _ _; simp [decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink, decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.on_binary, spec_ok]
+    on_string := by
+      intro s _ _; simp [decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink, decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.on_string, spec_ok]
+    on_embed := by
+      intro s _ _; simp [decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink, decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.on_embed, spec_ok]
+    on_format := by
+      intro s _ _ _; simp [decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink, decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.on_format, spec_ok]
+    on_type := by
+      intro s _ _ _; simp [decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink, decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.on_type, spec_ok]
+    on_any_content_start := by
+      intro s _ _; simp [decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink, decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.on_any_content_start, spec_ok]
+    on_any_content_value := by
+      intro s _; simp [decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink, decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.on_any_content_value, spec_ok]
+    on_any_content_finish := by
+      intro s _; simp [decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink, decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.on_any_content_finish, spec_ok]
+    on_doc := by
+      intro s _ _; simp [decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink, decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.on_doc, spec_ok]
+    on_any_start := by
+      intro s _; simp [decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink, decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.on_any_start, spec_ok]
+    on_any_undefined := by
+      intro s _; simp [decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink, decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.on_any_undefined, spec_ok]
+    on_any_null := by
+      intro s _; simp [decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink, decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.on_any_null, spec_ok]
+    on_any_i32 := by
+      intro s _ _; simp [decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink, decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.on_any_i32, spec_ok]
+    on_any_f32_bits := by
+      intro s _ _; simp [decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink, decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.on_any_f32_bits, spec_ok]
+    on_any_f64_bits := by
+      intro s _ _; simp [decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink, decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.on_any_f64_bits, spec_ok]
+    on_any_i64_bits := by
+      intro s _ _; simp [decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink, decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.on_any_i64_bits, spec_ok]
+    on_any_bool := by
+      intro s _ _; simp [decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink, decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.on_any_bool, spec_ok]
+    on_any_str := by
+      intro s _ _; simp [decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink, decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.on_any_str, spec_ok]
+    on_any_bytes := by
+      intro s _ _; simp [decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink, decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.on_any_bytes, spec_ok]
+    on_any_begin_object := by
+      intro s _ _; simp [decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink, decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.on_any_begin_object, spec_ok]
+    on_any_object_key := by
+      intro s _ _; simp [decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink, decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.on_any_object_key, spec_ok]
+    on_any_begin_array := by
+      intro s _ _; simp [decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink, decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.on_any_begin_array, spec_ok]
+    on_any_end_container := by
+      intro s _; simp [decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink, decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.on_any_end_container, spec_ok]
+    on_any_finish := by
+      intro s _ _; simp [decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink, decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.on_any_finish, spec_ok]
+    begin_delete_client := by
+      intro s _ count _
+      simp only [decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink]
+      unfold decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.begin_delete_client
+      dsimp only
+      split_ifs with hmax
+      · simp [spec_ok]
+      · step as ⟨i, hi⟩
+        step with checked_add_usize_total s.summary.delete_ranges count as ⟨r⟩
+        cases r with
+        | Ok _ => simp only [core_ops_try_branch_ok, bind_ok, spec_ok, Aeneas.Std.uncurry]
+        | Err _ => simp only [core_ops_try_branch_err, bind_ok, core_ops_try_from_residual_err, spec_ok, Aeneas.Std.uncurry]
+    on_delete_range := by
+      intro s _ _ _ _; simp [decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink, decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.on_delete_range, spec_ok] }
+
+theorem decode_update_v1_frame_total
+    (input : Slice Std.U8) (limits : decoder_v1.DecodeLimitsCore) :
+    decoder_v1.decode_update_v1_frame input limits ⦃ _ => True ⦄ := by
+  unfold decoder_v1.decode_update_v1_frame
+  unfold decoder_v1.SummarySink.new
+  step*
+  step with decode_update_v1_total decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink
+    (fun _ => True) input summary_sink_v1sink_total _ trivial limits as ⟨r, sink1⟩
+  cases r with
+  | Ok _ =>
+    simp only [core_ops_try_branch_ok, bind_ok, spec_ok]
   | Err e =>
     simp only [core_ops_try_branch_err, bind_ok, core_ops_try_from_residual_err, spec_ok]
 

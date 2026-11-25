@@ -7,5 +7,11 @@ version     = "0.1.0"
 
 [dependencies]
 
+[features]
+# What the tests of `y-octo` read to see that the arena gives memory back
+# (`ItemSpaceCore::allocated_capacity`). Not part of the extracted code and
+# not compiled into `y-octo` outside its tests.
+diagnostics = []
+
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(aeneas_extract)'] }

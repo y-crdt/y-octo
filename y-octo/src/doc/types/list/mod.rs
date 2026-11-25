@@ -241,7 +241,15 @@ pub(crate) fn list_insert(
 
     let (parent, items) = store.type_arena.type_and_items(ty);
     if let Some(mut pos) = find_pos_mut(items, parent, index) {
-        items.check_capacity(1 + usize::from(pos.offset > 0))?;
+        // inside a struct: `normalize` cuts it there
+        let split = if pos.offset > 0 {
+            pos.left
+                .and_then(|left| items.get(left))
+                .map(|left| left.id + pos.offset)
+        } else {
+            None
+        };
+        store.check_local_insert(&content, split)?;
         pos.normalize(store)?;
         insert_after(store, ty, pos, content)?;
     }
@@ -285,7 +293,53 @@ pub(crate) fn list_remove(store: &mut DocStore, ty: TypeIdx, idx: u64, len: u64)
     Ok(())
 }
 
+/// Whether the document takes the cuts a removal of `len` units makes: one
+/// where it starts, `skip` units into the item `first` (`start_cut`, when
+/// `skip > 0`), and one where it ends inside an item. A removal deletes the
+/// items before its end as it goes, so both cuts have to fit before the first
+/// is made: a full arena or timeline refuses the removal and nothing is
+/// deleted.
+pub(crate) fn check_remove(
+    store: &DocStore,
+    first: ItemRef,
+    skip: u64,
+    len: u64,
+    start_cut: Option<Id>,
+) -> JwstCodecResult {
+    let items = &store.type_arena.items;
+    if items.check_capacity(2).is_ok() && store.blocks_fit(2) {
+        return Ok(());
+    }
+    let mut end_cut = None;
+    let mut cursor = first;
+    let mut skip = skip;
+    let mut remaining = len;
+    while remaining > 0 {
+        let Some(item) = cursor.and_then(|i| items.get(i)) else {
+            break;
+        };
+        if item.indexable() {
+            let item_len = item.len() - std::mem::take(&mut skip);
+            if remaining < item_len {
+                end_cut = Some(item.id + (item.len() - item_len + remaining));
+                break;
+            }
+            remaining -= item_len;
+        }
+        skip = 0;
+        cursor = item.right;
+    }
+    items.check_capacity(usize::from(start_cut.is_some()) + usize::from(end_cut.is_some()))?;
+    store.check_blocks(store.client(), 0, &[start_cut, end_cut])
+}
+
 fn remove_after(store: &mut DocStore, ty: TypeIdx, mut pos: ItemPosition, len: u64) -> JwstCodecResult {
+    {
+        let items = &store.type_arena.items;
+        let inside = pos.left.filter(|_| pos.offset > 0);
+        let start_cut = inside.and_then(|left| items.get(left)).map(|left| left.id + pos.offset);
+        check_remove(store, inside.or(pos.right), pos.offset, len, start_cut)?;
+    }
     pos.normalize(store)?;
 
     let mut remaining = len;

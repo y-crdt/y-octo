@@ -5,6 +5,7 @@ use crate::CodecError;
 /// Decodes an unsigned LEB128 varint up to 64 bits (max 10 bytes, 10th byte
 /// carries at most 1 payload bit), matching
 /// `y_octo::codec::integer::read_var_u64`.
+#[inline]
 pub fn decode_var_u64(input: &[u8]) -> Result<(u64, usize), CodecError> {
     let mut value = 0u64;
     let mut i = 0usize;
@@ -56,6 +57,7 @@ pub fn encode_var_u64(value: u64) -> Vec<u8> {
 
 /// Decodes a lib0 signed 32-bit varint together with its sign bit (so `-0` is
 /// distinguishable from `+0`), matching `y_octo::codec::integer::read_var_i32`.
+#[inline]
 pub fn decode_var_i32_with_sign(input: &[u8]) -> Result<((i32, bool), usize), CodecError> {
     if input.is_empty() {
         return Err(CodecError::UnexpectedEof);

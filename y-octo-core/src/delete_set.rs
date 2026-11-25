@@ -1,6 +1,6 @@
 use alloc::vec::Vec;
 
-use crate::order_range::OrderRange;
+use crate::{CodecError, order_range::OrderRange};
 
 #[derive(Clone, PartialEq, Eq)]
 #[cfg_attr(not(aeneas_extract), derive(Debug))]
@@ -63,23 +63,27 @@ impl DeleteSetCore {
     }
 
     pub fn insert(&mut self, client: u64, start: u64, end: u64) {
+        assert!(self.try_insert(client, start, end).is_ok());
+    }
+
+    pub fn try_insert(&mut self, client: u64, start: u64, end: u64) -> Result<(), CodecError> {
         if start >= end {
-            return;
+            return Ok(());
         }
         let (found, idx) = self.find_index(client);
         if found {
-            self.entries[idx].range.insert(start, end);
-        } else {
-            let entry = DeleteSetEntry {
-                client,
-                range: OrderRange::from_range(start, end),
-            };
-            if idx == self.entries.len() {
-                self.entries.push(entry);
-            } else {
-                self.entries.insert(idx, entry);
-            }
+            return self.entries[idx].range.try_insert(start, end);
         }
+        let entry = DeleteSetEntry {
+            client,
+            range: OrderRange::from_range(start, end),
+        };
+        if idx == self.entries.len() {
+            self.entries.push(entry);
+        } else {
+            self.entries.insert(idx, entry);
+        }
+        Ok(())
     }
 
     pub fn merge(&mut self, other: &DeleteSetCore) {
@@ -87,8 +91,7 @@ impl DeleteSetCore {
         while i < other.entries.len() {
             let client = other.entries[i].client;
             let mut j = 0usize;
-            while j < other.entries[i].range.ranges.len() {
-                let r = other.entries[i].range.ranges[j];
+            while let Some(r) = other.entries[i].range.get(j) {
                 self.insert(client, r.start, r.end);
                 j += 1;
             }

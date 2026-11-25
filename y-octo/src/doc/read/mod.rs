@@ -475,7 +475,10 @@ impl ReadDoc {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeSet;
+    use std::{
+        collections::{BTreeSet, VecDeque},
+        ops::Range,
+    };
 
     use rand::{RngExt, SeedableRng};
     use rand_chacha::ChaCha8Rng;
@@ -1535,5 +1538,160 @@ mod tests {
             ReadDoc::from_full_update_v1_with_limits(fixture.as_slice(), limits),
             Err(ReadError::ResourceLimit("structs"))
         ));
+    }
+
+    /// Two text structs, `abcd` at clocks 0..4 and `efgh` at 4..8.
+    fn two_text_structs(delete_set: DeleteSet) -> Vec<u8> {
+        let first = root_item(0, Content::String("abcd".into()), "t", None);
+        let mut second = root_item(4, Content::String("efgh".into()), "t", None);
+        second.origin_left_id = Some(Id::new(1, 3));
+        update_bytes(vec![first, second], delete_set)
+    }
+
+    #[test]
+    #[cfg_attr(loom, ignore)]
+    #[allow(clippy::single_range_in_vec_init)]
+    fn delete_set_cuts_structs_at_every_boundary() {
+        let cases: [(&[Range<u64>], &str); 6] = [
+            // several cuts in one struct, and a range crossing into the next
+            (&[1..2, 3..6], "acgh"),
+            // starting on, and ending on, an existing boundary
+            (&[4..5], "abcdfgh"),
+            (&[2..4], "abefgh"),
+            (&[0..4], "efgh"),
+            (&[0..8], ""),
+            (&[1..2, 3..4, 5..6, 7..8], "aceg"),
+        ];
+        for (ranges, expected) in cases {
+            let mut delete_set = DeleteSet::default();
+            delete_set.batch_add_ranges(1, ranges.to_vec());
+            let update = two_text_structs(delete_set);
+            let read = ReadDoc::from_full_update_v1(update.clone()).unwrap();
+            assert_eq!(read.text("t").unwrap().to_string(), expected, "{ranges:?}");
+            assert_read_matches_mutable(&update, "boundary cuts");
+        }
+    }
+
+    #[test]
+    fn delete_set_splits_stop_at_max_structs() {
+        // 1..2 and 3..6 cut at clocks 1, 2, 3 and 6: 2 structs become 6
+        let mut delete_set = DeleteSet::default();
+        delete_set.batch_add_ranges(1, vec![1..2, 3..6]);
+        let update = two_text_structs(delete_set);
+        let limits = |max_structs| ReadLimits {
+            max_structs,
+            ..ReadLimits::default()
+        };
+
+        let read = ReadDoc::from_full_update_v1_with_limits(update.clone(), limits(6)).unwrap();
+        assert_eq!(read.text("t").unwrap().to_string(), "acgh");
+        assert!(matches!(
+            ReadDoc::from_full_update_v1_with_limits(update, limits(5)),
+            Err(ReadError::ResourceLimit("virtual struct splits"))
+        ));
+    }
+
+    /// The nodes and each client's index after applying the delete set, or
+    /// the error, so two ways of applying it can be compared exactly.
+    fn delete_set_outcome(
+        update: &[u8],
+        limits: &ReadLimits,
+        apply: fn(&mut Builder) -> Result<(), ReadError>,
+    ) -> Result<String, String> {
+        let mut builder = scan::scan(update.into(), limits.clone()).map_err(|e| e.to_string())?;
+        builder.integrate_all().map_err(|e| e.to_string())?;
+        apply(&mut builder).map_err(|e| e.to_string())?;
+        let mut clients = builder.clients.iter().collect::<Vec<_>>();
+        clients.sort_unstable_by_key(|(client, _)| **client);
+        Ok(format!("{clients:?} {:?}", builder.nodes))
+    }
+
+    #[test]
+    #[cfg_attr(loom, ignore)]
+    fn delete_set_single_pass_matches_range_at_a_time() {
+        let mut rng = ChaCha8Rng::seed_from_u64(0x0de1_e7e5);
+        let rounds = if cfg!(miri) { 12 } else { 3000 };
+        let (mut applied, mut failed) = (0, 0);
+        for round in 0..rounds {
+            let mut structs = VecDeque::new();
+            let mut clock = 0u64;
+            let mut after_item = false;
+            for _ in 0..rng.random_range(1..12) {
+                let len = rng.random_range(1..5u64);
+                if rng.random_bool(0.2) {
+                    structs.push_back(WireStruct::Gc {
+                        id: Id::new(1, clock),
+                        len,
+                    });
+                    after_item = false;
+                } else {
+                    let text = "x".repeat(len as usize);
+                    let mut next = root_item(clock, Content::String(text), "t", None);
+                    if after_item {
+                        next.origin_left_id = Some(Id::new(1, clock - 1));
+                    }
+                    structs.push_back(WireStruct::Item(Box::new(next)));
+                    after_item = true;
+                }
+                clock += len;
+            }
+            let has_skip = rng.random_bool(0.2);
+            if has_skip {
+                structs.push_back(WireStruct::Skip {
+                    id: Id::new(1, clock),
+                    len: 2,
+                });
+                clock += 2;
+            }
+            let struct_count = structs.len();
+            let mut update = Update::default();
+            update.structs.insert(1, structs);
+            let mut bytes = update.encode_v1().unwrap();
+            assert_eq!(bytes.pop(), Some(0), "encoded with an empty delete set");
+
+            // out of order, overlapping, in repeated blocks, sometimes past
+            // the state or for an unknown client
+            let mut deletes = RawEncoder::default();
+            let blocks = rng.random_range(1..4u64);
+            deletes.write_var_u64(blocks).unwrap();
+            for _ in 0..blocks {
+                let client = if rng.random_bool(0.05) { 9 } else { 1 };
+                let ranges = rng.random_range(0..6u64);
+                deletes.write_var_u64(client).unwrap();
+                deletes.write_var_u64(ranges).unwrap();
+                for _ in 0..ranges {
+                    let start = rng.random_range(0..clock + 1);
+                    let len = rng.random_range(0..4u64).min((clock + 1).saturating_sub(start));
+                    deletes.write_var_u64(start).unwrap();
+                    deletes.write_var_u64(len).unwrap();
+                }
+            }
+            bytes.extend(deletes.into_inner());
+
+            let limits = ReadLimits {
+                max_structs: if rng.random_bool(0.2) {
+                    struct_count + rng.random_range(0..4)
+                } else {
+                    ReadLimits::default().max_structs
+                },
+                ..ReadLimits::default()
+            };
+            let single_pass = delete_set_outcome(&bytes, &limits, Builder::apply_delete_set);
+            let by_splits = delete_set_outcome(&bytes, &limits, Builder::apply_delete_set_by_splits);
+            assert_eq!(single_pass, by_splits, "round {round}");
+
+            if single_pass.is_ok() {
+                applied += 1;
+                if !has_skip && limits.max_structs == ReadLimits::default().max_structs {
+                    assert_read_matches_mutable(&bytes, "random delete set");
+                }
+            } else {
+                failed += 1;
+            }
+        }
+        assert!(
+            applied > 0 && (cfg!(miri) || failed > 0),
+            "{applied} applied, {failed} failed"
+        );
     }
 }

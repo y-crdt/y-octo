@@ -1,8 +1,9 @@
 use std::ops::Range;
 
 use serde::Deserialize;
+use y_octo_core::{CodecError, LimitKind, decoder_v1 as core_v1};
 
-use super::{CrdtReader, Id, JwstCodecError, JwstCodecResult, RawDecoder, item_flags};
+use super::{Id, JwstCodecError};
 
 #[derive(Clone, Copy)]
 pub(crate) struct DecodeLimits {
@@ -33,22 +34,6 @@ impl DecodeLimits {
         ..Self::UPDATE
     };
 }
-
-// Smallest wire size of each declared entry. Counts are checked against the
-// remaining input before anything is reserved for them, so a few bytes cannot
-// make a sink allocate for millions of entries.
-/// client block: struct count, client and clock
-const MIN_CLIENT_BYTES: u64 = 3;
-/// struct: info byte plus at least one more byte (length, parent or origin)
-const MIN_STRUCT_BYTES: u64 = 2;
-/// delete set client: client and range count
-const MIN_DELETE_CLIENT_BYTES: u64 = 2;
-/// delete range: start and length
-const MIN_DELETE_RANGE_BYTES: u64 = 2;
-/// JSON or Any content entry, or Any array element
-const MIN_ENTRY_BYTES: u64 = 1;
-/// Any object entry: key and value
-const MIN_OBJECT_ENTRY_BYTES: u64 = 2;
 
 #[derive(Debug)]
 pub(crate) enum Error {
@@ -145,372 +130,545 @@ pub(crate) trait Sink<'a>: Sized {
     fn finish(self) -> Result<Self::Output>;
 }
 
-struct Decoder<'a> {
-    raw: RawDecoder<'a>,
-    limits: DecodeLimits,
-    structs: usize,
-    entries: usize,
-    content_bytes: usize,
-}
-
+#[cfg_attr(not(debug_assertions), inline(always))]
 pub(crate) fn decode<'a, S: Sink<'a>>(input: &'a [u8], sink: S, limits: DecodeLimits) -> Result<S::Output> {
-    Decoder {
-        raw: RawDecoder::new(input),
-        limits,
-        structs: 0,
-        entries: 0,
-        content_bytes: 0,
+    let core_limits = core_v1::DecodeLimitsCore {
+        max_structs: limits.max_structs,
+        max_clients: limits.max_clients,
+        max_collection_entries: limits.max_collection_entries,
+        max_any_depth: limits.max_any_depth,
+        max_content_bytes: limits.max_content_bytes,
+    };
+    let mut adapter = Adapter::new(input, sink);
+    match core_v1::decode_update_v1(input, &mut adapter, &core_limits) {
+        Ok(()) => adapter.sink.finish(),
+        Err(err) => Err(adapter.error.take().unwrap_or_else(|| map_core_error(err))),
     }
-    .decode(sink)
 }
 
-impl<'a> Decoder<'a> {
-    fn decode<S: Sink<'a>>(mut self, mut sink: S) -> Result<S::Output> {
-        let clients = Self::usize(self.raw.read_var_u64()?, "clients")?;
-        if clients > self.limits.max_clients {
-            return Err(Error::Resource("clients"));
+pub(crate) fn limit_name(kind: LimitKind) -> &'static str {
+    match kind {
+        LimitKind::Clients => "clients",
+        LimitKind::DeleteClients => "delete clients",
+        LimitKind::Structs => "structs",
+        LimitKind::CollectionEntries => "collection entries",
+        LimitKind::ContentBytes => "content bytes",
+        LimitKind::AnyDepth => "Any nesting depth",
+        LimitKind::ContentEntries => "content entries",
+        LimitKind::AnyObjectEntries => "Any object entries",
+        LimitKind::AnyArrayEntries => "Any array entries",
+        LimitKind::DeleteRanges => "delete ranges",
+    }
+}
+
+pub(crate) fn map_core_error(err: CodecError) -> Error {
+    match err {
+        CodecError::UnexpectedEof => {
+            Error::Codec(JwstCodecError::UpdateInvalid(nom::Err::Incomplete(nom::Needed::new(1))))
         }
-        self.check_fits(clients, MIN_CLIENT_BYTES, "clients")?;
-        // Yjs writes each client once. Sinks key structs by client, so a
-        // repeated block would silently replace the structs of the first one
-        // (and leave them orphaned in a ReadDoc).
-        let mut seen_clients = crate::doc::HashSet::default();
-        for _ in 0..clients {
-            let count = Self::usize(self.raw.read_var_u64()?, "structs")?;
-            self.add_structs(count)?;
-            self.add_entries(count)?;
-            self.check_fits(count, MIN_STRUCT_BYTES, "structs")?;
-            let client = self.raw.read_var_u64()?;
-            if !seen_clients.insert(client) {
-                return Err(
-                    JwstCodecError::IncompleteDocument(format!("duplicate struct block for client {client}")).into(),
+        CodecError::VarintOverflow => Error::Codec(JwstCodecError::UpdateInvalid(nom::Err::Failure(
+            nom::error::Error::new(0, nom::error::ErrorKind::TooLarge),
+        ))),
+        CodecError::UnexpectedByteEof => Error::Codec(JwstCodecError::IncompleteDocument(
+            "failed to fill whole buffer".to_owned(),
+        )),
+        CodecError::BufferTooLarge => Error::Codec(JwstCodecError::IncompleteDocument("buffer too large".to_owned())),
+        CodecError::BufferLengthOverflow => {
+            Error::Codec(JwstCodecError::IncompleteDocument("buffer length overflow".to_owned()))
+        }
+        CodecError::BufferExceedsUpdate => {
+            Error::Codec(JwstCodecError::IncompleteDocument("buffer exceeds update".to_owned()))
+        }
+        CodecError::LengthOverflow => Error::Resource("length"),
+        CodecError::ZeroLengthStruct => {
+            Error::Codec(JwstCodecError::IncompleteDocument("zero-length struct".to_owned()))
+        }
+        CodecError::ClockOverflow => Error::Codec(JwstCodecError::StructClockInvalid {
+            expect: u64::MAX,
+            actually: u64::MAX,
+        }),
+        CodecError::DuplicateClient => {
+            Error::Codec(JwstCodecError::IncompleteDocument("duplicate struct block".to_owned()))
+        }
+        CodecError::TrailingBytes => Error::Codec(JwstCodecError::UpdateNotFullyConsumed(0)),
+        CodecError::InvalidUtf8 => Error::Codec(JwstCodecError::IncompleteDocument("invalid utf-8".to_owned())),
+        CodecError::UnknownContentTag => {
+            Error::Codec(JwstCodecError::IncompleteDocument("Unknown content type".to_owned()))
+        }
+        CodecError::UnknownContentTagByte(tag) => Error::Codec(JwstCodecError::IncompleteDocument(format!(
+            "Unknown content type: {tag}"
+        ))),
+        CodecError::UnknownAnyTag => Error::Codec(JwstCodecError::IncompleteDocument("unknown Any tag".to_owned())),
+        CodecError::UnknownAnyTagByte(tag) => {
+            Error::Codec(JwstCodecError::IncompleteDocument(format!("unknown Any tag: {tag}")))
+        }
+        CodecError::UnknownTypeKind => Error::Codec(JwstCodecError::IncompleteDocument("Unknown y type".to_owned())),
+        CodecError::LimitExceeded => Error::Resource("limit exceeded"),
+        CodecError::ResourceLimit(kind) => Error::Resource(limit_name(kind)),
+        CodecError::CountTooLarge(kind) => Error::Codec(JwstCodecError::IncompleteDocument(format!(
+            "{}: declared count exceeds remaining bytes",
+            limit_name(kind)
+        ))),
+        CodecError::SinkAborted => Error::Codec(JwstCodecError::Unexpected),
+    }
+}
+
+struct Adapter<'a, S: Sink<'a>> {
+    input: &'a [u8],
+    sink: S,
+    seen_clients: crate::doc::HashSet<u64>,
+    pending_content: Option<S::Content>,
+    pending_any: Option<S::Any>,
+    early_strs: [Option<&'a str>; 4],
+    error: Option<Error>,
+}
+
+impl<'a, S: Sink<'a>> Adapter<'a, S> {
+    fn new(input: &'a [u8], sink: S) -> Self {
+        Self {
+            input,
+            sink,
+            seen_clients: crate::doc::HashSet::default(),
+            pending_content: None,
+            pending_any: None,
+            early_strs: [None; 4],
+            error: None,
+        }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn abort(&mut self, err: Error) -> CodecError {
+        self.error = Some(err);
+        CodecError::SinkAborted
+    }
+
+    #[cfg_attr(not(debug_assertions), inline(always))]
+    fn forward(&mut self, res: Result<()>) -> core::result::Result<(), CodecError> {
+        match res {
+            Ok(()) => Ok(()),
+            Err(e) => Err(self.abort(e)),
+        }
+    }
+
+    #[cfg_attr(not(debug_assertions), inline(always))]
+    fn wire_id(id: core_v1::WireId) -> Id {
+        Id::new(id.client, id.clock)
+    }
+
+    #[cfg_attr(not(debug_assertions), inline(always))]
+    fn wire_str(&mut self, span: core_v1::Span) -> core::result::Result<WireStr<'a>, CodecError> {
+        let range = span.start..span.end;
+        match std::str::from_utf8(&self.input[range.clone()]) {
+            Ok(value) => Ok(WireStr { value, range }),
+            Err(e) => Err(self.abort(Error::Codec(JwstCodecError::IncompleteDocument(e.to_string())))),
+        }
+    }
+
+    #[cfg_attr(not(debug_assertions), inline(always))]
+    fn take_early_str(&mut self, slot: usize, span: core_v1::Span) -> core::result::Result<WireStr<'a>, CodecError> {
+        let range = span.start..span.end;
+        let slice = &self.input[range.clone()];
+        let value = match self.early_strs[slot].take() {
+            Some(s) => {
+                debug_assert!(
+                    std::ptr::eq(s.as_ptr(), slice.as_ptr()) && s.len() == slice.len(),
+                    "early_strs slot {slot} reused for a different span"
                 );
+                s
             }
-            let mut clock = self.raw.read_var_u64()?;
-            sink.begin_client(client, count)?;
-            for _ in 0..count {
-                let id = Id::new(client, clock);
-                clock = self.read_struct(&mut sink, id)?;
-            }
-        }
-
-        let delete_clients = Self::usize(self.raw.read_var_u64()?, "delete clients")?;
-        if delete_clients > self.limits.max_clients {
-            return Err(Error::Resource("delete clients"));
-        }
-        self.check_fits(delete_clients, MIN_DELETE_CLIENT_BYTES, "delete clients")?;
-        for _ in 0..delete_clients {
-            let client = self.raw.read_var_u64()?;
-            let count = Self::usize(self.raw.read_var_u64()?, "delete ranges")?;
-            self.add_entries(count)?;
-            self.check_fits(count, MIN_DELETE_RANGE_BYTES, "delete ranges")?;
-            for _ in 0..count {
-                let start = self.raw.read_var_u64()?;
-                let len = self.raw.read_var_u64()?;
-                let end = start.checked_add(len).ok_or(JwstCodecError::StructClockInvalid {
-                    expect: start,
-                    actually: u64::MAX,
-                })?;
-                if start != end {
-                    sink.delete_range(client, start..end)?;
-                }
-            }
-        }
-        if !self.raw.is_empty() {
-            return Err(JwstCodecError::UpdateNotFullyConsumed(self.raw.len() as usize).into());
-        }
-        sink.finish()
+            None => match std::str::from_utf8(slice) {
+                Ok(s) => s,
+                Err(e) => return Err(self.abort(Error::Codec(JwstCodecError::IncompleteDocument(e.to_string())))),
+            },
+        };
+        Ok(WireStr { value, range })
     }
 
-    fn advance_clock(clock: u64, len: u64) -> Result<u64> {
-        if len == 0 {
-            return Err(JwstCodecError::IncompleteDocument("zero-length struct".into()).into());
-        }
-        clock.checked_add(len).ok_or_else(|| {
-            JwstCodecError::StructClockInvalid {
-                expect: clock,
-                actually: u64::MAX,
-            }
-            .into()
-        })
+    #[cfg_attr(not(debug_assertions), inline(always))]
+    fn wire_bytes(&self, span: core_v1::Span) -> WireBytes<'a> {
+        let range = span.start..span.end;
+        let value = &self.input[range.clone()];
+        WireBytes { value, range }
     }
 
-    fn read_struct<S: Sink<'a>>(&mut self, sink: &mut S, id: Id) -> Result<u64> {
-        let struct_start = self.raw.position();
-        let info = self.raw.read_info()?;
-        let tag = info & 0b1_1111;
-        match tag {
-            0 => {
-                let len = self.raw.read_var_u64()?;
-                let next_clock = Self::advance_clock(id.clock, len)?;
-                sink.gc(id, len)?;
-                Ok(next_clock)
-            }
-            10 => {
-                let len = self.raw.read_var_u64()?;
-                let next_clock = Self::advance_clock(id.clock, len)?;
-                sink.skip(id, len)?;
-                Ok(next_clock)
-            }
-            _ => {
-                let has_left = info & item_flags::ITEM_HAS_LEFT_ID != 0;
-                let has_right = info & item_flags::ITEM_HAS_RIGHT_ID != 0;
-                let explicit_parent = !has_left && !has_right;
-                let origin_left = has_left.then(|| self.read_id()).transpose()?;
-                let origin_right = has_right.then(|| self.read_id()).transpose()?;
-                let parent = if explicit_parent {
-                    if self.raw.read_var_u64()? == 1 {
-                        WireParent::Root(self.read_str()?)
-                    } else {
-                        WireParent::Item(self.read_id()?)
-                    }
-                } else {
-                    WireParent::Inherit
-                };
-                let parent_sub = if explicit_parent && info & item_flags::ITEM_HAS_PARENT_SUB != 0 {
-                    Some(self.read_str()?)
-                } else {
-                    None
-                };
-                let content_start = self.raw.position();
-                let (content, len) = self.read_content(sink, tag)?;
-                let struct_end = self.raw.position();
-                self.add_content_bytes(struct_end - content_start)?;
-                let next_clock = Self::advance_clock(id.clock, len)?;
-                sink.item(
-                    id,
-                    len,
-                    ItemMeta {
-                        origin_left,
-                        origin_right,
-                        parent,
-                        parent_sub,
-                        raw_range: struct_start..struct_end,
-                    },
-                    content,
-                )?;
-                Ok(next_clock)
-            }
-        }
-    }
-
-    fn read_content<S: Sink<'a>>(&mut self, sink: &mut S, tag: u8) -> Result<(S::Content, u64)> {
-        match tag {
-            1 => {
-                let len = self.raw.read_var_u64()?;
-                Ok((sink.content_atom(ContentAtom::Deleted(len))?, len))
-            }
-            2 => {
-                let len = self.raw.read_var_u64()?;
-                let count = Self::usize(len, "content entries")?;
-                self.add_entries(count)?;
-                self.check_fits(count, MIN_ENTRY_BYTES, "content entries")?;
-                sink.json_start(count)?;
-                for _ in 0..count {
-                    sink.json_value(self.read_str()?)?;
-                }
-                Ok((sink.json_finish()?, len))
-            }
-            3 => Ok((sink.content_atom(ContentAtom::Binary(self.read_bytes()?))?, 1)),
-            4 => {
-                let value = self.read_str()?;
-                let len = value.value.encode_utf16().count() as u64;
-                Ok((sink.content_atom(ContentAtom::String(value))?, len))
-            }
-            5 => {
-                let value = self.read_json()?;
-                Ok((sink.content_atom(ContentAtom::Embed(value))?, 1))
-            }
-            6 => {
-                let key = self.read_str()?;
-                let value = self.read_json()?;
-                Ok((sink.content_atom(ContentAtom::Format { key, value })?, 1))
-            }
-            7 => {
-                let kind = self.raw.read_var_u64()?;
-                if crate::doc::YTypeKind::from(kind) == crate::doc::YTypeKind::Unknown {
-                    return Err(JwstCodecError::IncompleteDocument(format!("Unknown y type: {kind}")).into());
-                }
-                let tag = matches!(kind, 3 | 5).then(|| self.read_str()).transpose()?;
-                Ok((sink.content_atom(ContentAtom::Type { kind, tag })?, 1))
-            }
-            8 => {
-                let len = self.raw.read_var_u64()?;
-                let count = Self::usize(len, "content entries")?;
-                self.add_entries(count)?;
-                self.check_fits(count, MIN_ENTRY_BYTES, "content entries")?;
-                sink.any_content_start(count)?;
-                for _ in 0..count {
-                    let value = self.read_any(sink)?;
-                    sink.any_content_value(value)?;
-                }
-                Ok((sink.any_content_finish()?, len))
-            }
-            9 => {
-                let guid = self.read_str()?;
-                let options = self.read_any(sink)?;
-                Ok((sink.doc_content(guid, options)?, 1))
-            }
-            _ => Err(JwstCodecError::IncompleteDocument(format!("Unknown content type: {tag}")).into()),
-        }
-    }
-
-    fn read_any<S: Sink<'a>>(&mut self, sink: &mut S) -> Result<S::Any> {
-        let start = self.raw.position();
-        sink.any_start()?;
-        self.read_any_value(sink)?;
-        sink.any_finish(start..self.raw.position())
-    }
-
-    /// Reads one `Any` value with an explicit stack, so the nesting depth is
-    /// bounded only by `max_any_depth` and never by the thread stack.
-    fn read_any_value<S: Sink<'a>>(&mut self, sink: &mut S) -> Result<()> {
-        // entries left in each open container, and whether it is an object
-        let mut open: Vec<(usize, bool)> = Vec::new();
-        loop {
-            if let Some((remaining, is_object)) = open.last_mut() {
-                if *remaining == 0 {
-                    open.pop();
-                    sink.any_event(AnyEvent::EndContainer)?;
-                    if open.is_empty() {
-                        return Ok(());
-                    }
-                    continue;
-                }
-                *remaining -= 1;
-                if *is_object {
-                    let key = self.read_str()?;
-                    sink.any_event(AnyEvent::ObjectKey(key))?;
-                }
-            }
-            if open.len() > self.limits.max_any_depth {
-                return Err(Error::Resource("Any nesting depth"));
-            }
-            let tag = 127u8.wrapping_sub(self.raw.read_u8()?);
-            let event = match tag {
-                0 => AnyEvent::Undefined,
-                1 => AnyEvent::Null,
-                2 => {
-                    let (value, negative) = self.raw.read_var_i32_with_sign()?;
-                    // Preserve the same signed-zero semantics as the owned Any
-                    // decoder.
-                    if value == 0 && negative {
-                        AnyEvent::Float32(-0.0)
-                    } else {
-                        AnyEvent::Integer(value)
-                    }
-                }
-                3 => AnyEvent::Float32(self.raw.read_f32_be()?),
-                4 => AnyEvent::Float64(self.raw.read_f64_be()?),
-                5 => AnyEvent::BigInt64(self.raw.read_i64_be()?),
-                6 => AnyEvent::False,
-                7 => AnyEvent::True,
-                8 => AnyEvent::String(self.read_str()?),
-                9 => {
-                    let count = Self::usize(self.raw.read_var_u64()?, "Any object entries")?;
-                    self.add_entries(count)?;
-                    self.check_fits(count, MIN_OBJECT_ENTRY_BYTES, "Any object entries")?;
-                    sink.any_event(AnyEvent::BeginObject(count))?;
-                    open.push((count, true));
-                    continue;
-                }
-                10 => {
-                    let count = Self::usize(self.raw.read_var_u64()?, "Any array entries")?;
-                    self.add_entries(count)?;
-                    self.check_fits(count, MIN_ENTRY_BYTES, "Any array entries")?;
-                    sink.any_event(AnyEvent::BeginArray(count))?;
-                    open.push((count, false));
-                    continue;
-                }
-                11 => AnyEvent::Binary(self.read_bytes()?),
-                _ => return Err(JwstCodecError::IncompleteDocument(format!("unknown Any tag: {tag}")).into()),
-            };
-            sink.any_event(event)?;
-            if open.is_empty() {
-                return Ok(());
-            }
-        }
-    }
-
-    fn read_id(&mut self) -> JwstCodecResult<Id> {
-        Ok(Id::new(self.raw.read_var_u64()?, self.raw.read_var_u64()?))
-    }
-
-    fn read_str(&mut self) -> JwstCodecResult<WireStr<'a>> {
-        let start = self.raw.position();
-        let value = self.raw.read_var_str_ref()?;
-        let end = self.raw.position();
-        Ok(WireStr {
-            value,
-            range: end - value.len()..end.max(start),
-        })
-    }
-
-    fn read_json(&mut self) -> JwstCodecResult<WireStr<'a>> {
-        let value = self.read_str()?;
+    fn validate_json(&mut self, span: core_v1::Span) -> core::result::Result<WireStr<'a>, CodecError> {
+        let value = self.wire_str(span)?;
         let mut decoder = serde_json::Deserializer::from_str(value.value);
-        JsonAnyValidator::deserialize(&mut decoder)
+        if JsonAnyValidator::deserialize(&mut decoder)
             .and_then(|_| decoder.end())
-            .map_err(|_| JwstCodecError::DamagedDocumentJson)?;
+            .is_err()
+        {
+            return Err(self.abort(Error::Codec(JwstCodecError::DamagedDocumentJson)));
+        }
         Ok(value)
     }
+}
 
-    fn read_bytes(&mut self) -> JwstCodecResult<WireBytes<'a>> {
-        let start = self.raw.position();
-        let value = self.raw.read_var_buffer_ref()?;
-        let end = self.raw.position();
-        Ok(WireBytes {
-            value,
-            range: end - value.len()..end.max(start),
-        })
+impl<'a, S: Sink<'a>> core_v1::V1Sink for Adapter<'a, S> {
+    #[cfg_attr(not(debug_assertions), inline(always))]
+    fn core_validates_utf8(&self) -> bool {
+        false
     }
 
-    fn usize(value: u64, name: &'static str) -> Result<usize> {
-        value.try_into().map_err(|_| Error::Resource(name))
-    }
-
-    /// Rejects a declared entry count that the rest of the input cannot hold
-    /// when every entry takes at least `min_bytes`, before a sink reserves
-    /// memory for it.
-    fn check_fits(&self, count: usize, min_bytes: u64, name: &'static str) -> Result<()> {
-        let available = self.raw.len() / min_bytes;
-        if count as u64 > available {
-            return Err(JwstCodecError::IncompleteDocument(format!(
-                "{name}: {count} declared, at most {available} fit in the rest of the update"
-            ))
-            .into());
+    #[cfg_attr(not(debug_assertions), inline(always))]
+    fn validate_utf8_early(&mut self, slot: u8, span: core_v1::Span) -> core::result::Result<(), CodecError> {
+        let s = match std::str::from_utf8(&self.input[span.start..span.end]) {
+            Ok(s) => s,
+            Err(e) => return Err(self.abort(Error::Codec(JwstCodecError::IncompleteDocument(e.to_string())))),
+        };
+        if let Some(cell) = self.early_strs.get_mut(slot as usize) {
+            *cell = Some(s);
         }
         Ok(())
     }
 
-    fn add_structs(&mut self, count: usize) -> Result<()> {
-        self.structs = self.structs.checked_add(count).ok_or(Error::Resource("structs"))?;
-        if self.structs > self.limits.max_structs {
-            return Err(Error::Resource("structs"));
+    #[cold]
+    #[inline(never)]
+    fn on_decode_error(&mut self, err: CodecError, a: usize, b: u64) {
+        let mapped = match err {
+            CodecError::UnexpectedEof => Error::Codec(JwstCodecError::UpdateInvalid(nom::Err::Incomplete(
+                nom::Needed::new(a.saturating_add(1)),
+            ))),
+            CodecError::VarintOverflow => Error::Codec(JwstCodecError::UpdateInvalid(nom::Err::Failure(
+                nom::error::Error::new(a, nom::error::ErrorKind::TooLarge),
+            ))),
+            CodecError::ClockOverflow => Error::Codec(JwstCodecError::StructClockInvalid {
+                expect: b,
+                actually: u64::MAX,
+            }),
+            CodecError::TrailingBytes => Error::Codec(JwstCodecError::UpdateNotFullyConsumed(a)),
+            CodecError::UnknownTypeKind => {
+                Error::Codec(JwstCodecError::IncompleteDocument(format!("Unknown y type: {b}")))
+            }
+            CodecError::CountTooLarge(kind) => Error::Codec(JwstCodecError::IncompleteDocument(format!(
+                "{}: {a} declared, at most {b} fit in the rest of the update",
+                limit_name(kind)
+            ))),
+            other => map_core_error(other),
+        };
+        self.error = Some(mapped);
+    }
+
+    #[cfg_attr(not(debug_assertions), inline(always))]
+    fn record_client(&mut self, client: u64) -> core::result::Result<bool, CodecError> {
+        if !self.seen_clients.insert(client) {
+            return Err(self.abort(Error::Codec(JwstCodecError::IncompleteDocument(format!(
+                "duplicate struct block for client {client}"
+            )))));
         }
+        Ok(true)
+    }
+
+    #[cfg_attr(not(debug_assertions), inline(always))]
+    fn begin_client(&mut self, client: u64, count: usize) -> core::result::Result<(), CodecError> {
+        let res = self.sink.begin_client(client, count);
+        self.forward(res)
+    }
+
+    #[cfg_attr(not(debug_assertions), inline(always))]
+    fn on_gc(&mut self, id: core_v1::WireId, len: u64) -> core::result::Result<(), CodecError> {
+        let res = self.sink.gc(Self::wire_id(id), len);
+        self.forward(res)
+    }
+
+    #[cfg_attr(not(debug_assertions), inline(always))]
+    fn on_skip(&mut self, id: core_v1::WireId, len: u64) -> core::result::Result<(), CodecError> {
+        let res = self.sink.skip(Self::wire_id(id), len);
+        self.forward(res)
+    }
+
+    #[cfg_attr(not(debug_assertions), inline(always))]
+    fn on_item(
+        &mut self,
+        id: core_v1::WireId,
+        len: u64,
+        meta: core_v1::ItemMetaCore,
+    ) -> core::result::Result<(), CodecError> {
+        let Some(content) = self.pending_content.take() else {
+            return Err(self.abort(Error::Codec(JwstCodecError::Unexpected)));
+        };
+        let parent = match meta.parent {
+            core_v1::WireParentCore::Root(span) => WireParent::Root(self.take_early_str(0, span)?),
+            core_v1::WireParentCore::Item(pid) => WireParent::Item(Self::wire_id(pid)),
+            core_v1::WireParentCore::Inherit => WireParent::Inherit,
+        };
+        let parent_sub = match meta.parent_sub {
+            Some(span) => Some(self.take_early_str(1, span)?),
+            None => None,
+        };
+        let mapped_meta = ItemMeta {
+            origin_left: meta.origin_left.map(Self::wire_id),
+            origin_right: meta.origin_right.map(Self::wire_id),
+            parent,
+            parent_sub,
+            raw_range: meta.raw_range.start..meta.raw_range.end,
+        };
+        let res = self.sink.item(Self::wire_id(id), len, mapped_meta, content);
+        self.forward(res)
+    }
+
+    #[cfg_attr(not(debug_assertions), inline(always))]
+    fn on_deleted(&mut self, len: u64) -> core::result::Result<(), CodecError> {
+        let res = self.sink.content_atom(ContentAtom::Deleted(len));
+        match res {
+            Ok(c) => {
+                self.pending_content = Some(c);
+                Ok(())
+            }
+            Err(e) => Err(self.abort(e)),
+        }
+    }
+
+    #[cfg_attr(not(debug_assertions), inline(always))]
+    fn on_json_start(&mut self, count: usize) -> core::result::Result<(), CodecError> {
+        let res = self.sink.json_start(count);
+        self.forward(res)
+    }
+
+    #[cfg_attr(not(debug_assertions), inline(always))]
+    fn on_json_value(&mut self, value: core_v1::Span) -> core::result::Result<(), CodecError> {
+        let ws = self.wire_str(value)?;
+        let res = self.sink.json_value(ws);
+        self.forward(res)
+    }
+
+    #[cfg_attr(not(debug_assertions), inline(always))]
+    fn on_json_finish(&mut self) -> core::result::Result<(), CodecError> {
+        let res = self.sink.json_finish();
+        match res {
+            Ok(c) => {
+                self.pending_content = Some(c);
+                Ok(())
+            }
+            Err(e) => Err(self.abort(e)),
+        }
+    }
+
+    #[cfg_attr(not(debug_assertions), inline(always))]
+    fn on_binary(&mut self, value: core_v1::Span) -> core::result::Result<(), CodecError> {
+        let wb = self.wire_bytes(value);
+        let res = self.sink.content_atom(ContentAtom::Binary(wb));
+        match res {
+            Ok(c) => {
+                self.pending_content = Some(c);
+                Ok(())
+            }
+            Err(e) => Err(self.abort(e)),
+        }
+    }
+
+    #[cfg_attr(not(debug_assertions), inline(always))]
+    fn on_string(&mut self, value: core_v1::Span) -> core::result::Result<(), CodecError> {
+        let ws = self.wire_str(value)?;
+        let res = self.sink.content_atom(ContentAtom::String(ws));
+        match res {
+            Ok(c) => {
+                self.pending_content = Some(c);
+                Ok(())
+            }
+            Err(e) => Err(self.abort(e)),
+        }
+    }
+
+    #[cfg_attr(not(debug_assertions), inline(always))]
+    fn on_embed(&mut self, value: core_v1::Span) -> core::result::Result<(), CodecError> {
+        let ws = self.validate_json(value)?;
+        let res = self.sink.content_atom(ContentAtom::Embed(ws));
+        match res {
+            Ok(c) => {
+                self.pending_content = Some(c);
+                Ok(())
+            }
+            Err(e) => Err(self.abort(e)),
+        }
+    }
+
+    #[cfg_attr(not(debug_assertions), inline(always))]
+    fn on_format(&mut self, key: core_v1::Span, value: core_v1::Span) -> core::result::Result<(), CodecError> {
+        let key_str = self.take_early_str(2, key)?;
+        let val_str = self.validate_json(value)?;
+        let res = self.sink.content_atom(ContentAtom::Format {
+            key: key_str,
+            value: val_str,
+        });
+        match res {
+            Ok(c) => {
+                self.pending_content = Some(c);
+                Ok(())
+            }
+            Err(e) => Err(self.abort(e)),
+        }
+    }
+
+    #[cfg_attr(not(debug_assertions), inline(always))]
+    fn on_type(&mut self, kind: u64, tag: Option<core_v1::Span>) -> core::result::Result<(), CodecError> {
+        let tag_str = match tag {
+            Some(span) => Some(self.wire_str(span)?),
+            None => None,
+        };
+        let res = self.sink.content_atom(ContentAtom::Type { kind, tag: tag_str });
+        match res {
+            Ok(c) => {
+                self.pending_content = Some(c);
+                Ok(())
+            }
+            Err(e) => Err(self.abort(e)),
+        }
+    }
+
+    #[cfg_attr(not(debug_assertions), inline(always))]
+    fn on_any_content_start(&mut self, count: usize) -> core::result::Result<(), CodecError> {
+        let res = self.sink.any_content_start(count);
+        self.forward(res)
+    }
+
+    #[cfg_attr(not(debug_assertions), inline(always))]
+    fn on_any_content_value(&mut self) -> core::result::Result<(), CodecError> {
+        let Some(any) = self.pending_any.take() else {
+            return Err(self.abort(Error::Codec(JwstCodecError::Unexpected)));
+        };
+        let res = self.sink.any_content_value(any);
+        self.forward(res)
+    }
+
+    #[cfg_attr(not(debug_assertions), inline(always))]
+    fn on_any_content_finish(&mut self) -> core::result::Result<(), CodecError> {
+        let res = self.sink.any_content_finish();
+        match res {
+            Ok(c) => {
+                self.pending_content = Some(c);
+                Ok(())
+            }
+            Err(e) => Err(self.abort(e)),
+        }
+    }
+
+    #[cfg_attr(not(debug_assertions), inline(always))]
+    fn on_doc(&mut self, guid: core_v1::Span) -> core::result::Result<(), CodecError> {
+        let guid_str = self.take_early_str(3, guid)?;
+        let Some(options) = self.pending_any.take() else {
+            return Err(self.abort(Error::Codec(JwstCodecError::Unexpected)));
+        };
+        let res = self.sink.doc_content(guid_str, options);
+        match res {
+            Ok(c) => {
+                self.pending_content = Some(c);
+                Ok(())
+            }
+            Err(e) => Err(self.abort(e)),
+        }
+    }
+
+    #[cfg_attr(not(debug_assertions), inline(always))]
+    fn on_any_start(&mut self) -> core::result::Result<(), CodecError> {
+        let res = self.sink.any_start();
+        self.forward(res)
+    }
+
+    #[cfg_attr(not(debug_assertions), inline(always))]
+    fn on_any_undefined(&mut self) -> core::result::Result<(), CodecError> {
+        let res = self.sink.any_event(AnyEvent::Undefined);
+        self.forward(res)
+    }
+
+    #[cfg_attr(not(debug_assertions), inline(always))]
+    fn on_any_null(&mut self) -> core::result::Result<(), CodecError> {
+        let res = self.sink.any_event(AnyEvent::Null);
+        self.forward(res)
+    }
+
+    #[cfg_attr(not(debug_assertions), inline(always))]
+    fn on_any_i32(&mut self, value: i32) -> core::result::Result<(), CodecError> {
+        let res = self.sink.any_event(AnyEvent::Integer(value));
+        self.forward(res)
+    }
+
+    #[cfg_attr(not(debug_assertions), inline(always))]
+    fn on_any_f32_bits(&mut self, bits: u32) -> core::result::Result<(), CodecError> {
+        let res = self.sink.any_event(AnyEvent::Float32(f32::from_bits(bits)));
+        self.forward(res)
+    }
+
+    #[cfg_attr(not(debug_assertions), inline(always))]
+    fn on_any_f64_bits(&mut self, bits: u64) -> core::result::Result<(), CodecError> {
+        let res = self.sink.any_event(AnyEvent::Float64(f64::from_bits(bits)));
+        self.forward(res)
+    }
+
+    #[cfg_attr(not(debug_assertions), inline(always))]
+    fn on_any_i64_bits(&mut self, bits: u64) -> core::result::Result<(), CodecError> {
+        let res = self.sink.any_event(AnyEvent::BigInt64(bits as i64));
+        self.forward(res)
+    }
+
+    #[cfg_attr(not(debug_assertions), inline(always))]
+    fn on_any_bool(&mut self, value: bool) -> core::result::Result<(), CodecError> {
+        let ev = if value { AnyEvent::True } else { AnyEvent::False };
+        let res = self.sink.any_event(ev);
+        self.forward(res)
+    }
+
+    #[cfg_attr(not(debug_assertions), inline(always))]
+    fn on_any_str(&mut self, value: core_v1::Span) -> core::result::Result<(), CodecError> {
+        let ws = self.wire_str(value)?;
+        let res = self.sink.any_event(AnyEvent::String(ws));
+        self.forward(res)
+    }
+
+    #[cfg_attr(not(debug_assertions), inline(always))]
+    fn on_any_bytes(&mut self, value: core_v1::Span) -> core::result::Result<(), CodecError> {
+        let wb = self.wire_bytes(value);
+        let res = self.sink.any_event(AnyEvent::Binary(wb));
+        self.forward(res)
+    }
+
+    #[cfg_attr(not(debug_assertions), inline(always))]
+    fn on_any_begin_object(&mut self, count: usize) -> core::result::Result<(), CodecError> {
+        let res = self.sink.any_event(AnyEvent::BeginObject(count));
+        self.forward(res)
+    }
+
+    #[cfg_attr(not(debug_assertions), inline(always))]
+    fn on_any_object_key(&mut self, key: core_v1::Span) -> core::result::Result<(), CodecError> {
+        let ws = self.wire_str(key)?;
+        let res = self.sink.any_event(AnyEvent::ObjectKey(ws));
+        self.forward(res)
+    }
+
+    #[cfg_attr(not(debug_assertions), inline(always))]
+    fn on_any_begin_array(&mut self, count: usize) -> core::result::Result<(), CodecError> {
+        let res = self.sink.any_event(AnyEvent::BeginArray(count));
+        self.forward(res)
+    }
+
+    #[cfg_attr(not(debug_assertions), inline(always))]
+    fn on_any_end_container(&mut self) -> core::result::Result<(), CodecError> {
+        let res = self.sink.any_event(AnyEvent::EndContainer);
+        self.forward(res)
+    }
+
+    #[cfg_attr(not(debug_assertions), inline(always))]
+    fn on_any_finish(&mut self, range: core_v1::Span) -> core::result::Result<(), CodecError> {
+        let res = self.sink.any_finish(range.start..range.end);
+        match res {
+            Ok(a) => {
+                self.pending_any = Some(a);
+                Ok(())
+            }
+            Err(e) => Err(self.abort(e)),
+        }
+    }
+
+    #[cfg_attr(not(debug_assertions), inline(always))]
+    fn begin_delete_client(&mut self, _client: u64, _count: usize) -> core::result::Result<(), CodecError> {
         Ok(())
     }
 
-    fn add_entries(&mut self, count: usize) -> Result<()> {
-        self.entries = self
-            .entries
-            .checked_add(count)
-            .ok_or(Error::Resource("collection entries"))?;
-        if self.entries > self.limits.max_collection_entries {
-            return Err(Error::Resource("collection entries"));
-        }
-        Ok(())
-    }
-
-    fn add_content_bytes(&mut self, count: usize) -> Result<()> {
-        self.content_bytes = self
-            .content_bytes
-            .checked_add(count)
-            .ok_or(Error::Resource("content bytes"))?;
-        if self.content_bytes > self.limits.max_content_bytes {
-            return Err(Error::Resource("content bytes"));
-        }
-        Ok(())
+    #[cfg_attr(not(debug_assertions), inline(always))]
+    fn on_delete_range(&mut self, client: u64, start: u64, end: u64) -> core::result::Result<(), CodecError> {
+        let res = self.sink.delete_range(client, start..end);
+        self.forward(res)
     }
 }
 
@@ -533,42 +691,42 @@ impl<'de> Deserialize<'de> for JsonAnyValidator {
                 formatter.write_str("any valid JSON value")
             }
 
-            #[inline]
+            #[cfg_attr(not(debug_assertions), inline(always))]
             fn visit_bool<E>(self, _value: bool) -> std::result::Result<Self::Value, E> {
                 Ok(JsonAnyValidator)
             }
 
-            #[inline]
+            #[cfg_attr(not(debug_assertions), inline(always))]
             fn visit_i64<E>(self, _value: i64) -> std::result::Result<Self::Value, E> {
                 Ok(JsonAnyValidator)
             }
 
-            #[inline]
+            #[cfg_attr(not(debug_assertions), inline(always))]
             fn visit_u64<E>(self, _value: u64) -> std::result::Result<Self::Value, E> {
                 Ok(JsonAnyValidator)
             }
 
-            #[inline]
+            #[cfg_attr(not(debug_assertions), inline(always))]
             fn visit_f64<E>(self, _value: f64) -> std::result::Result<Self::Value, E> {
                 Ok(JsonAnyValidator)
             }
 
-            #[inline]
+            #[cfg_attr(not(debug_assertions), inline(always))]
             fn visit_str<E>(self, _value: &str) -> std::result::Result<Self::Value, E> {
                 Ok(JsonAnyValidator)
             }
 
-            #[inline]
+            #[cfg_attr(not(debug_assertions), inline(always))]
             fn visit_borrowed_str<E>(self, _value: &'de str) -> std::result::Result<Self::Value, E> {
                 Ok(JsonAnyValidator)
             }
 
-            #[inline]
+            #[cfg_attr(not(debug_assertions), inline(always))]
             fn visit_none<E>(self) -> std::result::Result<Self::Value, E> {
                 Ok(JsonAnyValidator)
             }
 
-            #[inline]
+            #[cfg_attr(not(debug_assertions), inline(always))]
             fn visit_unit<E>(self) -> std::result::Result<Self::Value, E> {
                 Ok(JsonAnyValidator)
             }
@@ -610,12 +768,12 @@ impl<'de> Deserialize<'de> for JsonKeyValidator {
                 formatter.write_str("a JSON object key string")
             }
 
-            #[inline]
+            #[cfg_attr(not(debug_assertions), inline(always))]
             fn visit_str<E>(self, _value: &str) -> std::result::Result<Self::Value, E> {
                 Ok(JsonKeyValidator)
             }
 
-            #[inline]
+            #[cfg_attr(not(debug_assertions), inline(always))]
             fn visit_borrowed_str<E>(self, _value: &'de str) -> std::result::Result<Self::Value, E> {
                 Ok(JsonKeyValidator)
             }
@@ -631,6 +789,7 @@ mod tests {
         super::{CrdtWriter, RawEncoder},
         *,
     };
+    use crate::JwstCodecResult;
 
     #[derive(Default, Debug)]
     struct ProbeSink {
@@ -752,7 +911,6 @@ mod tests {
 
     enum ExpectedError {
         Codec(JwstCodecError),
-        TruncatedRead,
         Resource(&'static str),
     }
 
@@ -760,7 +918,6 @@ mod tests {
         let err = decode(input, ProbeSink::default(), limits).expect_err("decode should fail");
         match (&err, expected) {
             (Error::Codec(err), ExpectedError::Codec(expected)) => assert_eq!(err, expected, "{name}"),
-            (Error::Codec(JwstCodecError::UpdateInvalid(_)), ExpectedError::TruncatedRead) => {}
             (Error::Resource(err), ExpectedError::Resource(expected)) => assert_eq!(err, expected, "{name}"),
             _ => panic!("{name}: unexpected error {err:?}"),
         }
@@ -827,7 +984,11 @@ mod tests {
     fn test_decode_errors() {
         let max_clock = enc().varu(u64::MAX).bytes();
         let cases: [(&str, Vec<u8>, ExpectedError); 13] = [
-            ("truncated varint", vec![0x80], ExpectedError::TruncatedRead),
+            (
+                "truncated varint",
+                vec![0x80],
+                ExpectedError::Codec(JwstCodecError::UpdateInvalid(nom::Err::Incomplete(nom::Needed::new(2)))),
+            ),
             (
                 "truncated info byte",
                 vec![1, 1, 0, 0],
@@ -1102,6 +1263,144 @@ mod tests {
             &input,
             DecodeLimits::UPDATE,
             &ExpectedError::Resource("Any nesting depth"),
+        );
+    }
+
+    #[test]
+    fn test_error_detail_parity_with_main() {
+        // 1. Invalid UTF-8 across early-validated (Root), immediate (String),
+        //    and take_early_str cache-miss paths.
+        let bad_early = [b'a', 0xff];
+        let early_msg = std::str::from_utf8(std::hint::black_box(&bad_early[..]))
+            .unwrap_err()
+            .to_string();
+        let invalid_root = enc()
+            .varu(1)
+            .varu(1)
+            .varu(7)
+            .varu(0)
+            .byte(4)
+            .varu(1)
+            .varu(bad_early.len() as u64)
+            .raw(&bad_early)
+            .varu(1)
+            .vstr("x")
+            .varu(0)
+            .bytes();
+        assert_decode_err(
+            "invalid root utf-8",
+            &invalid_root,
+            DecodeLimits::UNRESTRICTED,
+            &ExpectedError::Codec(JwstCodecError::IncompleteDocument(early_msg)),
+        );
+
+        let bad_str = [0xe2, 0x82];
+        let str_msg = std::str::from_utf8(std::hint::black_box(&bad_str[..]))
+            .unwrap_err()
+            .to_string();
+        let invalid_str = root_item_update(4, enc().varu(bad_str.len() as u64).raw(&bad_str).bytes());
+        assert_decode_err(
+            "invalid content utf-8",
+            &invalid_str,
+            DecodeLimits::UNRESTRICTED,
+            &ExpectedError::Codec(JwstCodecError::IncompleteDocument(str_msg)),
+        );
+
+        let raw_miss = b"ok\xfftail";
+        let miss_msg = std::str::from_utf8(std::hint::black_box(&raw_miss[2..]))
+            .unwrap_err()
+            .to_string();
+        let mut adapter = Adapter::new(raw_miss, ProbeSink::default());
+        assert_eq!(
+            adapter
+                .take_early_str(0, core_v1::Span { start: 0, end: 2 })
+                .unwrap()
+                .value,
+            "ok"
+        );
+        match adapter.take_early_str(0, core_v1::Span { start: 2, end: 7 }) {
+            Err(e) => assert_eq!(e, CodecError::SinkAborted),
+            Ok(_) => panic!("take_early_str cache miss should fail on invalid utf-8"),
+        }
+        match adapter.error.take().unwrap() {
+            Error::Codec(JwstCodecError::IncompleteDocument(msg)) => assert_eq!(msg, miss_msg),
+            other => panic!("unexpected miss error: {other:?}"),
+        }
+
+        // 2. Buffer length 3-way distinction: BufferTooLarge vs
+        //    BufferLengthOverflow vs BufferExceedsUpdate.
+        assert!(matches!(
+            map_core_error(CodecError::BufferTooLarge),
+            Error::Codec(JwstCodecError::IncompleteDocument(ref msg)) if msg == "buffer too large"
+        ));
+        #[cfg(target_pointer_width = "32")]
+        {
+            for oversized in [u64::MAX, u32::MAX as u64 + 1] {
+                let buf_too_large = root_item_update(3, enc().varu(oversized).bytes());
+                assert_decode_err(
+                    "buffer too large on 32-bit at non-zero pos",
+                    &buf_too_large,
+                    DecodeLimits::UNRESTRICTED,
+                    &ExpectedError::Codec(JwstCodecError::IncompleteDocument("buffer too large".to_owned())),
+                );
+            }
+        }
+        let buf_len_overflow = root_item_update(3, enc().varu(usize::MAX as u64).bytes());
+        assert_decode_err(
+            "buffer length overflow at non-zero pos",
+            &buf_len_overflow,
+            DecodeLimits::UNRESTRICTED,
+            &ExpectedError::Codec(JwstCodecError::IncompleteDocument("buffer length overflow".to_owned())),
+        );
+        let buf_exceeds = root_item_update(3, vec![10, 1, 2]);
+        assert_decode_err(
+            "buffer exceeds update",
+            &buf_exceeds,
+            DecodeLimits::UNRESTRICTED,
+            &ExpectedError::Codec(JwstCodecError::IncompleteDocument("buffer exceeds update".to_owned())),
+        );
+
+        // 3. Varint UnexpectedEof (`Incomplete(Needed::new(rem + 1))`) at
+        //    non-zero offsets.
+        let upd_varint_eof = vec![1, 1, 7, 0x80]; // 1 byte remaining at failed clock field
+        assert_decode_err(
+            "update unsigned varint eof at non-zero offset",
+            &upd_varint_eof,
+            DecodeLimits::UNRESTRICTED,
+            &ExpectedError::Codec(JwstCodecError::UpdateInvalid(nom::Err::Incomplete(nom::Needed::new(2)))),
+        );
+        let mut any_signed_eof = root_item_update(8, enc().varu(1).byte(125).bytes());
+        any_signed_eof.pop();
+        any_signed_eof.extend_from_slice(&[0x80, 0x80]);
+        assert_decode_err(
+            "any signed varint eof at non-zero offset",
+            &any_signed_eof,
+            DecodeLimits::UNRESTRICTED,
+            &ExpectedError::Codec(JwstCodecError::UpdateInvalid(nom::Err::Incomplete(nom::Needed::new(3)))),
+        );
+
+        // 4. Varint VarintOverflow (`Failure(Error { input: rem, code: TooLarge
+        //    })`) at non-zero offsets.
+        let overflow_u64 = [0xffu8; 11];
+        let upd_overflow = enc().varu(1).varu(1).varu(7).raw(&overflow_u64).bytes();
+        assert_decode_err(
+            "update unsigned varint overflow at non-zero offset",
+            &upd_overflow,
+            DecodeLimits::UNRESTRICTED,
+            &ExpectedError::Codec(JwstCodecError::UpdateInvalid(nom::Err::Failure(
+                nom::error::Error::new(overflow_u64.len(), nom::error::ErrorKind::TooLarge),
+            ))),
+        );
+        let any_signed_overflow = root_item_update(8, enc().varu(1).byte(125).raw(&overflow_u64).bytes());
+        // Overflow slice includes trailing `varu(0)` delete_clients byte => 12
+        // bytes remain from signed varint start.
+        assert_decode_err(
+            "any signed varint overflow at non-zero offset",
+            &any_signed_overflow,
+            DecodeLimits::UNRESTRICTED,
+            &ExpectedError::Codec(JwstCodecError::UpdateInvalid(nom::Err::Failure(
+                nom::error::Error::new(overflow_u64.len() + 1, nom::error::ErrorKind::TooLarge),
+            ))),
         );
     }
 }

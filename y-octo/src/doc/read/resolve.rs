@@ -2,7 +2,7 @@ use super::{Builder, NodeId, RawContent, RawNodeKind, RawParent, RawType, ReadDo
 use crate::{
     Id, JwstCodecError, StateVector,
     doc::{
-        ClientMap, ConflictItem, HashMap, OrderRange, find_clock_segment, find_conflict_left, find_missing_dependency,
+        ConflictItem, DeleteSet, HashMap, OrderRange, find_clock_segment, find_conflict_left, find_missing_dependency,
     },
 };
 
@@ -13,7 +13,7 @@ pub(super) fn resolve(mut builder: Builder) -> Result<ReadDoc, ReadError> {
 }
 
 impl Builder {
-    fn integrate_all(&mut self) -> Result<(), ReadError> {
+    pub(super) fn integrate_all(&mut self) -> Result<(), ReadError> {
         let mut order = IntegrationOrder::new(&self.clients);
         let mut state = StateVector::default();
         let mut stack = Vec::new();
@@ -252,7 +252,7 @@ impl Builder {
                 |id| Some(self.conflict_item(*id)),
                 |id| self.nodes[*id as usize].right(),
                 |id| self.locate(id).ok().map(|(_, node_id)| self.nodes[node_id as usize].id),
-            );
+            )?;
         }
 
         if let Some(left_id) = left {
@@ -350,10 +350,18 @@ impl Builder {
     }
 
     fn split_node(&mut self, client: u64, index: usize, offset: u64) -> Result<(NodeId, NodeId), ReadError> {
+        let left_id = self.clients[&client][index];
+        let right_id = self.split_off(client, left_id, offset)?;
+        self.clients.get_mut(&client).unwrap().insert(index + 1, right_id);
+        Ok((left_id, right_id))
+    }
+
+    /// Splits `left_id` at `offset` and links the new right half, leaving the
+    /// client's node index to the caller.
+    fn split_off(&mut self, client: u64, left_id: NodeId, offset: u64) -> Result<NodeId, ReadError> {
         if self.nodes.len() >= self.limits.max_structs {
             return Err(ReadError::ResourceLimit("virtual struct splits"));
         }
-        let left_id = self.clients[&client][index];
         let original = self.nodes[left_id as usize].clone();
         if offset == 0 || offset >= original.len || original.kind() != RawNodeKind::Item {
             return Err(ReadError::InvalidUpdate(JwstCodecError::ItemSplitNotSupport));
@@ -393,15 +401,116 @@ impl Builder {
             self.nodes[old_right as usize].set_left(Some(right_id));
         }
         self.nodes.push(right);
-        self.clients.get_mut(&client).unwrap().insert(index + 1, right_id);
-        Ok((left_id, right_id))
+        Ok(right_id)
     }
 
-    fn apply_delete_set(&mut self) -> Result<(), ReadError> {
-        let mut delete_sets = ClientMap::<OrderRange>::default();
-        for (client, range) in std::mem::take(&mut self.deletes) {
-            delete_sets.entry(client).or_default().push(range);
+    pub(super) fn apply_delete_set(&mut self) -> Result<(), ReadError> {
+        let delete_sets = DeleteSet::from_flat_ranges(std::mem::take(&mut self.deletes));
+        let mut clients = delete_sets.keys().copied().collect::<Vec<_>>();
+        clients.sort_unstable();
+        for client in clients {
+            self.apply_client_deletes(client, &delete_sets[&client])?;
         }
+        Ok(())
+    }
+
+    /// Applies one client's sorted ranges in a single pass over its nodes,
+    /// rebuilding the node index so a split never shifts the nodes after it.
+    /// On error the index is left incomplete: the builder is dropped then.
+    fn apply_client_deletes(&mut self, client: u64, ranges: &OrderRange) -> Result<(), ReadError> {
+        const NOT_FOUND: ReadError = ReadError::IncompleteSnapshot("struct clock not found");
+
+        let Some(nodes) = self.clients.get_mut(&client) else {
+            return Err(ReadError::IncompleteSnapshot("delete-set client not found"));
+        };
+        let nodes = std::mem::take(nodes);
+        let state = nodes.last().map_or(0, |id| self.node_span(*id).1);
+        let mut rebuilt = Vec::with_capacity(nodes.len());
+        let mut rest = nodes.into_iter();
+        let mut current = rest.next();
+
+        for range in ranges {
+            if range.end > state {
+                return Err(ReadError::IncompleteSnapshot("delete-set range exceeds state"));
+            }
+
+            // keep the nodes before the range, then cut the one it starts in
+            let node = loop {
+                let node = current.ok_or(NOT_FOUND)?;
+                if self.node_span(node).1 > range.start {
+                    break node;
+                }
+                rebuilt.push(node);
+                current = rest.next();
+            };
+            let clock = self.node_span(node).0;
+            if clock > range.start {
+                return Err(NOT_FOUND);
+            }
+            if clock < range.start && self.nodes[node as usize].kind() == RawNodeKind::Item {
+                let right = self.split_off(client, node, range.start - clock)?;
+                rebuilt.push(node);
+                current = Some(right);
+            }
+
+            // Gc and Skip are not cut: one reaching past the range stays
+            // current, as the next range may fall in it too
+            let first = rebuilt.len();
+            let uncut = loop {
+                let node = current.ok_or(NOT_FOUND)?;
+                let (clock, end) = self.node_span(node);
+                if clock >= range.end {
+                    return Err(NOT_FOUND);
+                }
+                if end > range.end {
+                    if self.nodes[node as usize].kind() != RawNodeKind::Item {
+                        break Some(node);
+                    }
+                    let right = self.split_off(client, node, range.end - clock)?;
+                    rebuilt.push(node);
+                    current = Some(right);
+                    break None;
+                }
+                rebuilt.push(node);
+                current = rest.next();
+                if end == range.end {
+                    break None;
+                }
+            };
+
+            for &id in &rebuilt[first..] {
+                self.delete_target(id)?;
+            }
+            if let Some(node) = uncut {
+                self.delete_target(node)?;
+            }
+        }
+
+        rebuilt.extend(current);
+        rebuilt.extend(rest);
+        self.clients.insert(client, rebuilt);
+        Ok(())
+    }
+
+    /// First clock of a node and the clock just past it.
+    fn node_span(&self, id: NodeId) -> (u64, u64) {
+        let node = &self.nodes[id as usize];
+        (node.id.clock, node.id.clock.saturating_add(node.len))
+    }
+
+    fn delete_target(&mut self, id: NodeId) -> Result<(), ReadError> {
+        match self.nodes[id as usize].kind() {
+            RawNodeKind::Item => self.delete_node(id),
+            RawNodeKind::Gc => Ok(()),
+            RawNodeKind::Skip => Err(ReadError::IncompleteSnapshot("delete-set targets missing skip range")),
+        }
+    }
+
+    /// The range-at-a-time form of [Self::apply_delete_set], kept as the
+    /// reference its single pass is compared against.
+    #[cfg(test)]
+    pub(super) fn apply_delete_set_by_splits(&mut self) -> Result<(), ReadError> {
+        let delete_sets = DeleteSet::from_flat_ranges(std::mem::take(&mut self.deletes));
         let mut clients = delete_sets.keys().copied().collect::<Vec<_>>();
         clients.sort_unstable();
         for client in clients {

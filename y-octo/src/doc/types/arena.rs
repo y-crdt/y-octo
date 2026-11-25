@@ -4,6 +4,8 @@ use std::{
     ops::{Deref, DerefMut, Index, IndexMut},
 };
 
+use y_octo_core::doc_kernel::{ParentWalkStep, parent_walk_step};
+
 use super::*;
 
 /// The slot of a [YType] in the [TypeArena] of its document.
@@ -29,6 +31,13 @@ impl TypeIdx {
         // u32 fits usize on every supported target
         (self.0.get() - 1) as usize
     }
+
+    /// The index as one number: what `y_octo_core::doc_kernel` tells types
+    /// apart by.
+    #[inline]
+    pub(in crate::doc) fn raw(self) -> u32 {
+        self.0.get()
+    }
 }
 
 /// Every type of a document, named roots and nested or preliminary types
@@ -48,12 +57,12 @@ pub(crate) struct TypeArena {
 
 impl TypeArena {
     /// Update item links in live types and outstanding preliminary timelines.
-    pub(in crate::doc) fn remap_items(&mut self, moved: &[ItemRef]) {
-        let remap = |link: &mut ItemRef| *link = link.and_then(|i| moved[i.slot()]);
-        for item in self.items.live_mut() {
+    pub(in crate::doc) fn remap_items(&mut self, moved: &Moved) {
+        let remap = |link: &mut ItemRef| *link = link.and_then(|i| moved.get(i));
+        self.items.for_each_mut(|item| {
             remap(&mut item.left);
             remap(&mut item.right);
-        }
+        });
         for ty in &mut self.slots {
             remap(&mut ty.start);
             remap(&mut ty.item);
@@ -102,9 +111,7 @@ impl TypeArena {
     pub fn check_capacity(&self, needed: usize) -> JwstCodecResult {
         match self.slots.len().checked_add(needed) {
             Some(total) if total <= self.capacity() => Ok(()),
-            _ => Err(JwstCodecError::IncompleteDocument(
-                "the document holds too many types".into(),
-            )),
+            _ => Err(JwstCodecError::IncompleteDocument(TOO_MANY_TYPES.into())),
         }
     }
 
@@ -113,7 +120,7 @@ impl TypeArena {
     pub fn alloc(&mut self, ty: YType) -> JwstCodecResult<TypeIdx> {
         self.check_capacity(1)?;
         let id = TypeIdx::from_slot(self.slots.len())
-            .ok_or_else(|| JwstCodecError::IncompleteDocument("the document holds too many types".into()))?;
+            .ok_or_else(|| JwstCodecError::IncompleteDocument(TOO_MANY_TYPES.into()))?;
         self.slots.push(ty);
         Ok(id)
     }
@@ -154,6 +161,29 @@ impl TypeArena {
             Carrier::Live(_) => ty.parent_type,
             Carrier::Unset | Carrier::Retired => None,
         }
+    }
+
+    /// Whether `inner` is one of the types above `ty`: its parent, the
+    /// parent of that one, and so on. `ty` itself is not asked for.
+    ///
+    /// The walk takes as many steps as the arena has types and keeps no set
+    /// of the ones it met (`parent_walk_step` of `y-octo-core`): only a
+    /// stored type has a parent, so a type that is above `ty` is met within
+    /// that many steps, however the types above `ty` loop
+    /// (`DocKernel.walk_iff_reach` in `proofs/`).
+    pub fn is_above(&self, inner: TypeIdx, ty: TypeIdx) -> bool {
+        let inner = inner.raw();
+        let mut remaining = self.slots.len();
+        let mut ancestor = self.parent_of(ty);
+        while let Some(current) = ancestor {
+            match parent_walk_step(inner, current.raw(), remaining) {
+                ParentWalkStep::Cycle => return true,
+                ParentWalkStep::Exhausted => return false,
+                ParentWalkStep::Continue(rest) => remaining = rest,
+            }
+            ancestor = self.parent_of(current);
+        }
+        false
     }
 }
 
@@ -776,5 +806,144 @@ mod tests {
             }
             assert_eq!(home.len(), 5);
         });
+    }
+
+    /// The walk [TypeArena::is_above] replaced: every type it met is kept
+    /// in a set.
+    fn above_with_a_set(types: &TypeArena, inner: TypeIdx, ty: TypeIdx) -> bool {
+        let mut visited = HashSet::new();
+        let mut ancestor = types.parent_of(ty);
+        while let Some(current) = ancestor {
+            if !visited.insert(current) {
+                break;
+            }
+            if current == inner {
+                return true;
+            }
+            ancestor = types.parent_of(current);
+        }
+        false
+    }
+
+    /// An arena whose type `at` is carried by an item of the type
+    /// `parents[at]`, whatever loops that makes.
+    fn arena_of(parents: &[Option<usize>]) -> (TypeArena, Vec<TypeIdx>) {
+        let mut types = TypeArena::default();
+        let ids: Vec<TypeIdx> = parents.iter().map(|_| types.alloc(YType::default()).unwrap()).collect();
+        for (at, parent) in parents.iter().enumerate() {
+            if let Some(parent) = parent {
+                let carrier = types
+                    .items
+                    .alloc(Item {
+                        content: Content::Type(ids[at]),
+                        parent: Some(ids[*parent]),
+                        ..Item::default()
+                    })
+                    .unwrap();
+                types[ids[at]].attach(Some(carrier), Some(ids[*parent]));
+            }
+        }
+        (types, ids)
+    }
+
+    #[test]
+    fn a_type_above_another_is_found_however_deep_and_without_a_set() {
+        // a chain: every type is in the one before it
+        let depth = if cfg!(miri) { 200 } else { 3_000 };
+        let parents: Vec<Option<usize>> = (0..depth).map(|at: usize| at.checked_sub(1)).collect();
+        let (types, ids) = arena_of(&parents);
+        let leaf = ids[depth - 1];
+        for above in [0, 1, depth / 2, depth - 2] {
+            assert!(types.is_above(ids[above], leaf), "type {above}");
+            assert!(!types.is_above(leaf, ids[above]), "type {above}");
+        }
+        // a type is not above itself, and nothing is above a root
+        assert!(!types.is_above(leaf, leaf));
+        assert!(!types.is_above(ids[0], ids[0]));
+        assert!(!types.is_above(ids[1], ids[0]));
+        // a type that is no type of the arena has no parent and is above none
+        let (other, foreign) = arena_of(&vec![None; depth + 1]);
+        assert_eq!(other.len(), depth + 1);
+        assert!(!types.is_above(ids[0], foreign[depth]));
+        assert!(!types.is_above(foreign[depth], leaf));
+    }
+
+    #[test]
+    fn the_walk_above_a_type_ends_on_loops_that_are_there_already() {
+        // 0 holds itself, 1 is in it
+        let (types, ids) = arena_of(&[Some(0), Some(0), None]);
+        assert!(types.is_above(ids[0], ids[0]));
+        assert!(types.is_above(ids[0], ids[1]));
+        assert!(!types.is_above(ids[1], ids[0]));
+        assert!(!types.is_above(ids[2], ids[1]));
+        // 4 → 3 → 2 → 1 → 3: a loop of three types above a type outside it
+        let (types, ids) = arena_of(&[None, Some(3), Some(1), Some(2), Some(3)]);
+        for inner in [1, 2, 3] {
+            assert!(types.is_above(ids[inner], ids[4]), "in the loop: {inner}");
+        }
+        // a type outside the loop is not found, and the walk ends
+        assert!(!types.is_above(ids[0], ids[4]));
+        assert!(!types.is_above(ids[4], ids[4]));
+        assert!(!types.is_above(ids[4], ids[2]));
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn the_walk_above_a_type_agrees_with_the_walk_that_keeps_a_set() {
+        // every graph of parent links over up to four types, every pair
+        for count in 0..=4usize {
+            let mut graph = vec![0usize; count];
+            loop {
+                let parents: Vec<Option<usize>> = graph.iter().map(|&choice| choice.checked_sub(1)).collect();
+                let (types, ids) = arena_of(&parents);
+                for inner in &ids {
+                    for ty in &ids {
+                        assert_eq!(
+                            types.is_above(*inner, *ty),
+                            above_with_a_set(&types, *inner, *ty),
+                            "{parents:?} {inner:?} above {ty:?}"
+                        );
+                    }
+                }
+                let mut at = 0;
+                while at < count {
+                    graph[at] += 1;
+                    if graph[at] <= count {
+                        break;
+                    }
+                    graph[at] = 0;
+                    at += 1;
+                }
+                if at == count {
+                    break;
+                }
+            }
+        }
+        // random graphs of a few hundred types
+        let mut state = 0x9E37_79B9_7F4A_7C15u64;
+        let mut below = move |n: usize| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            (state % n as u64) as usize
+        };
+        for _ in 0..60 {
+            let count = 1 + below(300);
+            let parents: Vec<Option<usize>> = (0..count)
+                .map(|_| match below(10) {
+                    0 => None,
+                    _ => Some(below(count)),
+                })
+                .collect();
+            let (types, ids) = arena_of(&parents);
+            for _ in 0..200 {
+                let (inner, ty) = (ids[below(count)], ids[below(count)]);
+                assert_eq!(
+                    types.is_above(inner, ty),
+                    above_with_a_set(&types, inner, ty),
+                    "{parents:?} {inner:?} above {ty:?}"
+                );
+            }
+        }
     }
 }

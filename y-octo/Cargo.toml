@@ -69,6 +69,7 @@ proptest-derive  = { workspace = true }
 rand             = { workspace = true }
 rand_chacha      = { workspace = true }
 sha2             = "0.10"
+y-octo-core      = { workspace = true, features = ["diagnostics"] }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = [

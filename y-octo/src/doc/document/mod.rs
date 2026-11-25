@@ -434,6 +434,9 @@ impl Doc {
     /// nested deeper than [Any::DEFAULT_MAX_DEPTH] like [Update::decode_v1].
     /// For trusted updates nested deeper, decode them with
     /// [Update::decode_v1_with_max_any_depth] and call [Doc::apply_update].
+    ///
+    /// An update that decodes is applied as by [Doc::apply_update], which
+    /// says what an error leaves in the document.
     pub fn apply_update_from_binary_v1<T: AsRef<[u8]>>(&mut self, binary: T) -> JwstCodecResult {
         let mut decoder = RawDecoder::new(binary.as_ref());
         let update = Update::read(&mut decoder)?;
@@ -442,11 +445,37 @@ impl Doc {
 
     /// Applies a remote update in a transaction of its own (not local, no
     /// origin).
+    ///
+    /// Structs and deletions that ask for structs the document does not hold
+    /// wait in it ([Doc::has_pending_updates]) and are applied with the
+    /// update that brings those.
+    ///
+    /// # Errors
+    ///
+    /// The document refuses a struct or a deletion for what it is (a parent
+    /// or an origin that cannot be its own, clocks past `u64::MAX`) or for
+    /// room (it holds as many items, types or structs as it takes). An error
+    /// does not undo the transaction: the structs and deletions applied
+    /// before the refused one stay and are committed, as when a closure of
+    /// [Doc::transact_mut] fails.
+    ///
+    /// Nothing that waited in the document before the call is lost to an
+    /// error:
+    ///
+    /// - When the document refuses a part of `update` itself, what waited is as
+    ///   it was, and the parts of `update` not applied yet are dropped: apply
+    ///   it again.
+    /// - When it refuses a struct or a deletion that waited, or one of `update`
+    ///   that waited for those, everything not applied yet keeps waiting. One
+    ///   refused for room waits with the rest and is applied by the first
+    ///   update after there is room. One refused for what it is is dropped,
+    ///   alone: it would be refused again with every update.
     pub fn apply_update(&mut self, update: Update) -> JwstCodecResult {
         self.apply_update_with_origin(update, None)
     }
 
-    /// Applies a remote update in a transaction of its own with `origin`.
+    /// Applies a remote update in a transaction of its own with `origin`. See
+    /// [Doc::apply_update] for what an error leaves in the document.
     pub fn apply_update_with_origin(&self, update: Update, origin: impl Into<Option<Origin>>) -> JwstCodecResult {
         let store_ref = &self.store;
         transact_mut_with(store_ref, origin.into(), false, |tx| {
@@ -683,16 +712,60 @@ impl Doc {
         })
     }
 
+    /// Puts `update` into the store, then what the store kept waiting
+    /// (`DocStore::pending`) when structs it asked for are there now, and
+    /// keeps waiting what still asks for some.
+    ///
+    /// The update is tried first, while what waited before is still in the
+    /// store: a struct or a deletion of it that the store refuses leaves
+    /// that as it was, and the rest of the update goes with the error.
+    ///
+    /// The store took what waits with an `Ok`, so none of that goes with an
+    /// error. When the store refuses a struct or a deletion once what waited
+    /// is taken out of it, everything that has not gone into the store waits
+    /// in it again ([Doc::keep_waiting]) and the error is returned. The
+    /// refused one waits too when it was refused for room
+    /// ([refused_for_room]): it goes in with the first update after there is
+    /// room. Refused for what it is, it is left out, or every later update
+    /// would end in its error; what follows it keeps waiting.
     pub(in crate::doc) fn integrate_update(store: &mut DocStore, mut update: Update) -> JwstCodecResult {
+        // `update` holds what waited in the store: every round but the first
         let mut retry = false;
+        // `update` as such a round began, kept by a store that is short of
+        // room for it ([DocStore::short_of_room_for])
+        let mut before = None;
 
         loop {
-            for (wire, offset) in update.iter(store.get_state_vector()) {
-                store.integrate_wire(wire, offset)?;
+            // the walk ends, and lets go of the update, before what a
+            // refusal leaves of the update is kept
+            let refused = {
+                let mut structs = update.iter(store.get_state_vector());
+                loop {
+                    let Some((wire, offset)) = structs.next() else {
+                        break None;
+                    };
+                    if let Err(error) = store.integrate_wire(wire, offset) {
+                        if retry {
+                            structs.give_back();
+                        }
+                        break Some(error);
+                    }
+                }
+            };
+            if let Some(error) = refused {
+                if retry {
+                    Self::keep_waiting(store, &error, update, before);
+                }
+                return Err(error);
             }
 
             for (client, range) in update.delete_set_iter(store.get_state_vector()) {
-                store.delete_range(client, range)?;
+                if let Err(error) = store.delete_range(client, range) {
+                    if retry {
+                        Self::keep_waiting(store, &error, update, before);
+                    }
+                    return Err(error);
+                }
             }
 
             if let Some(mut pending_update) = store.pending.take() {
@@ -707,7 +780,19 @@ impl Doc {
                 }
 
                 for (client, range) in pending_update.delete_set_iter(store.get_state_vector()) {
-                    store.delete_range(client, range)?;
+                    if let Err(error) = store.delete_range(client, range.clone()) {
+                        // what waited goes back, with the deletion when it
+                        // is to be tried again and with what of this update
+                        // waits
+                        if refused_for_room(&error) {
+                            pending_update.delete_set.add_range(client, range);
+                        }
+                        Update::merge_into(&mut update, [pending_update]);
+                        if !update.is_empty() {
+                            store.pending.replace(update);
+                        }
+                        return Err(error);
+                    }
                 }
                 // The iterator moves unavailable deletion tails into
                 // pending_delete_set. Carry them into the next merge even if
@@ -722,6 +807,9 @@ impl Doc {
                     // iteration
                     update.drain_pending_state();
                     Update::merge_into(&mut update, [pending_update]);
+                }
+                if retry && store.short_of_room_for(&update) {
+                    before = Some(update.clone());
                 }
             } else {
                 // no pending update at store
@@ -748,6 +836,34 @@ impl Doc {
         }
 
         Ok(())
+    }
+
+    /// The store refused a struct or a deletion of `update`, which holds
+    /// what waited in it: what has not gone into the store waits in it
+    /// again.
+    ///
+    /// Refused for what it is, the struct or the deletion is gone: `update`
+    /// holds the rest, the structs and deletions still to try and the ones
+    /// set aside. Refused for room, it is to be tried again and is not in
+    /// `update` any more: all of `before`, the update as the round began,
+    /// waits instead. What went into the store since is passed over when it
+    /// is tried again, and the clocks that made this a retry are still
+    /// missing in it, so the next update tries it.
+    #[cold]
+    fn keep_waiting(store: &mut DocStore, error: &JwstCodecError, update: Update, before: Option<Update>) {
+        let for_room = refused_for_room(error);
+        debug_assert!(
+            before.is_some() || !for_room,
+            "a store with room to spare refused a struct for room"
+        );
+        let mut waiting = match before {
+            Some(before) if for_room => before,
+            _ => update,
+        };
+        Update::merge_into(&mut waiting, [Update::default()]);
+        if !waiting.is_empty() {
+            store.pending.replace(waiting);
+        }
     }
 
     pub fn keys(&self) -> Vec<String> {
@@ -1165,6 +1281,8 @@ mod tests {
     mod client_identity;
     #[cfg(not(loom))]
     mod local_update;
+    #[cfg(not(loom))]
+    mod pending_refusal;
 
     use super::*;
 

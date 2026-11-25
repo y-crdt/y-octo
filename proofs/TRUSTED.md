@@ -48,11 +48,31 @@ The [property modules](YoctoCore/Properties) give the exact theorem statements a
 
 ## 4. Production guarantees and boundaries
 
-The production document uses the core's varint codec.
-The unsigned round-trip proof covers encoding followed by decoding. The signed 32-bit proof covers totality.
-The other core modules serve as reference implementations for [parity tests](../y-octo/tests/core_parity.rs).
+| Operation | What the core proves | What the document engine supplies |
+| --- | --- | --- |
+| Varints and UTF-16 | Codec properties and byte boundaries for UTF-16 splits on valid UTF-8 | Rust strings and the cursor that applies successive splits |
+| Update V1 decoding | Bounds on input spans under the decoder's sink contract | UTF-8 and JSON validation, duplicate-client checks, and state changes in the sink |
+| Deletion ranges | Canonical intervals, union membership, and preservation of the receiver when a checked union exceeds its limit | Input sorting, membership lookup across multiple intervals, and the choice of checked or infallible operation |
+| Client timelines | Block lookup by clock, range merges, and slot remapping within one timeline | Client lookup, capacity checks before compound edits, and consistent references across timelines and the arena |
+| Item storage | Slot allocation, quarantine, reuse, and the compaction map | Updates to document links after compaction |
+| Conflict scans | Candidate lookup and the decisions that advance or stop a scan | Distinct candidate IDs, traversal of document links, and resolution of origins |
+| Pending updates and document links | Readiness, split, parent-walk, and link decisions on the supplied inputs | Queue traversal, retries, and application of each decision to the correct container |
 
-`YataStoreCore` models one sequence of items.
+**V1 decoding.** The proof covers structural totality and span bounds.
+Wire compatibility with Yjs also depends on the Rust sink and interoperability tests.
+The unsigned varint proof covers the encode/decode round trip. The signed 32-bit proof covers totality.
+
+**Deletion ranges.** A client can hold at most `2^30` canonical intervals.
+Checked unions enforce the limit on the final union. Infallible wrappers can panic above that limit.
+Ordered batches can merge overlapping intervals in place.
+A random insertion can move existing intervals. The first insertion into a full ring can also require a larger allocation.
+The proofs cover the logical intervals. Allocator behavior and the two end-pop operations remain outside their specification.
+
+**Conflict scans.** Each scan uses a keyed table. Lookup correctness holds for every key.
+Without the `random` feature, key generation uses build-time seeds and per-instance state.
+The proofs give no guarantee about key secrecy, collision frequency, or execution time.
+
+**Store refinement.** `YataStoreCore` models one sequence of items.
 Replicas in a legal run agree on their document when they have the same clocks and deletions.
 Agreement on visible text also requires matching payloads for live clocks.
 Content collection preserves visible text. Whole-struct GC, Skip blocks, and production slot reuse fall outside this store theorem.
@@ -62,5 +82,12 @@ The acceptance proof covers origin-free structs that continue their client timel
 Tests cover delivery with origins. Range deletion starts at the block containing the requested start clock.
 If that clock is absent, the operation leaves the store unchanged.
 
-The refinement theorem covers one item sequence. It excludes adjacent-block merges and the document engine's parent and map links.
+**Maps and nested types.** The container proofs treat each list as a separate run.
+For single-clock map assignments, the last-writer rule leaves at most the last value live.
+Replicas must agree on the order and on whether the last value was deleted.
+The production store must keep lists separate and apply each link decision to the correct key.
+The proofs do not establish those conditions for the whole Rust document engine.
+
+The core also contains reference implementations for state vectors, delete sets, and clock searches.
+[Parity tests](../y-octo/tests/core_parity.rs) compare core operations with Rust adapters and store behavior.
 The [YATA model guide](../proofs-yata/README.md) describes the convergence hypotheses and the trace oracle.

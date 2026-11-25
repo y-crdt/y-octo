@@ -8,7 +8,7 @@ pub(crate) use identity::identity_runs;
 
 use super::{
     AsInner, Id,
-    list::{ListIterator, ListType, list_remove},
+    list::{ListIterator, ListType, check_remove, list_remove},
 };
 use crate::{
     Any, Content, JwstCodecError, JwstCodecResult,
@@ -175,6 +175,10 @@ pub(crate) fn apply_text_delta(store: &mut DocStore, ty: TypeIdx, delta: &[TextD
                             insert_text_content(store, ty, &mut pos, Content::String(text.clone()), attrs)?;
                         }
                         TextInsert::Embed(values) => {
+                            if values.is_empty() {
+                                continue;
+                            }
+                            check_embed_insert_capacity(store, &pos, values.len(), &attrs)?;
                             for value in values {
                                 insert_text_content(
                                     store,
@@ -253,6 +257,17 @@ impl TextPosition {
             attrs: FormatAttributes::default(),
             offset: 0,
         }
+    }
+
+    /// Where `normalize` cuts the struct on the right of a position inside
+    /// one: the first id of the right half.
+    fn split(&self, items: &ItemSpace) -> Option<Id> {
+        if self.offset == 0 {
+            return None;
+        }
+        self.right
+            .and_then(|right| items.get(right))
+            .map(|right| right.id + self.offset)
     }
 
     fn normalize(&mut self, store: &mut DocStore) -> JwstCodecResult {
@@ -438,6 +453,90 @@ fn insert_negated_attributes(
     Ok(())
 }
 
+fn check_embed_insert_capacity(
+    store: &DocStore,
+    pos: &TextPosition,
+    count: usize,
+    attrs: &TextAttributes,
+) -> JwstCodecResult {
+    if count <= 1 {
+        return Ok(());
+    }
+    let items = &store.type_arena.items;
+    let state = store.get_state(store.client());
+    let max_attr_keys = attrs.len().saturating_add(pos.attrs.keys().count());
+    let per_embed_slots = max_attr_keys.checked_mul(2).and_then(|n| n.checked_add(1));
+    let fast_slots_ok = per_embed_slots
+        .and_then(|per| per.checked_mul(count))
+        .and_then(|total| total.checked_add(usize::from(pos.offset > 0)))
+        .is_some_and(|total| items.check_capacity(total).is_ok() && store.blocks_fit(total));
+    let fast_clocks_ok = (max_attr_keys as u64)
+        .checked_mul(2)
+        .and_then(|n| n.checked_add(1))
+        .and_then(|per| per.checked_mul(count as u64))
+        .and_then(|total| state.checked_add(total))
+        .is_some();
+    if fast_slots_ok && fast_clocks_ok {
+        return Ok(());
+    }
+
+    let mut sim = pos.clone();
+    let mut total_slots = usize::from(sim.offset > 0);
+    let mut total_clocks = 0u64;
+    for i in 0..count {
+        let mut eff_attrs = attrs.clone();
+        for key in sim.attrs.keys() {
+            if !eff_attrs.contains_key(key.as_str()) {
+                eff_attrs.insert(key.to_string(), Any::Null);
+            }
+        }
+        if i == 0 && sim.offset > 0 {
+            let opening = eff_attrs
+                .iter()
+                .filter(|(key, value)| {
+                    let prev = sim.attrs.get(key.as_str()).unwrap_or(&Any::Null);
+                    !equal_attrs(prev, value)
+                })
+                .count();
+            let attr_items = opening.saturating_mul(2);
+            total_slots = total_slots.saturating_add(1).saturating_add(attr_items);
+            total_clocks = (attr_items as u64)
+                .checked_add(1)
+                .and_then(|step| total_clocks.checked_add(step))
+                .ok_or_else(|| JwstCodecError::IncompleteDocument("struct clock overflow".into()))?;
+            sim.offset = 0;
+        } else {
+            minimize_attribute_changes(store, &mut sim, &eff_attrs);
+            let mut closing: TextAttributes = eff_attrs
+                .iter()
+                .filter_map(|(key, value)| {
+                    let prev = sim.attrs.get(key.as_str()).unwrap_or(&Any::Null);
+                    (!equal_attrs(prev, value)).then(|| (key.clone(), prev.clone()))
+                })
+                .collect();
+            let opening = closing.len();
+            skip_negated_attributes(items, &mut sim, &mut closing);
+            let attr_items = opening.saturating_add(closing.len());
+            total_slots = total_slots.saturating_add(1).saturating_add(attr_items);
+            total_clocks = (attr_items as u64)
+                .checked_add(1)
+                .and_then(|step| total_clocks.checked_add(step))
+                .ok_or_else(|| JwstCodecError::IncompleteDocument("struct clock overflow".into()))?;
+        }
+    }
+
+    items.check_capacity(total_slots)?;
+    store.check_blocks(
+        store.client(),
+        total_slots - usize::from(pos.offset > 0),
+        &[pos.split(items)],
+    )?;
+    state
+        .checked_add(total_clocks)
+        .ok_or_else(|| JwstCodecError::IncompleteDocument("struct clock overflow".into()))?;
+    Ok(())
+}
+
 fn insert_text_content(
     store: &mut DocStore,
     ty: TypeIdx,
@@ -453,9 +552,22 @@ fn insert_text_content(
 
     minimize_attribute_changes(store, pos, &attrs);
     let items = &store.type_arena.items;
+    let state = store.get_state(store.client());
+    let content_clocks = content.clock_len();
     let slots = 1 + usize::from(pos.offset > 0);
-    // With room for all opening and closing markers no further scan is needed.
-    if items.check_capacity(slots + 2 * attrs.len()).is_err() {
+    // With room for all opening and closing markers (both item slots and local
+    // clocks) no further scan is needed.
+    let fast_slots_ok = attrs
+        .len()
+        .checked_mul(2)
+        .and_then(|n| slots.checked_add(n))
+        .is_some_and(|n| items.check_capacity(n).is_ok() && store.blocks_fit(n));
+    let fast_clocks_ok = (attrs.len() as u64)
+        .checked_mul(2)
+        .and_then(|c| content_clocks.checked_add(c))
+        .and_then(|total| state.checked_add(total))
+        .is_some();
+    if !fast_slots_ok || !fast_clocks_ok {
         let mut closing: TextAttributes = attrs
             .iter()
             .filter_map(|(key, value)| {
@@ -467,13 +579,108 @@ fn insert_text_content(
         if pos.offset == 0 {
             skip_negated_attributes(items, &mut pos.clone(), &mut closing);
         }
-        items.check_capacity(slots + opening + closing.len())?;
+        let attr_items = opening + closing.len();
+        items.check_capacity(slots + attr_items)?;
+        store.check_blocks(store.client(), 1 + attr_items, &[pos.split(items)])?;
+        content_clocks
+            .checked_add(attr_items as u64)
+            .and_then(|total| state.checked_add(total))
+            .ok_or_else(|| JwstCodecError::IncompleteDocument("struct clock overflow".into()))?;
     }
     pos.normalize(store)?;
     let negated = insert_attributes(store, ty, pos, &attrs)?;
     insert_item(store, ty, pos, content)?;
     insert_negated_attributes(store, ty, pos, negated)?;
 
+    Ok(())
+}
+
+fn check_format_capacity(
+    store: &DocStore,
+    pos: &TextPosition,
+    remaining: u64,
+    attrs: &TextAttributes,
+) -> JwstCodecResult {
+    let items = &store.type_arena.items;
+    let state = store.get_state(store.client());
+    let fast_slots_ok = attrs
+        .len()
+        .checked_mul(2)
+        .and_then(|n| n.checked_add(2))
+        .is_some_and(|n| items.check_capacity(n).is_ok() && store.blocks_fit(n));
+    let fast_clocks_ok = (attrs.len() as u64)
+        .checked_mul(2)
+        .and_then(|total| state.checked_add(total))
+        .is_some();
+    if fast_slots_ok && fast_clocks_ok {
+        return Ok(());
+    }
+
+    let mut sim = pos.clone();
+    let start_split = usize::from(sim.offset > 0);
+    let start_cut = sim.split(items);
+    let mut end_cut = None;
+    if sim.offset == 0 {
+        minimize_attribute_changes(store, &mut sim, attrs);
+    }
+    let mut negated: TextAttributes = attrs
+        .iter()
+        .filter_map(|(key, value)| {
+            let current = sim.attrs.get(key.as_str()).unwrap_or(&Any::Null);
+            (!equal_attrs(current, value)).then(|| (key.clone(), current.clone()))
+        })
+        .collect();
+    let opening = negated.len();
+
+    let mut rem = remaining;
+    let mut sim_offset = std::mem::take(&mut sim.offset);
+    let mut end_split = 0usize;
+    while let Some(item) = sim.right.and_then(|i| items.get(i)) {
+        if rem == 0 && (negated.is_empty() || !item.deleted() && !matches!(item.content, Content::Format(_))) {
+            break;
+        }
+        if item.deleted() {
+            sim.forward(items);
+            continue;
+        }
+        match &item.content {
+            Content::Format(format) => {
+                let (key, value) = (&format.key, &format.value);
+                if let Some(attr) = attrs.get(key.as_str()) {
+                    if equal_attrs(attr, value) {
+                        negated.remove(key.as_str());
+                    } else {
+                        if rem == 0 {
+                            break;
+                        }
+                        negated.insert(key.to_string(), value.clone());
+                    }
+                }
+                sim.forward(items);
+            }
+            _ => {
+                let skipped = std::mem::take(&mut sim_offset);
+                let item_len = item.len() - skipped;
+                if rem < item_len {
+                    end_split = 1;
+                    end_cut = Some(item.id + (skipped + rem));
+                    break;
+                }
+                rem -= item_len;
+                sim.forward(items);
+            }
+        }
+    }
+    if end_split == 0 {
+        skip_negated_attributes(items, &mut sim, &mut negated);
+    }
+
+    let attr_items = opening + negated.len();
+    items.check_capacity(start_split + end_split + attr_items)?;
+    store.check_blocks(store.client(), attr_items, &[start_cut, end_cut])?;
+    state
+        .checked_add(attr_items as u64)
+        .ok_or_else(|| JwstCodecError::IncompleteDocument("struct clock overflow".into()))?;
     Ok(())
 }
 
@@ -488,6 +695,7 @@ fn format_text(
         return Ok(());
     }
 
+    check_format_capacity(store, pos, remaining, &attrs)?;
     pos.normalize(store)?;
     minimize_attribute_changes(store, pos, &attrs);
     let mut negated = insert_attributes(store, ty, pos, &attrs)?;
@@ -544,6 +752,13 @@ fn delete_text(store: &mut DocStore, ty: TypeIdx, pos: &mut TextPosition, mut re
         return Ok(());
     }
 
+    check_remove(
+        store,
+        pos.right,
+        pos.offset,
+        remaining,
+        pos.split(&store.type_arena.items),
+    )?;
     pos.normalize(store)?;
     let start = remaining;
     let gap_start = pos.right;
