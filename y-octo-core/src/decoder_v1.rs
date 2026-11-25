@@ -3,6 +3,7 @@ use alloc::vec::Vec;
 use crate::{
     CodecError, LimitKind,
     delete_set::DeleteSetCore,
+    order_range::ClockRange,
     state_vector::StateVectorCore,
     utf16::{is_valid_utf8, utf16_len},
     varint::{decode_var_i32_with_sign, decode_var_u64},
@@ -118,6 +119,7 @@ pub trait V1Sink {
     fn on_gc(&mut self, id: WireId, len: u64) -> Result<(), CodecError>;
     fn on_skip(&mut self, id: WireId, len: u64) -> Result<(), CodecError>;
     fn on_item(&mut self, id: WireId, len: u64, meta: ItemMetaCore) -> Result<(), CodecError>;
+    fn on_skipped_zero_origin(&mut self, _origin_left: WireId) {}
 
     fn on_deleted(&mut self, len: u64) -> Result<(), CodecError>;
     fn on_json_start(&mut self, count: usize) -> Result<(), CodecError>;
@@ -1079,7 +1081,9 @@ fn decode_item_content<S: V1Sink>(
 ) -> Result<(u64, usize, usize), CodecError> {
     if tag == 1 {
         let (len, p) = read_var_u64_sink(input, cur, sink)?;
-        sink.on_deleted(len)?;
+        if len > 0 {
+            sink.on_deleted(len)?;
+        }
         return Ok((len, p, entries_acc));
     }
     if tag == 2 {
@@ -1102,8 +1106,14 @@ fn decode_item_content<S: V1Sink>(
     }
     if tag == 4 {
         let span = read_str_slice_at(input, cur, sink)?;
+        if span.start == span.end {
+            return Ok((0, span.end, entries_acc));
+        }
         sink.on_string(span)?;
         let len = utf16_len(&input[span.start..span.end]) as u64;
+        if len == 0 {
+            return Err(CodecError::InvalidUtf8);
+        }
         return Ok((len, span.end, entries_acc));
     }
     if tag == 5 {
@@ -1153,27 +1163,1180 @@ fn decode_item_content<S: V1Sink>(
 }
 
 #[inline]
-fn decode_struct_frame<S: V1Sink>(
+fn seq_ranges_find(ranges: &[ClockRange], clock: u64) -> Option<ClockRange> {
+    let n = ranges.len();
+    if n == 0 {
+        return None;
+    }
+    let last = ranges[n - 1];
+    if clock >= last.start {
+        return if clock < last.end { Some(last) } else { None };
+    }
+    let mut low = 0usize;
+    let mut high = n - 1;
+    while low < high {
+        let mid = low + (high - low) / 2;
+        let r = ranges[mid];
+        if clock < r.start {
+            high = mid;
+        } else if clock >= r.end {
+            low = mid + 1;
+        } else {
+            return Some(r);
+        }
+    }
+    None
+}
+
+#[inline]
+fn seq_ranges_push(ranges: &mut Vec<ClockRange>, start: u64, end: u64) {
+    let n = ranges.len();
+    if n > 0 {
+        let last = ranges[n - 1];
+        if last.end == start {
+            ranges[n - 1] = ClockRange { start: last.start, end };
+            return;
+        }
+    }
+    // Capacity guard satisfies Aeneas's `Vec::push` precondition.
+    if n < usize::MAX {
+        ranges.push(ClockRange { start, end });
+    }
+}
+
+const Y_TYPE_TEXT: u8 = 2;
+
+struct ClientSeqState {
+    active: bool,
+    ytext_types: Vec<ClockRange>,
+    seq_ranges: Vec<ClockRange>,
+    just_skipped_ol: Option<WireId>,
+}
+
+#[inline]
+fn is_ytext_content(input: &[u8], start: usize, end: usize, tag: u8) -> bool {
+    tag == 7 && start < end && end <= input.len() && input[start] == Y_TYPE_TEXT
+}
+
+#[inline]
+fn same_wire_id_opt(a: Option<WireId>, b: Option<WireId>) -> bool {
+    match (a, b) {
+        (Some(x), Some(y)) => x.client == y.client && x.clock == y.clock,
+        _ => false,
+    }
+}
+
+#[inline]
+fn lookup_ytext_parent(id: WireId, parent: WireParentCore, ytext_types: &[ClockRange]) -> bool {
+    match parent {
+        WireParentCore::Item(p) => {
+            if p.client == id.client && p.clock < id.clock {
+                seq_ranges_find(ytext_types, p.clock).is_some()
+            } else {
+                false
+            }
+        }
+        _ => false,
+    }
+}
+
+#[inline]
+fn lookup_proven_origin(id: WireId, origin: Option<WireId>, seq_ranges: &[ClockRange]) -> Option<ClockRange> {
+    match origin {
+        Some(o) => {
+            if o.client == id.client && o.clock < id.clock {
+                seq_ranges_find(seq_ranges, o.clock)
+            } else {
+                None
+            }
+        }
+        None => None,
+    }
+}
+
+#[inline]
+fn origin_left_at_range_end(id: WireId, origin: Option<WireId>, range: Option<ClockRange>) -> bool {
+    match (origin, range) {
+        (Some(o), Some(r)) => o.clock < r.end && r.end - o.clock == 1 && r.end == id.clock,
+        _ => false,
+    }
+}
+
+#[inline]
+fn should_skip_zero_len_item(tag: u8, len: u64, has_parent_sub_bit: bool, or_none: bool, ol_boundary: bool) -> bool {
+    len == 0 && !has_parent_sub_bit && or_none && ol_boundary && (tag == 1 || tag == 4)
+}
+
+#[inline]
+fn is_item_proven_seq(
+    has_parent_sub_bit: bool,
+    ol_none: bool,
+    or_none: bool,
+    ol_proven: bool,
+    or_proven: bool,
+    wire_parent_sub_none: bool,
+    parent_is_ytext: bool,
+) -> bool {
+    if ol_none && or_none {
+        wire_parent_sub_none && parent_is_ytext
+    } else if !ol_none {
+        ol_proven && !has_parent_sub_bit
+    } else {
+        or_proven && !has_parent_sub_bit
+    }
+}
+
+#[inline]
+fn classify_item_seq_provenance(
+    id: WireId,
+    info: u8,
+    tag: u8,
+    len: u64,
+    hdr: &ItemHeader,
+    ytext_types: &[ClockRange],
+    seq_ranges: &[ClockRange],
+) -> (bool, bool) {
+    let has_parent_sub_bit = (info & ITEM_HAS_PARENT_SUB) != 0;
+    let ol_range = lookup_proven_origin(id, hdr.origin_left, seq_ranges);
+    let or_range = lookup_proven_origin(id, hdr.origin_right, seq_ranges);
+    let ol_proven = ol_range.is_some();
+    let or_proven = or_range.is_some();
+    let ol_boundary = origin_left_at_range_end(id, hdr.origin_left, ol_range);
+    let ol_none = hdr.origin_left.is_none();
+    let or_none = hdr.origin_right.is_none();
+    let parent_is_ytext = lookup_ytext_parent(id, hdr.parent, ytext_types);
+    let skip_zero = should_skip_zero_len_item(tag, len, has_parent_sub_bit, or_none, ol_boundary);
+    let proven_seq = is_item_proven_seq(
+        has_parent_sub_bit,
+        ol_none,
+        or_none,
+        ol_proven,
+        or_proven,
+        hdr.parent_sub.is_none(),
+        parent_is_ytext,
+    );
+    (skip_zero, proven_seq)
+}
+
+#[inline]
+fn push_wire_id(dst: &mut Vec<WireId>, id: WireId) {
+    // Capacity guard satisfies Aeneas's `Vec::push` precondition.
+    if dst.len() < usize::MAX {
+        dst.push(id);
+    }
+}
+
+#[inline]
+fn extend_wire_ids(dst: &mut Vec<WireId>, src: &[WireId]) {
+    let mut i = 0usize;
+    while i < src.len() {
+        push_wire_id(dst, src[i]);
+        i += 1;
+    }
+}
+
+#[inline]
+fn wire_id_lt(a: WireId, b: WireId) -> bool {
+    a.client < b.client || (a.client == b.client && a.clock < b.clock)
+}
+
+#[allow(clippy::manual_swap)]
+fn sift_down_wire_ids(items: &mut [WireId], start: usize, end: usize) {
+    let half = end / 2;
+    let mut root = start;
+    while root < half {
+        let left = root * 2 + 1;
+        let mut swap_idx = root;
+        if wire_id_lt(items[swap_idx], items[left]) {
+            swap_idx = left;
+        }
+        if left + 1 < end {
+            let right = left + 1;
+            if wire_id_lt(items[swap_idx], items[right]) {
+                swap_idx = right;
+            }
+        }
+        if swap_idx == root {
+            root = half;
+        } else {
+            let tmp = items[root];
+            items[root] = items[swap_idx];
+            items[swap_idx] = tmp;
+            root = swap_idx;
+        }
+    }
+}
+
+#[allow(clippy::manual_swap)]
+fn sort_wire_ids(items: &mut [WireId]) {
+    let n = items.len();
+    if n <= 1 {
+        return;
+    }
+    let mut start = n / 2;
+    while start > 0 {
+        start -= 1;
+        sift_down_wire_ids(items, start, n);
+    }
+    let mut end = n;
+    while end > 1 {
+        end -= 1;
+        let tmp = items[0];
+        items[0] = items[end];
+        items[end] = tmp;
+        sift_down_wire_ids(items, 0, end);
+    }
+}
+
+fn find_wire_id_lower_bound(items: &[WireId], target: WireId) -> usize {
+    let mut low = 0usize;
+    let mut high = items.len();
+    while low < high {
+        let mid = low + (high - low) / 2;
+        if wire_id_lt(items[mid], target) {
+            low = mid + 1;
+        } else {
+            high = mid;
+        }
+    }
+    low
+}
+
+#[inline]
+fn contains_wire_id_sorted(items: &[WireId], target: WireId) -> bool {
+    let idx = find_wire_id_lower_bound(items, target);
+    if idx < items.len() {
+        let found = items[idx];
+        found.client == target.client && found.clock == target.clock
+    } else {
+        false
+    }
+}
+
+#[inline]
+fn opt_wire_id_in_sorted(items: &[WireId], opt: Option<WireId>) -> bool {
+    match opt {
+        Some(w) => contains_wire_id_sorted(items, w),
+        None => false,
+    }
+}
+
+#[inline]
+fn parent_item_in_sorted(items: &[WireId], parent: WireParentCore) -> bool {
+    match parent {
+        WireParentCore::Item(w) => contains_wire_id_sorted(items, w),
+        _ => false,
+    }
+}
+
+fn alloc_zero_max_hi(len: usize) -> Vec<usize> {
+    let mut out: Vec<usize> = Vec::new();
+    let mut i = 0usize;
+    while i < len && out.len() < usize::MAX {
+        out.push(0);
+        i += 1;
+    }
+    out
+}
+
+fn mark_zero_strings_covered(pending: &[WireId], max_hi: &mut [usize], client: u64, start: u64, end: u64) {
+    // In Yjs `readAndApplyDeleteSet`, each raw wire delete range `[start, end)`
+    // is applied individually and marks a zero-length item at `clock` deleted
+    // iff `start < clock < end` (requiring `end - start >= 2`).
+    if end <= start || end - start < 2 {
+        return;
+    }
+    let lo = find_wire_id_lower_bound(
+        pending,
+        WireId {
+            client,
+            clock: start + 1,
+        },
+    );
+    let hi = find_wire_id_lower_bound(pending, WireId { client, clock: end });
+    if lo < hi && lo < max_hi.len() && hi > max_hi[lo] {
+        max_hi[lo] = hi;
+    }
+}
+
+fn mark_point_ids_covered(pending: &[WireId], max_hi: &mut [usize], client: u64, start: u64, end: u64) {
+    // A single-clock item at `clock` is deleted by a raw wire delete range
+    // `[start, end)` iff `start <= clock < end`.
+    if end <= start {
+        return;
+    }
+    let lo = find_wire_id_lower_bound(pending, WireId { client, clock: start });
+    let hi = find_wire_id_lower_bound(pending, WireId { client, clock: end });
+    if lo < hi && lo < max_hi.len() && hi > max_hi[lo] {
+        max_hi[lo] = hi;
+    }
+}
+
+fn all_zero_strings_covered(max_hi: &[usize]) -> bool {
+    let mut reach = 0usize;
+    let mut i = 0usize;
+    while i < max_hi.len() {
+        if max_hi[i] > reach {
+            reach = max_hi[i];
+        }
+        if reach <= i {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+
+struct NoopSink;
+
+impl V1Sink for NoopSink {
+    #[inline]
+    fn core_validates_utf8(&self) -> bool {
+        false
+    }
+
+    #[inline]
+    fn validate_utf8_early(&mut self, _slot: u8, _value: Span) -> Result<(), CodecError> {
+        Ok(())
+    }
+
+    #[inline(always)]
+    fn on_decode_error(&mut self, _err: CodecError, _a: usize, _b: u64) {}
+
+    #[inline(always)]
+    fn on_skipped_zero_origin(&mut self, _origin_left: WireId) {}
+
+    #[inline]
+    fn record_client(&mut self, _client: u64) -> Result<bool, CodecError> {
+        Ok(true)
+    }
+
+    #[inline]
+    fn begin_client(&mut self, _client: u64, _count: usize) -> Result<(), CodecError> {
+        Ok(())
+    }
+
+    #[inline]
+    fn on_gc(&mut self, _id: WireId, _len: u64) -> Result<(), CodecError> {
+        Ok(())
+    }
+
+    #[inline]
+    fn on_skip(&mut self, _id: WireId, _len: u64) -> Result<(), CodecError> {
+        Ok(())
+    }
+
+    #[inline]
+    fn on_item(&mut self, _id: WireId, _len: u64, _meta: ItemMetaCore) -> Result<(), CodecError> {
+        Ok(())
+    }
+
+    #[inline]
+    fn on_deleted(&mut self, _len: u64) -> Result<(), CodecError> {
+        Ok(())
+    }
+
+    #[inline]
+    fn on_json_start(&mut self, _count: usize) -> Result<(), CodecError> {
+        Ok(())
+    }
+
+    #[inline]
+    fn on_json_value(&mut self, _value: Span) -> Result<(), CodecError> {
+        Ok(())
+    }
+
+    #[inline]
+    fn on_json_finish(&mut self) -> Result<(), CodecError> {
+        Ok(())
+    }
+
+    #[inline]
+    fn on_binary(&mut self, _value: Span) -> Result<(), CodecError> {
+        Ok(())
+    }
+
+    #[inline]
+    fn on_string(&mut self, _value: Span) -> Result<(), CodecError> {
+        Ok(())
+    }
+
+    #[inline]
+    fn on_embed(&mut self, _value: Span) -> Result<(), CodecError> {
+        Ok(())
+    }
+
+    #[inline]
+    fn on_format(&mut self, _key: Span, _value: Span) -> Result<(), CodecError> {
+        Ok(())
+    }
+
+    #[inline]
+    fn on_type(&mut self, _kind: u64, _tag: Option<Span>) -> Result<(), CodecError> {
+        Ok(())
+    }
+
+    #[inline]
+    fn on_any_content_start(&mut self, _count: usize) -> Result<(), CodecError> {
+        Ok(())
+    }
+
+    #[inline]
+    fn on_any_content_value(&mut self) -> Result<(), CodecError> {
+        Ok(())
+    }
+
+    #[inline]
+    fn on_any_content_finish(&mut self) -> Result<(), CodecError> {
+        Ok(())
+    }
+
+    #[inline]
+    fn on_doc(&mut self, _guid: Span) -> Result<(), CodecError> {
+        Ok(())
+    }
+
+    #[inline]
+    fn on_any_start(&mut self) -> Result<(), CodecError> {
+        Ok(())
+    }
+
+    #[inline]
+    fn on_any_undefined(&mut self) -> Result<(), CodecError> {
+        Ok(())
+    }
+
+    #[inline]
+    fn on_any_null(&mut self) -> Result<(), CodecError> {
+        Ok(())
+    }
+
+    #[inline]
+    fn on_any_i32(&mut self, _value: i32) -> Result<(), CodecError> {
+        Ok(())
+    }
+
+    #[inline]
+    fn on_any_f32_bits(&mut self, _bits: u32) -> Result<(), CodecError> {
+        Ok(())
+    }
+
+    #[inline]
+    fn on_any_f64_bits(&mut self, _bits: u64) -> Result<(), CodecError> {
+        Ok(())
+    }
+
+    #[inline]
+    fn on_any_i64_bits(&mut self, _bits: u64) -> Result<(), CodecError> {
+        Ok(())
+    }
+
+    #[inline]
+    fn on_any_bool(&mut self, _value: bool) -> Result<(), CodecError> {
+        Ok(())
+    }
+
+    #[inline]
+    fn on_any_str(&mut self, _value: Span) -> Result<(), CodecError> {
+        Ok(())
+    }
+
+    #[inline]
+    fn on_any_bytes(&mut self, _value: Span) -> Result<(), CodecError> {
+        Ok(())
+    }
+
+    #[inline]
+    fn on_any_begin_object(&mut self, _count: usize) -> Result<(), CodecError> {
+        Ok(())
+    }
+
+    #[inline]
+    fn on_any_object_key(&mut self, _key: Span) -> Result<(), CodecError> {
+        Ok(())
+    }
+
+    #[inline]
+    fn on_any_begin_array(&mut self, _count: usize) -> Result<(), CodecError> {
+        Ok(())
+    }
+
+    #[inline]
+    fn on_any_end_container(&mut self) -> Result<(), CodecError> {
+        Ok(())
+    }
+
+    #[inline]
+    fn on_any_finish(&mut self, _range: Span) -> Result<(), CodecError> {
+        Ok(())
+    }
+
+    #[inline]
+    fn begin_delete_client(&mut self, _client: u64, _count: usize) -> Result<(), CodecError> {
+        Ok(())
+    }
+
+    #[inline]
+    fn on_delete_range(&mut self, _client: u64, _start: u64, _end: u64) -> Result<(), CodecError> {
+        Ok(())
+    }
+}
+
+#[cold]
+fn replay_client_seq_state(
+    input: &[u8],
+    start_pos: usize,
+    start_id: WireId,
+    target_idx: usize,
+    limits: &DecodeLimitsCore,
+    state: &mut ClientSeqState,
+) -> Result<(), CodecError> {
+    let mut noop = NoopSink;
+    let mut cur = start_pos;
+    let mut clock = start_id.clock;
+    let mut idx = 0usize;
+    let mut err: Option<CodecError> = None;
+    while idx < target_idx && err.is_none() {
+        let id = WireId {
+            client: start_id.client,
+            clock,
+        };
+        match read_u8_at(input, cur) {
+            Err(e) => err = Some(e),
+            Ok((info, after_info)) => {
+                let tag = info & 0b1_1111;
+                if tag == 0 || tag == 10 {
+                    match read_var_u64_sink(input, after_info, &mut noop) {
+                        Err(e) => err = Some(e),
+                        Ok((len, next_cur)) => match advance_clock_sink(clock, len, &mut noop) {
+                            Err(e) => err = Some(e),
+                            Ok(next_clock) => {
+                                clock = next_clock;
+                                cur = next_cur;
+                                idx += 1;
+                            }
+                        },
+                    }
+                } else {
+                    match decode_item_header(input, after_info, info, &mut noop) {
+                        Err(e) => err = Some(e),
+                        Ok((hdr, content_start)) => {
+                            match decode_item_content(input, content_start, tag, limits, 0, &mut noop) {
+                                Err(e) => err = Some(e),
+                                Ok((len, content_end, _)) => match advance_clock_sink(clock, len, &mut noop) {
+                                    Err(e) => err = Some(e),
+                                    Ok(next_clock) => {
+                                        let (_, is_proven_seq) = classify_item_seq_provenance(
+                                            id,
+                                            info,
+                                            tag,
+                                            len,
+                                            &hdr,
+                                            &state.ytext_types,
+                                            &state.seq_ranges,
+                                        );
+                                        if is_ytext_content(input, content_start, content_end, tag) {
+                                            seq_ranges_push(&mut state.ytext_types, id.clock, next_clock);
+                                        }
+                                        if is_proven_seq {
+                                            seq_ranges_push(&mut state.seq_ranges, id.clock, next_clock);
+                                        }
+                                        clock = next_clock;
+                                        cur = content_end;
+                                        idx += 1;
+                                    }
+                                },
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if let Some(e) = err {
+        Err(e)
+    } else {
+        state.active = true;
+        Ok(())
+    }
+}
+
+#[cold]
+#[allow(clippy::too_many_arguments)]
+fn emit_tracked_item<S: V1Sink>(
     input: &[u8],
     pos: usize,
     id: WireId,
+    tag: u8,
+    hdr: ItemHeader,
+    content_start: usize,
+    len: u64,
+    content_end: usize,
+    entries: usize,
+    content_bytes: usize,
+    acc: DecodeAcc,
+    is_proven_seq: bool,
+    state: &mut ClientSeqState,
+    sink: &mut S,
+) -> Result<(u64, usize, DecodeAcc, Option<WireId>, bool), CodecError> {
+    if same_wire_id_opt(state.just_skipped_ol, hdr.origin_left) {
+        return Err(fail_with(sink, CodecError::ZeroLengthStruct, 0, 0));
+    }
+    let next_clock = advance_clock_sink(id.clock, len, sink)?;
+    sink.on_item(
+        id,
+        len,
+        ItemMetaCore {
+            origin_left: hdr.origin_left,
+            origin_right: hdr.origin_right,
+            parent: hdr.parent,
+            parent_sub: hdr.parent_sub,
+            raw_range: Span {
+                start: pos,
+                end: content_end,
+            },
+        },
+    )?;
+    if is_ytext_content(input, content_start, content_end, tag) {
+        seq_ranges_push(&mut state.ytext_types, id.clock, next_clock);
+    }
+    if is_proven_seq {
+        seq_ranges_push(&mut state.seq_ranges, id.clock, next_clock);
+    }
+    state.just_skipped_ol = None;
+    Ok((
+        next_clock,
+        content_end,
+        DecodeAcc {
+            structs: acc.structs,
+            entries,
+            content_bytes,
+        },
+        None,
+        false,
+    ))
+}
+
+#[cold]
+#[allow(clippy::too_many_arguments)]
+fn decode_struct_frame_tracked<S: V1Sink>(
+    input: &[u8],
+    pos: usize,
+    id: WireId,
+    info: u8,
+    tag: u8,
+    hdr: ItemHeader,
+    content_start: usize,
+    len: u64,
+    content_end: usize,
+    entries: usize,
+    content_bytes: usize,
+    acc: DecodeAcc,
+    state: &mut ClientSeqState,
+    sink: &mut S,
+) -> Result<(u64, usize, DecodeAcc, Option<WireId>, bool), CodecError> {
+    // Historical Yjs `Y.Text` updates can contain deleted zero-length items:
+    // `ContentString("")` (tag 4, strictly covered by a raw wire delete range)
+    // and `ContentDeleted(0)` (tag 1, emitted when Yjs re-encodes a deleted
+    // empty string). Zero-length items violate Yjs's own `length >= 1`
+    // invariant (`Item.lastId = clock - 1`), so stripping them heals corrupt
+    // historical updates rather than attempting an impossible multi-peer
+    // isomorphism. Only skip `tag == 1 || tag == 4` when:
+    // 1. `ITEM_HAS_PARENT_SUB` is clear,
+    // 2. `origin_right` is absent and `origin_left` is immediately adjacent to
+    //    `id` (`r.end == id.clock` and `o.clock == id.clock - 1`) at the outer
+    //    end of a proven `ContentType(Y.Text, kind=2)` range in this client
+    //    block (rejecting untyped roots, `Y.Array`, `Y.Map`, surrogate splits,
+    //    and non-adjacent `Z.lastId` gaps),
+    // 3. at most one zero-length item is skipped at any clock and no same-clock
+    //    struct shares its `origin_left`, and
+    // 4. `verify_skipped_zero_items` confirms strict raw-range DS coverage for
+    //    `tag == 4` and that every colliding item sharing `origin_left` across
+    //    all clients is a single-clock deleted tombstone with no dependents.
+    let (skip_zero, is_proven_seq) =
+        classify_item_seq_provenance(id, info, tag, len, &hdr, &state.ytext_types, &state.seq_ranges);
+    if skip_zero && state.just_skipped_ol.is_none() {
+        state.just_skipped_ol = hdr.origin_left;
+        return Ok((
+            id.clock,
+            content_end,
+            DecodeAcc {
+                structs: acc.structs,
+                entries,
+                content_bytes,
+            },
+            hdr.origin_left,
+            tag == 4,
+        ));
+    }
+    emit_tracked_item(
+        input,
+        pos,
+        id,
+        tag,
+        hdr,
+        content_start,
+        len,
+        content_end,
+        entries,
+        content_bytes,
+        acc,
+        is_proven_seq,
+        state,
+        sink,
+    )
+}
+
+#[cold]
+#[allow(clippy::too_many_arguments)]
+fn decode_struct_frame_slow<S: V1Sink>(
+    input: &[u8],
+    pos: usize,
+    client_start_pos: usize,
+    client_start_clock: u64,
+    s_idx: usize,
+    id: WireId,
+    info: u8,
+    tag: u8,
+    hdr: ItemHeader,
+    content_start: usize,
+    len: u64,
+    content_end: usize,
+    entries: usize,
+    content_bytes: usize,
     limits: &DecodeLimitsCore,
     acc: DecodeAcc,
+    state: &mut ClientSeqState,
     sink: &mut S,
-) -> Result<(u64, usize, DecodeAcc), CodecError> {
+) -> Result<(u64, usize, DecodeAcc, Option<WireId>, bool), CodecError> {
+    if !state.active {
+        replay_client_seq_state(
+            input,
+            client_start_pos,
+            WireId {
+                client: id.client,
+                clock: client_start_clock,
+            },
+            s_idx,
+            limits,
+            state,
+        )?;
+    }
+    decode_struct_frame_tracked(
+        input,
+        pos,
+        id,
+        info,
+        tag,
+        hdr,
+        content_start,
+        len,
+        content_end,
+        entries,
+        content_bytes,
+        acc,
+        state,
+        sink,
+    )
+}
+
+#[cold]
+#[allow(clippy::too_many_arguments)]
+fn collect_colliding_in_client(
+    input: &[u8],
+    start_pos: usize,
+    start_id: WireId,
+    count: usize,
+    limits: &DecodeLimitsCore,
+    skipped_ols: &[WireId],
+    colliding_ids: &mut Vec<WireId>,
+    pending_colliding: &mut Vec<WireId>,
+) -> Result<usize, CodecError> {
+    let mut noop = NoopSink;
+    let mut cur = start_pos;
+    let mut clock = start_id.clock;
+    let mut s_idx = 0usize;
+    let mut err: Option<CodecError> = None;
+    while s_idx < count && err.is_none() {
+        let id = WireId {
+            client: start_id.client,
+            clock,
+        };
+        match read_u8_at(input, cur) {
+            Err(e) => err = Some(e),
+            Ok((info, after_info)) => {
+                let tag = info & 0b1_1111;
+                if tag == 0 || tag == 10 {
+                    match read_var_u64_sink(input, after_info, &mut noop) {
+                        Err(e) => err = Some(e),
+                        Ok((len, next_cur)) => match advance_clock_sink(clock, len, &mut noop) {
+                            Err(e) => err = Some(e),
+                            Ok(next_clock) => {
+                                clock = next_clock;
+                                cur = next_cur;
+                                s_idx += 1;
+                            }
+                        },
+                    }
+                } else {
+                    match decode_item_header(input, after_info, info, &mut noop) {
+                        Err(e) => err = Some(e),
+                        Ok((hdr, content_start)) => {
+                            match decode_item_content(input, content_start, tag, limits, 0, &mut noop) {
+                                Err(e) => err = Some(e),
+                                Ok((len, content_end, _)) => {
+                                    if len == 0 {
+                                        cur = content_end;
+                                        s_idx += 1;
+                                    } else {
+                                        match advance_clock_sink(clock, len, &mut noop) {
+                                            Err(e) => err = Some(e),
+                                            Ok(next_clock) => {
+                                                if opt_wire_id_in_sorted(skipped_ols, hdr.origin_left) {
+                                                    if len != 1 {
+                                                        err = Some(CodecError::ZeroLengthStruct);
+                                                    } else {
+                                                        push_wire_id(colliding_ids, id);
+                                                        if tag != 1 {
+                                                            push_wire_id(pending_colliding, id);
+                                                        }
+                                                    }
+                                                }
+                                                clock = next_clock;
+                                                cur = content_end;
+                                                s_idx += 1;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if let Some(e) = err { Err(e) } else { Ok(cur) }
+}
+
+#[cold]
+fn collect_colliding_origin_items(
+    input: &[u8],
+    clients_start: usize,
+    clients: usize,
+    limits: &DecodeLimitsCore,
+    skipped_ols: &[WireId],
+) -> Result<(Vec<WireId>, Vec<WireId>), CodecError> {
+    let mut noop = NoopSink;
+    let mut cur = clients_start;
+    let mut colliding_ids: Vec<WireId> = Vec::new();
+    let mut pending_colliding: Vec<WireId> = Vec::new();
+    let mut c_idx = 0usize;
+    let mut err: Option<CodecError> = None;
+    while c_idx < clients && err.is_none() {
+        match read_var_u64_sink(input, cur, &mut noop) {
+            Err(e) => err = Some(e),
+            Ok((count_u64, p1)) => match checked_usize_limit(count_u64, LimitKind::Structs) {
+                Err(e) => err = Some(e),
+                Ok(count) => match read_var_u64_sink(input, p1, &mut noop) {
+                    Err(e) => err = Some(e),
+                    Ok((client, p2)) => match read_var_u64_sink(input, p2, &mut noop) {
+                        Err(e) => err = Some(e),
+                        Ok((clock, p3)) => match collect_colliding_in_client(
+                            input,
+                            p3,
+                            WireId { client, clock },
+                            count,
+                            limits,
+                            skipped_ols,
+                            &mut colliding_ids,
+                            &mut pending_colliding,
+                        ) {
+                            Err(e) => err = Some(e),
+                            Ok(next_cur) => {
+                                cur = next_cur;
+                                c_idx += 1;
+                            }
+                        },
+                    },
+                },
+            },
+        }
+    }
+    if let Some(e) = err {
+        Err(e)
+    } else {
+        Ok((colliding_ids, pending_colliding))
+    }
+}
+
+#[cold]
+fn client_has_origin_in(
+    input: &[u8],
+    start_pos: usize,
+    count: usize,
+    limits: &DecodeLimitsCore,
+    target_ids: &[WireId],
+) -> Result<(usize, bool), CodecError> {
+    let mut noop = NoopSink;
+    let mut cur = start_pos;
+    let mut s_idx = 0usize;
+    let mut found = false;
+    let mut err: Option<CodecError> = None;
+    while s_idx < count && !found && err.is_none() {
+        match read_u8_at(input, cur) {
+            Err(e) => err = Some(e),
+            Ok((info, after_info)) => {
+                let tag = info & 0b1_1111;
+                if tag == 0 || tag == 10 {
+                    match read_var_u64_sink(input, after_info, &mut noop) {
+                        Err(e) => err = Some(e),
+                        Ok((_, next_cur)) => {
+                            cur = next_cur;
+                            s_idx += 1;
+                        }
+                    }
+                } else {
+                    match decode_item_header(input, after_info, info, &mut noop) {
+                        Err(e) => err = Some(e),
+                        Ok((hdr, content_start)) => {
+                            if opt_wire_id_in_sorted(target_ids, hdr.origin_left)
+                                || opt_wire_id_in_sorted(target_ids, hdr.origin_right)
+                                || parent_item_in_sorted(target_ids, hdr.parent)
+                            {
+                                found = true;
+                            } else {
+                                match decode_item_content(input, content_start, tag, limits, 0, &mut noop) {
+                                    Err(e) => err = Some(e),
+                                    Ok((_, content_end, _)) => {
+                                        cur = content_end;
+                                        s_idx += 1;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if let Some(e) = err { Err(e) } else { Ok((cur, found)) }
+}
+
+#[cold]
+fn has_origin_referencing(
+    input: &[u8],
+    clients_start: usize,
+    clients: usize,
+    limits: &DecodeLimitsCore,
+    target_ids: &[WireId],
+) -> Result<bool, CodecError> {
+    let mut noop = NoopSink;
+    let mut cur = clients_start;
+    let mut c_idx = 0usize;
+    let mut found = false;
+    let mut err: Option<CodecError> = None;
+    while c_idx < clients && !found && err.is_none() {
+        match read_var_u64_sink(input, cur, &mut noop) {
+            Err(e) => err = Some(e),
+            Ok((count_u64, p1)) => match checked_usize_limit(count_u64, LimitKind::Structs) {
+                Err(e) => err = Some(e),
+                Ok(count) => match read_var_u64_sink(input, p1, &mut noop) {
+                    Err(e) => err = Some(e),
+                    Ok((_, p2)) => match read_var_u64_sink(input, p2, &mut noop) {
+                        Err(e) => err = Some(e),
+                        Ok((_, p3)) => match client_has_origin_in(input, p3, count, limits, target_ids) {
+                            Err(e) => err = Some(e),
+                            Ok((next_cur, hit)) => {
+                                cur = next_cur;
+                                found = hit;
+                                c_idx += 1;
+                            }
+                        },
+                    },
+                },
+            },
+        }
+    }
+    if let Some(e) = err { Err(e) } else { Ok(found) }
+}
+
+#[cold]
+#[allow(clippy::too_many_arguments)]
+fn scan_delete_ranges_coverage(
+    input: &[u8],
+    start_pos: usize,
+    client: u64,
+    range_count: usize,
+    pending_zeros: &[WireId],
+    zero_max_hi: &mut [usize],
+    pending_colliding: &[WireId],
+    coll_max_hi: &mut [usize],
+) -> Result<usize, CodecError> {
+    let mut noop = NoopSink;
+    let mut cur = start_pos;
+    let mut r_idx = 0usize;
+    let mut err: Option<CodecError> = None;
+    while r_idx < range_count && err.is_none() {
+        match read_one_delete_range_sink(input, cur, &mut noop) {
+            Err(e) => err = Some(e),
+            Ok((start, end, q2)) => {
+                if start != end {
+                    if !pending_zeros.is_empty() {
+                        mark_zero_strings_covered(pending_zeros, zero_max_hi, client, start, end);
+                    }
+                    if !pending_colliding.is_empty() {
+                        mark_point_ids_covered(pending_colliding, coll_max_hi, client, start, end);
+                    }
+                }
+                cur = q2;
+                r_idx += 1;
+            }
+        }
+    }
+    if let Some(e) = err { Err(e) } else { Ok(cur) }
+}
+
+#[cold]
+#[allow(clippy::too_many_arguments)]
+fn scan_delete_set_coverage(
+    input: &[u8],
+    ds_start: usize,
+    pending_zeros: &[WireId],
+    zero_max_hi: &mut [usize],
+    pending_colliding: &[WireId],
+    coll_max_hi: &mut [usize],
+) -> Result<(), CodecError> {
+    let mut noop = NoopSink;
+    let (clients_u64, mut cur) = read_var_u64_sink(input, ds_start, &mut noop)?;
+    let delete_clients = checked_usize_limit(clients_u64, LimitKind::DeleteClients)?;
+    let mut c_idx = 0usize;
+    let mut err: Option<CodecError> = None;
+    while c_idx < delete_clients && err.is_none() {
+        match read_var_u64_sink(input, cur, &mut noop) {
+            Err(e) => err = Some(e),
+            Ok((client, p1)) => match read_var_u64_sink(input, p1, &mut noop) {
+                Err(e) => err = Some(e),
+                Ok((ranges_u64, p2)) => match checked_usize_limit(ranges_u64, LimitKind::DeleteRanges) {
+                    Err(e) => err = Some(e),
+                    Ok(range_count) => match scan_delete_ranges_coverage(
+                        input,
+                        p2,
+                        client,
+                        range_count,
+                        pending_zeros,
+                        zero_max_hi,
+                        pending_colliding,
+                        coll_max_hi,
+                    ) {
+                        Err(e) => err = Some(e),
+                        Ok(next_cur) => {
+                            cur = next_cur;
+                            c_idx += 1;
+                        }
+                    },
+                },
+            },
+        }
+    }
+    if let Some(e) = err { Err(e) } else { Ok(()) }
+}
+
+#[cold]
+fn verify_delete_set_coverage(
+    input: &[u8],
+    ds_start: usize,
+    pending_zero_strings: &mut [WireId],
+    pending_colliding: &mut [WireId],
+) -> Result<(), CodecError> {
+    if pending_zero_strings.is_empty() && pending_colliding.is_empty() {
+        return Ok(());
+    }
+    let mut zero_max_hi = if pending_zero_strings.is_empty() {
+        Vec::new()
+    } else {
+        sort_wire_ids(pending_zero_strings);
+        alloc_zero_max_hi(pending_zero_strings.len())
+    };
+    let mut coll_max_hi = if pending_colliding.is_empty() {
+        Vec::new()
+    } else {
+        sort_wire_ids(pending_colliding);
+        alloc_zero_max_hi(pending_colliding.len())
+    };
+    scan_delete_set_coverage(
+        input,
+        ds_start,
+        pending_zero_strings,
+        &mut zero_max_hi,
+        pending_colliding,
+        &mut coll_max_hi,
+    )?;
+    if !pending_zero_strings.is_empty() && !all_zero_strings_covered(&zero_max_hi) {
+        return Err(CodecError::ZeroLengthStruct);
+    }
+    if !pending_colliding.is_empty() && !all_zero_strings_covered(&coll_max_hi) {
+        return Err(CodecError::ZeroLengthStruct);
+    }
+    Ok(())
+}
+
+#[cold]
+#[allow(clippy::too_many_arguments)]
+fn verify_skipped_zero_items(
+    input: &[u8],
+    clients_start: usize,
+    clients: usize,
+    ds_start: usize,
+    limits: &DecodeLimitsCore,
+    skipped_ols: &mut [WireId],
+    pending_zero_strings: &mut [WireId],
+) -> Result<(), CodecError> {
+    sort_wire_ids(skipped_ols);
+    let (mut colliding_ids, mut pending_colliding) =
+        collect_colliding_origin_items(input, clients_start, clients, limits, skipped_ols)?;
+    if !colliding_ids.is_empty() {
+        sort_wire_ids(&mut colliding_ids);
+        if has_origin_referencing(input, clients_start, clients, limits, &colliding_ids)? {
+            return Err(CodecError::ZeroLengthStruct);
+        }
+    }
+    verify_delete_set_coverage(input, ds_start, pending_zero_strings, &mut pending_colliding)
+}
+
+#[inline]
+#[allow(clippy::too_many_arguments)]
+fn decode_struct_frame<S: V1Sink>(
+    input: &[u8],
+    pos: usize,
+    client_start_pos: usize,
+    client_start_clock: u64,
+    s_idx: usize,
+    id: WireId,
+    limits: &DecodeLimitsCore,
+    acc: DecodeAcc,
+    state: &mut ClientSeqState,
+    sink: &mut S,
+) -> Result<(u64, usize, DecodeAcc, Option<WireId>, bool), CodecError> {
     let (info, cur) = read_u8_at(input, pos)?;
     let tag = info & 0b1_1111;
     if tag == 0 {
         let (len, p) = read_var_u64_sink(input, cur, sink)?;
         let next_clock = advance_clock_sink(id.clock, len, sink)?;
         sink.on_gc(id, len)?;
-        return Ok((next_clock, p, acc));
+        if state.active {
+            state.just_skipped_ol = None;
+        }
+        return Ok((next_clock, p, acc, None, false));
     }
     if tag == 10 {
         let (len, p) = read_var_u64_sink(input, cur, sink)?;
         let next_clock = advance_clock_sink(id.clock, len, sink)?;
         sink.on_skip(id, len)?;
-        return Ok((next_clock, p, acc));
+        if state.active {
+            state.just_skipped_ol = None;
+        }
+        return Ok((next_clock, p, acc, None, false));
     }
 
     let (hdr, content_start) = decode_item_header(input, cur, info, sink)?;
@@ -1186,6 +2349,28 @@ fn decode_struct_frame<S: V1Sink>(
     let content_bytes = checked_add_limit(acc.content_bytes, delta, LimitKind::ContentBytes)?;
     if content_bytes > limits.max_content_bytes {
         return Err(CodecError::ResourceLimit(LimitKind::ContentBytes));
+    }
+    if len == 0 || state.active {
+        return decode_struct_frame_slow(
+            input,
+            pos,
+            client_start_pos,
+            client_start_clock,
+            s_idx,
+            id,
+            info,
+            tag,
+            hdr,
+            content_start,
+            len,
+            content_end,
+            entries,
+            content_bytes,
+            limits,
+            acc,
+            state,
+            sink,
+        );
     }
     let next_clock = advance_clock_sink(id.clock, len, sink)?;
     sink.on_item(
@@ -1210,6 +2395,8 @@ fn decode_struct_frame<S: V1Sink>(
             entries,
             content_bytes,
         },
+        None,
+        false,
     ))
 }
 
@@ -1222,10 +2409,18 @@ fn decode_client_structs<S: V1Sink>(
     limits: &DecodeLimitsCore,
     start_acc: DecodeAcc,
     sink: &mut S,
-) -> Result<(usize, DecodeAcc), CodecError> {
+) -> Result<(usize, DecodeAcc, Vec<WireId>, Vec<WireId>), CodecError> {
     let mut cur = start_pos;
     let mut clock = start_id.clock;
     let mut acc = start_acc;
+    let mut state = ClientSeqState {
+        active: false,
+        ytext_types: Vec::new(),
+        seq_ranges: Vec::new(),
+        just_skipped_ol: None,
+    };
+    let mut skipped_ols: Vec<WireId> = Vec::new();
+    let mut pending_zero_strings: Vec<WireId> = Vec::new();
     let mut s_idx = 0usize;
     let mut err: Option<CodecError> = None;
     while s_idx < count && err.is_none() {
@@ -1233,9 +2428,27 @@ fn decode_client_structs<S: V1Sink>(
             client: start_id.client,
             clock,
         };
-        match decode_struct_frame(input, cur, id, limits, acc, sink) {
+        match decode_struct_frame(
+            input,
+            cur,
+            start_pos,
+            start_id.clock,
+            s_idx,
+            id,
+            limits,
+            acc,
+            &mut state,
+            sink,
+        ) {
             Err(e) => err = Some(e),
-            Ok((next_clock, next_cur, next_acc)) => {
+            Ok((next_clock, next_cur, next_acc, skipped_ol, needs_delete_check)) => {
+                if let Some(ol) = skipped_ol {
+                    sink.on_skipped_zero_origin(ol);
+                    push_wire_id(&mut skipped_ols, ol);
+                }
+                if needs_delete_check {
+                    push_wire_id(&mut pending_zero_strings, id);
+                }
                 clock = next_clock;
                 cur = next_cur;
                 acc = next_acc;
@@ -1243,7 +2456,11 @@ fn decode_client_structs<S: V1Sink>(
             }
         }
     }
-    if let Some(e) = err { Err(e) } else { Ok((cur, acc)) }
+    if let Some(e) = err {
+        Err(e)
+    } else {
+        Ok((cur, acc, skipped_ols, pending_zero_strings))
+    }
 }
 
 #[inline]
@@ -1253,7 +2470,7 @@ fn decode_one_client_block<S: V1Sink>(
     limits: &DecodeLimitsCore,
     acc: DecodeAcc,
     sink: &mut S,
-) -> Result<(usize, DecodeAcc), CodecError> {
+) -> Result<(usize, DecodeAcc, Vec<WireId>, Vec<WireId>), CodecError> {
     let (count_u64, p1) = read_var_u64_sink(input, cur, sink)?;
     let count = checked_usize_limit(count_u64, LimitKind::Structs)?;
     let next_structs = checked_add_limit(acc.structs, count, LimitKind::Structs)?;
@@ -1289,9 +2506,37 @@ fn decode_one_client_block<S: V1Sink>(
 /// delegated to [`V1Sink::validate_utf8_early`] and sink callbacks when
 /// `false`. Inner JSON syntax parsing for `Embed` (tag 5) and `Format` (tag 6)
 /// values may be performed by `sink.on_embed` / `sink.on_format`.
+///
+/// # Historical zero-length item recovery contract
+///
+/// Valid Yjs / YATA items always have `length >= 1`. Historical Yjs documents
+/// can nevertheless contain a deleted zero-length `ContentString("")` (tag 4)
+/// or re-encoded `ContentDeleted(0)` (tag 1) immediately following a proven
+/// `Y.Text` sequence boundary. When strictly validated (adjacent `origin_left`
+/// at `r.end == id.clock`, `origin_right == None`, no `parent_sub` bit,
+/// `ContentString("")` strictly covered by a raw DeleteSet range
+/// `start < clock < end`, and every same-`origin_left` colliding item across
+/// the frame is single-clock, deleted, and unreferenced), the decoder strips
+/// the zero-length item and notifies [`V1Sink::on_skipped_zero_origin`].
+///
+/// This is an explicit **valid-struct (`gc: false`) recovery transformation**,
+/// not bit-for-bit emulation of Yjs 13.6.33 bugs on `length == 0` structs:
+/// - Yjs 13.6.33 computes `Item.lastId = clock + length - 1` (underflowing to
+///   `clock - 1` when `length == 0`), causing pure Yjs replicas to diverge on
+///   concurrent appends; stripping repairs the snapshot to valid-struct order.
+/// - Under `gc: true`, Yjs 13.6.33's `ContentType.gc -> replaceStruct` calls
+///   `findIndexSS(clock)`, skipping the zero-length item and overwriting an
+///   unrelated live struct at the same clock (dropping unrelated map keys on
+///   re-encode and shrinking the state vector). Stripping preserves the valid
+///   `gc: false` state and state vector instead of replicating that data loss.
+/// - Collision and reference checks apply within each self-contained V1 update
+///   frame and across batches in `merge_updates_v1`. Once a historical snapshot
+///   is healed into a live `Doc`, subsequent incremental updates operate on the
+///   healed valid-struct document.
 #[inline]
 pub fn decode_update_v1<S: V1Sink>(input: &[u8], sink: &mut S, limits: &DecodeLimitsCore) -> Result<(), CodecError> {
-    let (clients_u64, mut cur) = read_var_u64_sink(input, 0, sink)?;
+    let (clients_u64, clients_start) = read_var_u64_sink(input, 0, sink)?;
+    let mut cur = clients_start;
     let clients = checked_usize_limit(clients_u64, LimitKind::Clients)?;
     if clients > limits.max_clients {
         return Err(CodecError::ResourceLimit(LimitKind::Clients));
@@ -1303,13 +2548,21 @@ pub fn decode_update_v1<S: V1Sink>(input: &[u8], sink: &mut S, limits: &DecodeLi
         entries: 0,
         content_bytes: 0,
     };
+    let mut skipped_ols: Vec<WireId> = Vec::new();
+    let mut pending_zero_strings: Vec<WireId> = Vec::new();
 
     let mut c_idx = 0usize;
     let mut err: Option<CodecError> = None;
     while c_idx < clients && err.is_none() {
         match decode_one_client_block(input, cur, limits, acc, sink) {
             Err(e) => err = Some(e),
-            Ok((next_cur, next_acc)) => {
+            Ok((next_cur, next_acc, client_ols, client_zeros)) => {
+                if !client_ols.is_empty() {
+                    extend_wire_ids(&mut skipped_ols, &client_ols);
+                }
+                if !client_zeros.is_empty() {
+                    extend_wire_ids(&mut pending_zero_strings, &client_zeros);
+                }
                 cur = next_cur;
                 acc = next_acc;
                 c_idx += 1;
@@ -1320,9 +2573,24 @@ pub fn decode_update_v1<S: V1Sink>(input: &[u8], sink: &mut S, limits: &DecodeLi
         return Err(e);
     }
 
-    let end_pos = decode_delete_set_v1(input, cur, limits, acc.entries, sink)?;
+    let ds_start = cur;
+    let end_pos = decode_delete_set_v1(input, ds_start, limits, acc.entries, sink)?;
     if end_pos != input.len() {
         return Err(fail_with(sink, CodecError::TrailingBytes, input.len() - end_pos, 0));
+    }
+    if !skipped_ols.is_empty() {
+        match verify_skipped_zero_items(
+            input,
+            clients_start,
+            clients,
+            ds_start,
+            limits,
+            &mut skipped_ols,
+            &mut pending_zero_strings,
+        ) {
+            Ok(()) => {}
+            Err(e) => return Err(fail_with(sink, e, 0, 0)),
+        }
     }
     Ok(())
 }
@@ -1390,6 +2658,9 @@ impl V1Sink for SummarySink {
 
     #[inline(always)]
     fn on_decode_error(&mut self, _err: CodecError, _a: usize, _b: u64) {}
+
+    #[inline(always)]
+    fn on_skipped_zero_origin(&mut self, _origin_left: WireId) {}
 
     #[inline]
     fn record_client(&mut self, client: u64) -> Result<bool, CodecError> {
@@ -1635,5 +2906,286 @@ mod tests {
             let _ = decode_update_v1_frame(&buf, &DecodeLimitsCore::default_update());
             let _ = decode_state_vector_v1(&buf);
         }
+    }
+
+    #[test]
+    fn zero_length_items_are_skipped_while_unsafe_forms_fail() {
+        // client=1, start=0, 10 structs -> 8 emitted (skips clock 5 "" and
+        // clock 9 ContentDeleted(0)), with overlapping raw wire DS
+        // [2,5)+[3,7) strictly covering clock 5 (`3 < 5 < 7`) and deleting the
+        // colliding `\n` at clock 6 (`3 <= 6 < 7`).
+        let update = [
+            1u8, 10, 1, 0, // 1 client, 10 structs, client=1, start_clock=0
+            0x27, 1, 1, b'b', 1, b't', 2, // 0..1: b["t"] = ContentType(Y.Text)
+            0x04, 0, 1, 0, 2, b'a', b'b', // 1..3: Y.Text "ab"
+            0x24, 1, 1, b'm', 1, b'k', 1, b'v', // 3..4: map "m"["k"] = "v"
+            0x84, 1, 2, 1, b'c', // 4..5: Y.Text "c" with ol=(1,2)
+            0x84, 1, 4, 0, // 5..5: Y.Text ContentString("") with ol=(1,4)
+            0x24, 1, 1, b'm', 1, b'j', 1, b'w', // 5..6: map "m"["j"] = "w"
+            0x84, 1, 4, 1, b'\n', // 6..7: colliding "\n" deleted by [3,7)
+            0x27, 1, 1, b'b', 1, b'u', 2, // 7..8: b["u"] = ContentType(Y.Text)
+            0x04, 0, 1, 7, 1, b'd', // 8..9: Y.Text "d"
+            0x81, 1, 8, 0, // 9..9: Y.Text ContentDeleted(0) with ol=(1,8)
+            1, 1, 2, 2, 3, 3, 4, // DS: client 1, overlapping [2,5) + [3,7)
+        ];
+        let summary = decode_update_v1_frame(&update, &DecodeLimitsCore::default_update()).unwrap();
+        assert_eq!(summary.clients, 1);
+        assert_eq!(summary.structs, 8);
+
+        // Limits still count skipped zero-length structs and their content
+        // bytes.
+        let mut tight_structs = DecodeLimitsCore::default_update();
+        tight_structs.max_structs = 9;
+        assert_eq!(
+            decode_update_v1_frame(&update, &tight_structs),
+            Err(CodecError::ResourceLimit(LimitKind::Structs))
+        );
+
+        let mut tight_bytes = DecodeLimitsCore::default_update();
+        tight_bytes.max_content_bytes = 15;
+        assert_eq!(
+            decode_update_v1_frame(&update, &tight_bytes),
+            Err(CodecError::ResourceLimit(LimitKind::ContentBytes))
+        );
+
+        // Invalid UTF-8 in the header of a zero-length item is still rejected.
+        let bad_parent = [1u8, 1, 1, 0, 0x04, 1, 1, 0xff, 0, 0];
+        assert_eq!(
+            decode_update_v1_frame(&bad_parent, &DecodeLimitsCore::default_update()),
+            Err(CodecError::InvalidUtf8)
+        );
+
+        // All unproven, non-YText, live (not strictly covered by a single raw
+        // wire delete range), colliding-origin, or side-effecting zero-length
+        // forms remain rejected.
+        let rejected_cases: &[&[u8]] = &[
+            // same-client later live item sharing skipped Z origin_left
+            &[
+                1, 5, 10, 0, 0x27, 1, 1, b'b', 1, b't', 2, 0x04, 0, 10, 0, 4, 0xf0, 0x9f, 0x98, 0x80, 0x81, 10, 2, 0,
+                0x24, 1, 1, b'm', 1, b'k', 1, b'v', 0x84, 10, 2, 1, b'x', 0,
+            ],
+            // cross-client live item sharing skipped Z origin_left
+            &[
+                2, 4, 10, 0, 0x27, 1, 1, b'b', 1, b't', 2, 0x04, 0, 10, 0, 4, 0xf0, 0x9f, 0x98, 0x80, 0x81, 10, 2, 0,
+                0x24, 1, 1, b'm', 1, b'k', 1, b'v', 1, 5, 0, 0x84, 10, 2, 1, b'x', 0,
+            ],
+            // 2-hop live descendant of deleted colliding item
+            &[
+                1, 6, 10, 0, 0x27, 1, 1, b'b', 1, b't', 2, 0x04, 0, 10, 0, 4, 0xf0, 0x9f, 0x98, 0x80, 0x81, 10, 2, 0,
+                0x24, 1, 1, b'm', 1, b'k', 1, b'v', 0x81, 10, 2, 1, 0x84, 10, 4, 1, b'w', 0,
+            ],
+            // non-adjacent Z where origin_left.clock != Z.clock - 1
+            &[
+                1, 4, 10, 0, 0x27, 1, 1, b'b', 1, b't', 2, 0x04, 0, 10, 0, 1, b'a', 0x24, 1, 1, b'm', 1, b'k', 1, b'v',
+                0x81, 10, 1, 0, 0,
+            ],
+            // adjacent raw wire DS [2,3) + [3,4) leaves clock 3 live in Yjs
+            &[
+                0x01, 0x06, 0x01, 0x00, 0x06, 0x01, 0x01, 0x74, 0x04, 0x62, 0x6f, 0x6c, 0x64, 0x04, 0x6e, 0x75, 0x6c,
+                0x6c, 0x46, 0x01, 0x00, 0x04, 0x62, 0x6f, 0x6c, 0x64, 0x04, 0x74, 0x72, 0x75, 0x65, 0x28, 0x01, 0x01,
+                0x6d, 0x01, 0x6b, 0x01, 0x77, 0x01, 0x76, 0x84, 0x01, 0x01, 0x00, 0x84, 0x01, 0x00, 0x01, 0x77, 0x84,
+                0x01, 0x03, 0x01, 0x61, 0x01, 0x01, 0x02, 0x02, 0x01, 0x03, 0x01,
+            ],
+            // nested Y.Text with adjacent raw wire DS [4,5) + [5,6)
+            &[
+                1, 6, 1, 0, 0x27, 1, 1, b'b', 1, b't', 2, 0x04, 0, 1, 0, 2, b'a', b'b', 0x24, 1, 1, b'm', 1, b'k', 1,
+                b'v', 0x84, 1, 2, 1, b'c', 0x84, 1, 4, 0, 0x24, 1, 1, b'm', 1, b'j', 1, b'w', 1, 1, 2, 4, 1, 5, 1,
+            ],
+            // deleted ContentDeleted(0) right-anchor in Y.Array
+            &[
+                0x01, 0x04, 0x0a, 0x00, 0x08, 0x01, 0x01, 0x74, 0x01, 0x77, 0x01, 0x61, 0x48, 0x0a, 0x00, 0x01, 0x77,
+                0x01, 0x62, 0x81, 0x0a, 0x01, 0x00, 0xc8, 0x0a, 0x01, 0x0a, 0x00, 0x01, 0x77, 0x01, 0x64, 0x00,
+            ],
+            // nested ContentType(Y.Array, kind=0) with ContentDeleted(0)
+            &[
+                1, 3, 1, 0, 0x27, 1, 1, b'b', 1, b'a', 0, 0x08, 0, 1, 0, 1, 0x77, 1, b'x', 0x81, 1, 1, 0, 0,
+            ],
+            // untyped root "t" with ContentString + ContentDeleted(0)
+            &[1, 2, 1, 0, 0x04, 1, 1, b't', 1, b'a', 0x81, 1, 0, 0, 0],
+            // nested Y.Text with same-clock colliding successor
+            &[
+                1, 4, 1, 0, 0x27, 1, 1, b'b', 1, b't', 2, 0x04, 0, 1, 0, 1, b'a', 0x81, 1, 1, 0, 0x84, 1, 1, 1, b'b', 0,
+            ],
+            // nested Y.Text with two consecutive zero-length items at clock 5
+            &[
+                1, 7, 1, 0, 0x27, 1, 1, b'b', 1, b't', 2, 0x04, 0, 1, 0, 2, b'a', b'b', 0x24, 1, 1, b'm', 1, b'k', 1,
+                b'v', 0x84, 1, 2, 1, b'c', 0x81, 1, 4, 0, 0x81, 1, 2, 0, 0x84, 1, 4, 1, b'd', 0,
+            ],
+            // live ContentString("") ASCII next-insert anchor (empty DS)
+            &[
+                0x01, 0x04, 0x0a, 0x00, 0x04, 0x01, 0x01, 0x74, 0x01, 0x61, 0x44, 0x0a, 0x00, 0x01, 0x62, 0x84, 0x0a,
+                0x01, 0x00, 0xc4, 0x0a, 0x01, 0x0a, 0x00, 0x01, 0x64, 0x00,
+            ],
+            // live ContentString("") with DS [2,3) starting AT clock 2
+            &[
+                0x01, 0x04, 0x0a, 0x00, 0x04, 0x01, 0x01, 0x74, 0x01, 0x61, 0x44, 0x0a, 0x00, 0x01, 0x62, 0x84, 0x0a,
+                0x01, 0x00, 0xc4, 0x0a, 0x01, 0x0a, 0x00, 0x01, 0x64, 0x01, 0x0a, 0x01, 0x02, 0x01,
+            ],
+            // live ContentString("") with DS [1,2) ending AT clock 2
+            &[
+                0x01, 0x04, 0x0a, 0x00, 0x04, 0x01, 0x01, 0x74, 0x01, 0x61, 0x44, 0x0a, 0x00, 0x01, 0x62, 0x84, 0x0a,
+                0x01, 0x00, 0xc4, 0x0a, 0x01, 0x0a, 0x00, 0x01, 0x64, 0x01, 0x0a, 0x01, 0x01, 0x01,
+            ],
+            // live ContentString("") between bold=true and bold=null
+            &[
+                0x01, 0x04, 0x01, 0x00, 0x06, 0x01, 0x01, 0x74, 0x04, 0x62, 0x6f, 0x6c, 0x64, 0x04, 0x6e, 0x75, 0x6c,
+                0x6c, 0x46, 0x01, 0x00, 0x04, 0x62, 0x6f, 0x6c, 0x64, 0x04, 0x74, 0x72, 0x75, 0x65, 0xc4, 0x01, 0x01,
+                0x01, 0x00, 0x00, 0x84, 0x01, 0x00, 0x01, 0x61, 0x00,
+            ],
+            // ContentDeleted(0) with origin_right present in nested Y.Text
+            &[
+                1, 4, 1, 0, 0x27, 1, 1, b'b', 1, b't', 2, 0x04, 0, 1, 0, 1, b'a', 0x41, 1, 1, 0, 0x24, 1, 1, b'm', 1,
+                b'k', 1, b'v', 0,
+            ],
+            // Root ContentString("")
+            &[1, 2, 1, 0, 0x04, 1, 1, b't', 0, 0x04, 1, 1, b't', 1, b'a', 0],
+            // Root ContentDeleted(0)
+            &[1, 2, 1, 0, 0x01, 1, 1, b't', 0, 0x04, 1, 1, b't', 1, b'a', 0],
+            // explicit parent_sub ContentString("")
+            &[1, 2, 1, 0, 0x24, 0, 1, 0, 1, b'k', 0, 0x04, 1, 1, b't', 1, b'a', 0],
+            // explicit parent_sub ContentDeleted(0)
+            &[1, 2, 1, 0, 0x21, 0, 1, 0, 1, b'k', 0, 0x04, 1, 1, b't', 1, b'a', 0],
+            // missing nested Item((3,0)) parent
+            &[1, 2, 1, 0, 0x04, 0, 3, 0, 0, 0x04, 1, 1, b't', 1, b'a', 0],
+            // missing/cross-client origin_left=(3,0)
+            &[1, 2, 1, 0, 0x84, 3, 0, 0, 0x04, 1, 1, b't', 1, b'a', 0],
+            // cross-client origin_right=(3,0)
+            &[
+                1, 3, 1, 0, 0x04, 1, 1, b't', 1, b'a', 0xc4, 1, 0, 3, 0, 0, 0x84, 1, 0, 1, b'b', 0,
+            ],
+            // same-client inherited map key
+            &[1, 2, 1, 0, 0x24, 1, 1, b'm', 1, b'k', 1, b'v', 0x81, 1, 0, 0, 0],
+            // ITEM_HAS_PARENT_SUB set with origin_left in nested Y.Text
+            &[
+                1, 3, 1, 0, 0x27, 1, 1, b'b', 1, b't', 2, 0x04, 0, 1, 0, 1, b'a', 0xa1, 1, 1, 0, 0,
+            ],
+            // origin_left points to GC
+            &[1, 2, 1, 0, 0x00, 1, 0x81, 1, 0, 0, 0],
+            // Inherit ContentAny([]) in nested Y.Text
+            &[
+                1, 3, 1, 0, 0x27, 1, 1, b'b', 1, b't', 2, 0x04, 0, 1, 0, 1, b'a', 0x88, 1, 1, 0, 0,
+            ],
+            // Inherit ContentJSON([]) in nested Y.Text
+            &[
+                1, 3, 1, 0, 0x27, 1, 1, b'b', 1, b't', 2, 0x04, 0, 1, 0, 1, b'a', 0x82, 1, 1, 0, 0,
+            ],
+            // zero-len-only client (start=0)
+            &[1, 1, 1, 0, 0x81, 1, 0, 0, 0],
+            // zero-len-only client (start=7)
+            &[1, 1, 1, 7, 0x81, 1, 6, 0, 0],
+            // origin_left splits surrogate pair (😀 at 1..3, ol=(1,1))
+            &[
+                1, 3, 1, 0, 0x27, 1, 1, b'b', 1, b't', 2, 0x04, 0, 1, 0, 4, 0xf0, 0x9f, 0x98, 0x80, 0x81, 1, 1, 0, 0,
+            ],
+            // origin_right splits surrogate pair (😀 at 1..3, or=(1,2))
+            &[
+                1, 3, 1, 0, 0x27, 1, 1, b'b', 1, b't', 2, 0x04, 0, 1, 0, 4, 0xf0, 0x9f, 0x98, 0x80, 0x41, 1, 2, 0, 0,
+            ],
+            // GC(0)
+            &[1, 1, 1, 0, 0x00, 0, 0],
+            // Skip(0)
+            &[1, 1, 1, 0, 0x0a, 0, 0],
+        ];
+        for case in rejected_cases {
+            assert_eq!(
+                decode_update_v1_frame(case, &DecodeLimitsCore::default_update()),
+                Err(CodecError::ZeroLengthStruct)
+            );
+        }
+    }
+
+    #[test]
+    fn zero_length_delete_set_check_is_linearithmic_on_interleaved_ds() {
+        fn push_var_u64(buf: &mut Vec<u8>, mut v: u64) {
+            while v >= 0x80 {
+                buf.push(((v as u8) & 0x7f) | 0x80);
+                v >>= 7;
+            }
+            buf.push(v as u8);
+        }
+
+        // 64 descending struct clients each with 2 deleted ContentString("")
+        // items (128 pending zero-length items exercising multi-element
+        // heapsort + binary search + overlapping length>=2 range union), plus
+        // 500 extra descending DS clients and 2,000 interleaved length>=2 DS
+        // ranges.
+        let struct_clients = if cfg!(miri) { 8u64 } else { 64u64 };
+        let mut buf = Vec::new();
+        push_var_u64(&mut buf, struct_clients);
+        for c in (1..=struct_clients).rev() {
+            // 8 structs -> 6 emitted (clocks 2 and 6 skipped):
+            // 0..1 Y.Text, 1..2 "a", 2..2 "", 2..3 m["k"]="v",
+            // 3..4 Y.Text, 4..6 "bc", 6..6 "", 6..7 m["j"]="w"
+            push_var_u64(&mut buf, 8);
+            push_var_u64(&mut buf, c);
+            push_var_u64(&mut buf, 0);
+            buf.extend_from_slice(&[0x27, 1, 1, b'b', 1, b't', 2]);
+            buf.push(0x04);
+            buf.push(0);
+            push_var_u64(&mut buf, c);
+            buf.push(0);
+            buf.extend_from_slice(&[1, b'a']);
+            buf.push(0x84);
+            push_var_u64(&mut buf, c);
+            buf.push(1);
+            buf.push(0);
+            buf.extend_from_slice(&[0x24, 1, 1, b'm', 1, b'k', 1, b'v']);
+            buf.extend_from_slice(&[0x27, 1, 1, b'b', 1, b'u', 2]);
+            buf.push(0x04);
+            buf.push(0);
+            push_var_u64(&mut buf, c);
+            buf.push(3);
+            buf.extend_from_slice(&[2, b'b', b'c']);
+            buf.push(0x84);
+            push_var_u64(&mut buf, c);
+            buf.push(5);
+            buf.push(0);
+            buf.extend_from_slice(&[0x24, 1, 1, b'm', 1, b'j', 1, b'w']);
+        }
+
+        let extra_clients = if cfg!(miri) { 16u64 } else { 500u64 };
+        let interleaved_ranges = if cfg!(miri) { 64u64 } else { 2_000u64 };
+        push_var_u64(&mut buf, extra_clients + struct_clients);
+        for c in ((struct_clients + 1)..=(struct_clients + extra_clients)).rev() {
+            push_var_u64(&mut buf, c);
+            push_var_u64(&mut buf, 1);
+            push_var_u64(&mut buf, 0);
+            push_var_u64(&mut buf, 2);
+        }
+        // Client 1 gets 2,000 interleaved length-2 ranges + overlapping [1,4)
+        // and [3,7) covering clocks 2 and 6.
+        push_var_u64(&mut buf, 1);
+        push_var_u64(&mut buf, interleaved_ranges + 2);
+        for i in 0..interleaved_ranges {
+            let clk = if i % 2 == 0 {
+                20 + i * 3
+            } else {
+                20 + (interleaved_ranges - i) * 3
+            };
+            push_var_u64(&mut buf, clk);
+            push_var_u64(&mut buf, 2);
+        }
+        push_var_u64(&mut buf, 1);
+        push_var_u64(&mut buf, 3); // [1, 4) covers clock 2
+        push_var_u64(&mut buf, 3);
+        push_var_u64(&mut buf, 4); // [3, 7) covers clock 6
+        // Clients 2..=struct_clients each get overlapping [1,4) + [5,7).
+        for c in 2..=struct_clients {
+            push_var_u64(&mut buf, c);
+            push_var_u64(&mut buf, 2);
+            push_var_u64(&mut buf, 1);
+            push_var_u64(&mut buf, 3);
+            push_var_u64(&mut buf, 5);
+            push_var_u64(&mut buf, 2);
+        }
+
+        let summary = decode_update_v1_frame(&buf, &DecodeLimitsCore::default_update()).unwrap();
+        assert_eq!(summary.clients, struct_clients as usize);
+        assert_eq!(summary.structs, (struct_clients * 6) as usize);
+        assert_eq!(summary.delete_clients, (extra_clients + struct_clients) as usize);
+        assert_eq!(
+            summary.delete_ranges,
+            (extra_clients + interleaved_ranges + struct_clients * 2) as usize
+        );
     }
 }

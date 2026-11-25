@@ -13,7 +13,7 @@ license = "MIT"
 name = "y-octo-core"
 readme = "README.md"
 repository = "https://github.com/toeverything/y-octo"
-version = "0.1.0"
+version = "0.1.1"
 
 [dependencies]
 

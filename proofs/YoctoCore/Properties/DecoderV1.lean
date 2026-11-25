@@ -118,6 +118,7 @@ structure V1SinkSpanSafe {S : Type _}
   on_skip : ∀ s id len, Inv s → V.on_skip s id len ⦃ (_, s') => Inv s' ⦄
   on_item : ∀ s id len m, Inv s → ItemMetaOk input m →
     V.on_item s id len m ⦃ (_, s') => Inv s' ⦄
+  on_skipped_zero_origin : ∀ s ol, Inv s → V.on_skipped_zero_origin s ol ⦃ s' => Inv s' ⦄
   on_deleted : ∀ s len, Inv s → V.on_deleted s len ⦃ (_, s') => Inv s' ⦄
   on_json_start : ∀ s count, Inv s → V.on_json_start s count ⦃ (_, s') => Inv s' ⦄
   on_json_value : ∀ s sp, Inv s → SpanOk input sp →
@@ -165,6 +166,7 @@ structure V1SinkTotal {S : Type _} (V : decoder_v1.V1Sink S) (Inv : S → Prop) 
   on_gc : ∀ s id len, Inv s → V.on_gc s id len ⦃ (_, s') => Inv s' ⦄
   on_skip : ∀ s id len, Inv s → V.on_skip s id len ⦃ (_, s') => Inv s' ⦄
   on_item : ∀ s id len m, Inv s → V.on_item s id len m ⦃ (_, s') => Inv s' ⦄
+  on_skipped_zero_origin : ∀ s ol, Inv s → V.on_skipped_zero_origin s ol ⦃ s' => Inv s' ⦄
   on_deleted : ∀ s len, Inv s → V.on_deleted s len ⦃ (_, s') => Inv s' ⦄
   on_json_start : ∀ s count, Inv s → V.on_json_start s count ⦃ (_, s') => Inv s' ⦄
   on_json_value : ∀ s sp, Inv s → V.on_json_value s sp ⦃ (_, s') => Inv s' ⦄
@@ -208,6 +210,7 @@ theorem V1SinkTotal.toSpanSafe {S : Type _} {V : decoder_v1.V1Sink S} {Inv : S �
     on_gc := h.on_gc
     on_skip := h.on_skip
     on_item := fun s id len m hs _ => h.on_item s id len m hs
+    on_skipped_zero_origin := h.on_skipped_zero_origin
     on_deleted := h.on_deleted
     on_json_start := h.on_json_start
     on_json_value := fun s sp hs _ => h.on_json_value s sp hs
@@ -611,7 +614,11 @@ theorem read_wire_id_at_spec
 theorem advance_clock_sink_spec {S : Type _} (V : decoder_v1.V1Sink S) (Inv : S → Prop)
     (input : Slice Std.U8) (hV : V1SinkSpanSafe input V Inv)
     (clock len : Std.U64) (sink : S) (hSink : Inv sink) :
-    decoder_v1.advance_clock_sink V clock len sink ⦃ (_, sink') => Inv sink' ⦄ := by
+    decoder_v1.advance_clock_sink V clock len sink ⦃ (r, sink') =>
+      Inv sink' ∧
+      match r with
+      | .Ok nc => 0 < len.val ∧ nc.val = clock.val + len.val
+      | .Err _ => True ⦄ := by
   unfold decoder_v1.advance_clock_sink
   split_ifs with hz
   · simp [spec_ok, hSink]
@@ -627,8 +634,9 @@ theorem advance_clock_sink_spec {S : Type _} (V : decoder_v1.V1Sink S) (Inv : S 
     · step with fail_with_spec V Inv input hV sink CodecError.ClockOverflow 0#usize clock hSink
         as ⟨ce, sink1, hInv1⟩
       try simp [spec_ok, hInv1]
-    · step*
-      try simp [spec_ok, hSink]
+    · step as ⟨nc, hnc⟩
+      try simp only [spec_ok]
+      exact ⟨hSink, by scalar_tac, by omega⟩
 
 @[local step]
 theorem read_sv_entry_total (input : Slice Std.U8) (cur : Std.Usize) :
@@ -1066,11 +1074,85 @@ theorem read_delete_set_v1_total
     | Err e =>
       simp only [core_ops_try_branch_err, bind_ok, core_ops_try_from_residual_err, spec_ok]
 
+@[local step]
+theorem wire_id_lt_total (a b : decoder_v1.WireId) :
+    decoder_v1.wire_id_lt a b ⦃ _ => True ⦄ := by
+  unfold decoder_v1.wire_id_lt
+  repeat (first | simp [spec_ok] | split_ifs)
+
+@[local step]
+theorem find_wire_id_lower_bound_total
+    (items : Slice decoder_v1.WireId) (target : decoder_v1.WireId) :
+    decoder_v1.find_wire_id_lower_bound items target ⦃ _ => True ⦄ := by
+  unfold decoder_v1.find_wire_id_lower_bound decoder_v1.find_wire_id_lower_bound_loop
+  refine loop.spec_decr_nat
+    (fun (low, high) => high.val - low.val)
+    (fun (low, high) => low.val ≤ high.val ∧ high.val ≤ items.length)
+    (fun _ => True)
+    _ (0#usize, Slice.len items) ?_ ⟨by scalar_tac, by scalar_tac⟩
+  intro ⟨low, high⟩ ⟨hLoHi, hHiLen⟩
+  unfold decoder_v1.find_wire_id_lower_bound_loop.body
+  dsimp only
+  by_cases hlt : low < high
+  · rw [if_pos hlt]
+    step as ⟨d, hd⟩
+    step as ⟨half, hhalf⟩
+    step as ⟨mid, hmid⟩
+    have hMidLt : mid.val < items.length := by scalar_tac
+    step as ⟨wi, _⟩
+    step with wire_id_lt_total wi target as ⟨b⟩
+    by_cases hb : b = true
+    · simp only [hb, ↓reduceIte]
+      step as ⟨low1, hlow1⟩
+      try simp only [spec_ok]
+      exact ⟨by scalar_tac, hHiLen, by scalar_tac⟩
+    · simp only [hb, Bool.false_eq_true, ↓reduceIte]
+      try simp only [spec_ok]
+      exact ⟨by scalar_tac, by scalar_tac, by scalar_tac⟩
+  · rw [if_neg hlt]
+    simp [spec_ok]
+
+@[local step]
+theorem mark_zero_strings_covered_total
+    (pending : Slice decoder_v1.WireId) (max_hi : Slice Std.Usize)
+    (client start «end» : Std.U64) :
+    decoder_v1.mark_zero_strings_covered pending max_hi client start «end» ⦃ _ => True ⦄ := by
+  unfold decoder_v1.mark_zero_strings_covered
+  dsimp only
+  by_cases hle : «end» ≤ start
+  · rw [if_pos hle]
+    simp [spec_ok]
+  · rw [if_neg hle]
+    step as ⟨i, hi⟩
+    by_cases hlt2 : i < 2#u64
+    · rw [if_pos hlt2]
+      simp [spec_ok]
+    · rw [if_neg hlt2]
+      have hStartMax : start.val + 1 ≤ Std.U64.max := by scalar_tac
+      step as ⟨i1, hi1⟩
+      step with find_wire_id_lower_bound_total pending { client, clock := i1 } as ⟨lo⟩
+      step with find_wire_id_lower_bound_total pending { client, clock := «end» } as ⟨hiBound⟩
+      by_cases hlohi : lo < hiBound
+      · rw [if_pos hlohi]
+        by_cases hloLen : lo < Slice.len max_hi
+        · rw [if_pos hloLen]
+          have hLoLt : lo.val < max_hi.length := by scalar_tac
+          step as ⟨i3, _⟩
+          by_cases hgt : hiBound > i3
+          · rw [if_pos hgt]
+            step*
+          · rw [if_neg hgt]
+            simp [spec_ok]
+        · rw [if_neg hloLen]
+          simp [spec_ok]
+      · rw [if_neg hlohi]
+        simp [spec_ok]
+
 theorem decode_delete_ranges_for_client_spec
     {S : Type _} (V : decoder_v1.V1Sink S) (Inv : S → Prop)
     (input : Slice Std.U8) (hV : V1SinkSpanSafe input V Inv)
-    (start_pos : Std.Usize) (client : Std.U64)
-    (range_count : Std.Usize) (sink : S) (hSink : Inv sink)
+    (start_pos : Std.Usize) (client : Std.U64) (range_count : Std.Usize)
+    (sink : S) (hSink : Inv sink)
     (hStart : start_pos.val ≤ input.length) :
     decoder_v1.decode_delete_ranges_for_client V input start_pos client range_count sink
       ⦃ (r, sink') => Inv sink' ∧ match r with | .Ok nxt => nxt.val ≤ input.length | .Err _ => True ⦄ := by
@@ -1174,7 +1256,8 @@ theorem decode_delete_set_v1_spec
     {S : Type _} (V : decoder_v1.V1Sink S) (Inv : S → Prop)
     (input : Slice Std.U8) (hV : V1SinkSpanSafe input V Inv)
     (pos : Std.Usize) (limits : decoder_v1.DecodeLimitsCore)
-    (entries_acc : Std.Usize) (sink : S) (hSink : Inv sink) :
+    (entries_acc : Std.Usize)
+    (sink : S) (hSink : Inv sink) :
     decoder_v1.decode_delete_set_v1 V input pos limits entries_acc sink
       ⦃ (r, sink') => Inv sink' ∧ match r with | .Ok nxt => nxt.val ≤ input.length | .Err _ => True ⦄ := by
   unfold decoder_v1.decode_delete_set_v1
@@ -1205,7 +1288,8 @@ theorem decode_delete_set_v1_spec
             have hLoop :
                 decoder_v1.decode_delete_set_v1_loop V input limits.max_structs limits.max_clients
                   limits.max_collection_entries limits.max_any_depth limits.max_content_bytes
-                  sink0 cur val1 entries_acc 0#usize none ⦃ (sink1, cur1, _) => Inv sink1 ∧ cur1.val ≤ input.length ⦄ := by
+                  sink0 cur val1 entries_acc 0#usize none
+                  ⦃ (sink1, cur1, _) => Inv sink1 ∧ cur1.val ≤ input.length ⦄ := by
               unfold decoder_v1.decode_delete_set_v1_loop
               let inv : S × Std.Usize × Std.Usize × Std.Usize × Option CodecError → Prop :=
                 fun (sink1, cur1, _, cIdx, _) => Inv sink1 ∧ cIdx.val ≤ val1.val ∧ cur1.val ≤ input.length
@@ -1234,8 +1318,8 @@ theorem decode_delete_set_v1_spec
                     step with hV.begin_delete_client sink1' client rc hInv1' as ⟨r4, sink2, hInv2⟩
                     cases r4 with
                     | Ok _ =>
-                      step with decode_delete_ranges_for_client_spec V Inv input hV next_cur client rc sink2 hInv2 hr3.2.2
-                        as ⟨r5, sink3, hInv3, hNxt5⟩
+                      step with decode_delete_ranges_for_client_spec V Inv input hV next_cur client rc
+                        sink2 hInv2 hr3.2.2 as ⟨r5, sink3, hInv3, hNxt5⟩
                       cases r5 with
                       | Ok next_cur2 =>
                         step as ⟨cIdx1, hcIdx1⟩
@@ -1273,7 +1357,8 @@ theorem decode_delete_set_v1_total
     {S : Type _} (V : decoder_v1.V1Sink S) (Inv : S → Prop)
     (input : Slice Std.U8) (hV : V1SinkTotal V Inv)
     (pos : Std.Usize) (limits : decoder_v1.DecodeLimitsCore)
-    (entries_acc : Std.Usize) (sink : S) (hSink : Inv sink) :
+    (entries_acc : Std.Usize)
+    (sink : S) (hSink : Inv sink) :
     decoder_v1.decode_delete_set_v1 V input pos limits entries_acc sink
       ⦃ (_, sink') => Inv sink' ⦄ := by
   step with decode_delete_set_v1_spec V Inv input (hV.toSpanSafe input) pos limits entries_acc sink hSink
@@ -2381,68 +2466,1552 @@ theorem decode_item_content_spec
   all_goals try (simp only [SpanOk] at *; exact ⟨by assumption, by omega, by omega⟩)
   all_goals try exact ⟨by assumption, trivial⟩
 
+@[local step]
+theorem seq_ranges_find_total
+    (ranges : Slice order_range.ClockRange) (clock : Std.U64) :
+    decoder_v1.seq_ranges_find ranges clock ⦃ _ => True ⦄ := by
+  unfold decoder_v1.seq_ranges_find
+  dsimp only
+  split_ifs with h0
+  · simp [spec_ok]
+  · step as ⟨i, hi⟩
+    have hiLt : i.val < ranges.length := by scalar_tac
+    step as ⟨last, hlast⟩
+    split_ifs with hge hltLast
+    · simp [spec_ok]
+    · simp [spec_ok]
+    · unfold decoder_v1.seq_ranges_find_loop
+      refine loop.spec_decr_nat
+        (fun (low, high) => high.val - low.val)
+        (fun (low, high) => low.val ≤ high.val ∧ high.val ≤ ranges.length)
+        (fun _ => True)
+        _ (0#usize, i) ?_ ⟨by scalar_tac, by scalar_tac⟩
+      intro ⟨low, high⟩ ⟨hLoHi, hHiLen⟩
+      unfold decoder_v1.seq_ranges_find_loop.body
+      dsimp only
+      split_ifs with hlt
+      · step as ⟨d, hd⟩
+        step as ⟨half, hhalf⟩
+        step as ⟨mid, hmid⟩
+        have hMidLt : mid.val < ranges.length := by scalar_tac
+        step as ⟨r, hr⟩
+        split_ifs with hclt hcge
+        · simp only [spec_ok]
+          exact ⟨by scalar_tac, by scalar_tac, by scalar_tac⟩
+        · step as ⟨low1, hlow1⟩
+          try simp only [spec_ok]
+          exact ⟨by scalar_tac, hHiLen, by scalar_tac⟩
+        · simp [spec_ok]
+      · simp [spec_ok]
+
+@[local step]
+theorem seq_ranges_push_total
+    (ranges : alloc.vec.Vec order_range.ClockRange) (start «end» : Std.U64) :
+    decoder_v1.seq_ranges_push ranges start «end» ⦃ _ => True ⦄ := by
+  unfold decoder_v1.seq_ranges_push
+  dsimp only
+  have hUsizeMax : core.num.Usize.MAX.val = Std.Usize.max := by
+    simp [core.num.Usize.MAX]
+  by_cases hpos : alloc.vec.Vec.len ranges > 0#usize
+  · rw [if_pos hpos]
+    step as ⟨i, hi⟩
+    have hiLt : i.val < ranges.length := by
+      simp only [alloc.vec.Vec.len] at hpos
+      scalar_tac
+    step as ⟨last, hlast⟩
+    by_cases heq : last.end = start
+    · rw [if_pos heq]
+      step*
+    · rw [if_neg heq]
+      by_cases hmax : alloc.vec.Vec.len ranges < core.num.Usize.MAX
+      · rw [if_pos hmax]
+        have hCap : ranges.length < Std.Usize.max := by
+          simp only [alloc.vec.Vec.len] at hmax
+          scalar_tac
+        step*
+      · rw [if_neg hmax]
+        simp [spec_ok]
+  · rw [if_neg hpos]
+    by_cases hmax : alloc.vec.Vec.len ranges < core.num.Usize.MAX
+    · rw [if_pos hmax]
+      have hCap : ranges.length < Std.Usize.max := by
+        simp only [alloc.vec.Vec.len] at hmax
+        scalar_tac
+      step*
+    · rw [if_neg hmax]
+      simp [spec_ok]
+
+@[local step]
+theorem is_ytext_content_total
+    (input : Slice Std.U8) (start «end» : Std.Usize) (tag : Std.U8) :
+    decoder_v1.is_ytext_content input start «end» tag ⦃ _ => True ⦄ := by
+  unfold decoder_v1.is_ytext_content
+  dsimp only
+  by_cases htag : tag = 7#u8
+  · rw [if_pos htag]
+    by_cases hlt : start < «end»
+    · rw [if_pos hlt]
+      by_cases hle : «end» ≤ Slice.len input
+      · rw [if_pos hle]
+        have hStartLt : start.val < input.length := by scalar_tac
+        step*
+      · rw [if_neg hle]
+        simp [spec_ok]
+    · rw [if_neg hlt]
+      simp [spec_ok]
+  · rw [if_neg htag]
+    simp [spec_ok]
+
+@[local step]
+theorem same_wire_id_opt_total (a b : Option decoder_v1.WireId) :
+    decoder_v1.same_wire_id_opt a b ⦃ _ => True ⦄ := by
+  unfold decoder_v1.same_wire_id_opt
+  cases a <;> cases b <;> repeat (first | simp [spec_ok] | split_ifs)
+
+@[local step]
+theorem lookup_ytext_parent_total
+    (id : decoder_v1.WireId) (parent : decoder_v1.WireParentCore)
+    (ytext_types : Slice order_range.ClockRange) :
+    decoder_v1.lookup_ytext_parent id parent ytext_types ⦃ _ => True ⦄ := by
+  unfold decoder_v1.lookup_ytext_parent
+  cases parent with
+  | Root _ => simp [spec_ok]
+  | Inherit => simp [spec_ok]
+  | Item p =>
+    dsimp only
+    by_cases hc : p.client = id.client
+    · rw [if_pos hc]
+      by_cases hlt : p.clock < id.clock
+      · rw [if_pos hlt]
+        step with seq_ranges_find_total ytext_types p.clock as ⟨o⟩
+      · rw [if_neg hlt]
+        simp [spec_ok]
+    · rw [if_neg hc]
+      simp [spec_ok]
+
+@[local step]
+theorem lookup_proven_origin_total
+    (id : decoder_v1.WireId) (origin : Option decoder_v1.WireId)
+    (seq_ranges : Slice order_range.ClockRange) :
+    decoder_v1.lookup_proven_origin id origin seq_ranges ⦃ _ => True ⦄ := by
+  unfold decoder_v1.lookup_proven_origin
+  cases origin with
+  | none => simp [spec_ok]
+  | some o =>
+    dsimp only
+    split_ifs <;> try simp [spec_ok]
+    exact seq_ranges_find_total seq_ranges o.clock
+
+@[local step]
+theorem origin_left_at_range_end_total
+    (id : decoder_v1.WireId) (origin : Option decoder_v1.WireId)
+    (range : Option order_range.ClockRange) :
+    decoder_v1.origin_left_at_range_end id origin range ⦃ _ => True ⦄ := by
+  unfold decoder_v1.origin_left_at_range_end
+  cases origin with
+  | none => simp [spec_ok]
+  | some o =>
+    cases range with
+    | none => simp [spec_ok]
+    | some r =>
+      dsimp only
+      split_ifs with hlt
+      · step as ⟨i, _⟩
+        split_ifs <;> simp [spec_ok]
+      · simp [spec_ok]
+
+@[local step]
+theorem should_skip_zero_len_item_total
+    (tag : Std.U8) (len : Std.U64)
+    (has_parent_sub_bit or_none ol_boundary : Bool) :
+    decoder_v1.should_skip_zero_len_item tag len has_parent_sub_bit or_none ol_boundary
+      ⦃ _ => True ⦄ := by
+  unfold decoder_v1.should_skip_zero_len_item
+  repeat (first | simp [spec_ok] | split_ifs)
+
+@[local step]
+theorem is_item_proven_seq_total
+    (has_parent_sub_bit ol_none or_none ol_proven or_proven wire_parent_sub_none parent_is_ytext : Bool) :
+    decoder_v1.is_item_proven_seq has_parent_sub_bit ol_none or_none ol_proven or_proven wire_parent_sub_none parent_is_ytext
+      ⦃ _ => True ⦄ := by
+  unfold decoder_v1.is_item_proven_seq
+  repeat (first | simp [spec_ok] | split_ifs)
+
+@[local step]
+theorem classify_item_seq_provenance_total
+    (id : decoder_v1.WireId) (info tag : Std.U8) (len : Std.U64)
+    (hdr : decoder_v1.ItemHeader)
+    (ytext_types seq_ranges : Slice order_range.ClockRange) :
+    decoder_v1.classify_item_seq_provenance id info tag len hdr ytext_types seq_ranges ⦃ _ => True ⦄ := by
+  unfold decoder_v1.classify_item_seq_provenance
+  step*
+
+@[local step]
+theorem push_wire_id_total
+    (dst : alloc.vec.Vec decoder_v1.WireId) (id : decoder_v1.WireId) :
+    decoder_v1.push_wire_id dst id ⦃ _ => True ⦄ := by
+  unfold decoder_v1.push_wire_id
+  dsimp only
+  have hUsizeMax : core.num.Usize.MAX.val = Std.Usize.max := by
+    simp [core.num.Usize.MAX]
+  by_cases hmax : alloc.vec.Vec.len dst < core.num.Usize.MAX
+  · rw [if_pos hmax]
+    have hCap : dst.length < Std.Usize.max := by
+      simp only [alloc.vec.Vec.len] at hmax
+      scalar_tac
+    step*
+  · rw [if_neg hmax]
+    simp [spec_ok]
+
+@[local step]
+theorem extend_wire_ids_total
+    (dst : alloc.vec.Vec decoder_v1.WireId) (src : Slice decoder_v1.WireId) :
+    decoder_v1.extend_wire_ids dst src ⦃ _ => True ⦄ := by
+  unfold decoder_v1.extend_wire_ids decoder_v1.extend_wire_ids_loop
+  let inv : alloc.vec.Vec decoder_v1.WireId × Std.Usize → Prop :=
+    fun (_, i) => i.val ≤ src.length
+  refine loop.spec_decr_nat
+    (fun (_, i) => src.length - i.val)
+    inv (fun _ => True) _ (dst, 0#usize) ?_ (by scalar_tac)
+  intro ⟨dst1, i⟩ hiLe
+  unfold decoder_v1.extend_wire_ids_loop.body
+  dsimp only
+  by_cases hlt : i < Slice.len src
+  · rw [if_pos hlt]
+    have hiLt : i.val < src.length := by scalar_tac
+    step as ⟨wi, _⟩
+    step with push_wire_id_total dst1 wi as ⟨dst2⟩
+    step as ⟨i2, hi2⟩
+    try simp only [spec_ok]
+    exact ⟨by scalar_tac, by scalar_tac⟩
+  · rw [if_neg hlt]
+    simp [spec_ok]
+
+private theorem slice_set_length {α : Type _} (s : Slice α) (i : Std.Usize) (x : α) :
+    (s.set i x).length = s.length := by
+  simp [Slice.length, Slice.set_val_eq]
+
+@[local step]
+theorem sift_down_wire_ids_total
+    (items : Slice decoder_v1.WireId) (start «end» : Std.Usize)
+    (hEnd : «end».val ≤ items.length) :
+    decoder_v1.sift_down_wire_ids items start «end» ⦃ items' => items'.length = items.length ⦄ := by
+  unfold decoder_v1.sift_down_wire_ids
+  step as ⟨half, hhalf⟩
+  unfold decoder_v1.sift_down_wire_ids_loop
+  let inv : (Slice decoder_v1.WireId) × Std.Usize → Prop :=
+    fun (items1, _) => items1.length = items.length
+  refine loop.spec_decr_nat
+    (fun (_, root) => half.val - root.val)
+    inv (fun (items1 : Slice decoder_v1.WireId) => items1.length = items.length) _ (items, start) ?_ rfl
+  intro ⟨items1, root⟩ hLen1
+  unfold decoder_v1.sift_down_wire_ids_loop.body
+  dsimp only
+  by_cases hlt : root < half
+  · rw [if_pos hlt]
+    have hMul : root.val * 2 ≤ Std.Usize.max := by scalar_tac
+    step as ⟨i, hi⟩
+    have hLeftMax : i.val + 1 ≤ Std.Usize.max := by scalar_tac
+    step as ⟨left, hleft⟩
+    have hRootLt : root.val < items1.length := by scalar_tac
+    have hLeftLt : left.val < items1.length := by scalar_tac
+    step as ⟨wi, _⟩
+    step as ⟨wi1, _⟩
+    step with wire_id_lt_total wi wi1 as ⟨b⟩
+    have hSwap0 :
+        (if b = true then ok left else ok root)
+        ⦃ s0 => s0.val < items1.length ∧ (s0 = root ∨ root.val < s0.val) ⦄ := by
+      by_cases hb : b = true
+      · simp only [hb, ↓reduceIte, spec_ok]
+        exact ⟨hLeftLt, Or.inr (by scalar_tac)⟩
+      · simp only [hb, Bool.false_eq_true, ↓reduceIte, spec_ok]
+        exact ⟨hRootLt, Or.inl trivial⟩
+    step with hSwap0 as ⟨swap_idx, hSwapLt, hSwapRel⟩
+    have hI1Max : left.val + 1 ≤ Std.Usize.max := by scalar_tac
+    step as ⟨i1, hi1⟩
+    have hSwap1 :
+        (if i1 < «end» then do
+          let wi2 ← Slice.index_usize items1 swap_idx
+          let wi3 ← Slice.index_usize items1 i1
+          let b1 ← decoder_v1.wire_id_lt wi2 wi3
+          if b1 = true then ok i1 else ok swap_idx
+         else ok swap_idx)
+        ⦃ s1 => s1.val < items1.length ∧ (s1 = root ∨ root.val < s1.val) ⦄ := by
+      by_cases hRight : i1 < «end»
+      · rw [if_pos hRight]
+        have hI1Lt : i1.val < items1.length := by scalar_tac
+        step as ⟨wi2, _⟩
+        step as ⟨wi3, _⟩
+        step with wire_id_lt_total wi2 wi3 as ⟨b1⟩
+        by_cases hb1 : b1 = true
+        · simp only [hb1, ↓reduceIte, spec_ok]
+          exact ⟨hI1Lt, Or.inr (by scalar_tac)⟩
+        · simp only [hb1, Bool.false_eq_true, ↓reduceIte, spec_ok]
+          exact ⟨hSwapLt, hSwapRel⟩
+      · rw [if_neg hRight]
+        simp only [spec_ok]
+        exact ⟨hSwapLt, hSwapRel⟩
+    step with hSwap1 as ⟨swap_idx1, hSwap1Lt, hSwap1Rel⟩
+    by_cases heq : swap_idx1 = root
+    · rw [if_pos heq]
+      simp only [spec_ok]
+      exact ⟨hLen1, by scalar_tac⟩
+    · rw [if_neg heq]
+      have hGtRoot : root.val < swap_idx1.val := by
+        rcases hSwap1Rel with h | h
+        · exact False.elim (heq h)
+        · exact h
+      step as ⟨wi2, _⟩
+      step as ⟨items2, hLen2⟩
+      have hSwap1Lt2 : swap_idx1.val < items2.length := by
+        rw [hLen2, slice_set_length]; exact hSwap1Lt
+      step as ⟨s, hLenS⟩
+      try simp only [spec_ok]
+      dsimp only [inv]
+      exact ⟨by rw [hLenS, slice_set_length, hLen2, slice_set_length, hLen1], by scalar_tac⟩
+  · rw [if_neg hlt]
+    dsimp only [inv] at hLen1
+    simp [spec_ok, hLen1]
+
+@[local step]
+theorem sort_wire_ids_total (items : Slice decoder_v1.WireId) :
+    decoder_v1.sort_wire_ids items ⦃ _ => True ⦄ := by
+  unfold decoder_v1.sort_wire_ids
+  dsimp only
+  by_cases hle : Slice.len items ≤ 1#usize
+  · rw [if_pos hle]
+    simp [spec_ok]
+  · rw [if_neg hle]
+    step as ⟨start, hstart⟩
+    have hLoop0 :
+        decoder_v1.sort_wire_ids_loop0 items (Slice.len items) start
+          ⦃ items1 => items1.length = items.length ⦄ := by
+      unfold decoder_v1.sort_wire_ids_loop0
+      let inv0 : (Slice decoder_v1.WireId) × Std.Usize → Prop :=
+        fun (items1, _) => items1.length = items.length
+      refine loop.spec_decr_nat
+        (fun (_, s) => s.val)
+        inv0
+        (fun (items1 : Slice decoder_v1.WireId) => items1.length = items.length)
+        _ (items, start) ?_ rfl
+      intro ⟨items1, s⟩ hLen1
+      unfold decoder_v1.sort_wire_ids_loop0.body
+      dsimp only
+      by_cases hpos : s > 0#usize
+      · rw [if_pos hpos]
+        step as ⟨s1, hs1⟩
+        step with sift_down_wire_ids_total items1 s1 (Slice.len items) (by rw [hLen1]; scalar_tac)
+          as ⟨items2, hLen2⟩
+        try simp only [spec_ok]
+        dsimp only [inv0]
+        exact ⟨by rw [hLen2, hLen1], by scalar_tac⟩
+      · rw [if_neg hpos]
+        dsimp only [inv0] at hLen1
+        simp [spec_ok, hLen1]
+    step with hLoop0 as ⟨items1, hLen1⟩
+    unfold decoder_v1.sort_wire_ids_loop1
+    let inv1 : (Slice decoder_v1.WireId) × Std.Usize → Prop :=
+      fun (items2, e) => items2.length = items.length ∧ e.val ≤ items.length
+    refine loop.spec_decr_nat
+      (fun (_, e) => e.val)
+      inv1 (fun _ => True) _ (items1, Slice.len items) ?_ ⟨hLen1, by scalar_tac⟩
+    intro ⟨items2, e⟩ ⟨hLen2, hELe⟩
+    unfold decoder_v1.sort_wire_ids_loop1.body
+    dsimp only
+    by_cases hgt : e > 1#usize
+    · rw [if_pos hgt]
+      step as ⟨e1, he1⟩
+      have h0Lt : (0#usize).val < items2.length := by scalar_tac
+      have hE1Lt : e1.val < items2.length := by scalar_tac
+      step as ⟨tmp, _⟩
+      step as ⟨wi, _⟩
+      step as ⟨items3, hLen3⟩
+      have hE1Lt3 : e1.val < items3.length := by
+        rw [hLen3, slice_set_length]; exact hE1Lt
+      step as ⟨items4, hLen4⟩
+      have hLen4Eq : items4.length = items.length := by
+        rw [hLen4, slice_set_length, hLen3, slice_set_length, hLen2]
+      step with sift_down_wire_ids_total items4 0#usize e1 (by rw [hLen4Eq]; scalar_tac)
+        as ⟨items5, hLen5⟩
+      try simp only [spec_ok]
+      dsimp only [inv1]
+      exact ⟨⟨by rw [hLen5, hLen4Eq], by scalar_tac⟩, by scalar_tac⟩
+    · rw [if_neg hgt]
+      simp [spec_ok]
+
+@[local step]
+theorem alloc_zero_max_hi_total (len : Std.Usize) :
+    decoder_v1.alloc_zero_max_hi len ⦃ _ => True ⦄ := by
+  unfold decoder_v1.alloc_zero_max_hi decoder_v1.alloc_zero_max_hi_loop
+  let inv : (alloc.vec.Vec Std.Usize) × Std.Usize → Prop :=
+    fun (_, i) => i.val ≤ len.val
+  refine loop.spec_decr_nat
+    (fun (_, i) => len.val - i.val)
+    inv (fun _ => True) _ (alloc.vec.Vec.new Std.Usize, 0#usize) ?_ (by scalar_tac)
+  intro ⟨out1, i⟩ hiLe
+  unfold decoder_v1.alloc_zero_max_hi_loop.body
+  dsimp only
+  have hUsizeMax : core.num.Usize.MAX.val = Std.Usize.max := by
+    simp [core.num.Usize.MAX]
+  by_cases hlt : i < len
+  · rw [if_pos hlt]
+    by_cases hmax : alloc.vec.Vec.len out1 < core.num.Usize.MAX
+    · rw [if_pos hmax]
+      have hCap : out1.length < Std.Usize.max := by
+        simp only [alloc.vec.Vec.len] at hmax
+        scalar_tac
+      step as ⟨out2, _⟩
+      step as ⟨i2, hi2⟩
+      try simp only [spec_ok]
+      exact ⟨by scalar_tac, by scalar_tac⟩
+    · rw [if_neg hmax]
+      simp [spec_ok]
+  · rw [if_neg hlt]
+    simp [spec_ok]
+
+@[local step]
+theorem all_zero_strings_covered_total (max_hi : Slice Std.Usize) :
+    decoder_v1.all_zero_strings_covered max_hi ⦃ _ => True ⦄ := by
+  unfold decoder_v1.all_zero_strings_covered decoder_v1.all_zero_strings_covered_loop
+  let inv : Std.Usize × Std.Usize → Prop :=
+    fun (_, i) => i.val ≤ max_hi.length
+  refine loop.spec_decr_nat
+    (fun (_, i) => max_hi.length - i.val)
+    inv (fun _ => True) _ (0#usize, 0#usize) ?_ (by scalar_tac)
+  intro ⟨reach, i⟩ hiLe
+  unfold decoder_v1.all_zero_strings_covered_loop.body
+  dsimp only
+  by_cases hlt : i < Slice.len max_hi
+  · rw [if_pos hlt]
+    have hiLt : i.val < max_hi.length := by scalar_tac
+    step as ⟨i2, _⟩
+    have hReach : (if i2 > reach then ok i2 else ok reach) ⦃ _ => True ⦄ := by
+      split_ifs <;> simp [spec_ok]
+    step with hReach as ⟨reach1⟩
+    by_cases hle : reach1 ≤ i
+    · rw [if_pos hle]
+      simp [spec_ok]
+    · rw [if_neg hle]
+      step as ⟨i3, hi3⟩
+      try simp only [spec_ok]
+      exact ⟨by scalar_tac, by scalar_tac⟩
+  · rw [if_neg hlt]
+    simp [spec_ok]
+
+@[local step]
+theorem contains_wire_id_sorted_total
+    (items : Slice decoder_v1.WireId) (target : decoder_v1.WireId) :
+    decoder_v1.contains_wire_id_sorted items target ⦃ _ => True ⦄ := by
+  unfold decoder_v1.contains_wire_id_sorted
+  step with find_wire_id_lower_bound_total items target as ⟨idx⟩
+  by_cases hlt : idx < Slice.len items
+  · rw [if_pos hlt]
+    have hLt : idx.val < items.length := by scalar_tac
+    step as ⟨found, _⟩
+    split_ifs <;> simp [spec_ok]
+  · rw [if_neg hlt]
+    simp [spec_ok]
+
+@[local step]
+theorem opt_wire_id_in_sorted_total
+    (items : Slice decoder_v1.WireId) (opt : Option decoder_v1.WireId) :
+    decoder_v1.opt_wire_id_in_sorted items opt ⦃ _ => True ⦄ := by
+  unfold decoder_v1.opt_wire_id_in_sorted
+  cases opt with
+  | none => simp [spec_ok]
+  | some w => exact contains_wire_id_sorted_total items w
+
+@[local step]
+theorem parent_item_in_sorted_total
+    (items : Slice decoder_v1.WireId) (parent : decoder_v1.WireParentCore) :
+    decoder_v1.parent_item_in_sorted items parent ⦃ _ => True ⦄ := by
+  unfold decoder_v1.parent_item_in_sorted
+  cases parent with
+  | Root _ => simp [spec_ok]
+  | Inherit => simp [spec_ok]
+  | Item w => exact contains_wire_id_sorted_total items w
+
+@[local step]
+theorem mark_point_ids_covered_total
+    (pending : Slice decoder_v1.WireId) (max_hi : Slice Std.Usize)
+    (client start «end» : Std.U64) :
+    decoder_v1.mark_point_ids_covered pending max_hi client start «end» ⦃ _ => True ⦄ := by
+  unfold decoder_v1.mark_point_ids_covered
+  dsimp only
+  by_cases hle : «end» ≤ start
+  · rw [if_pos hle]
+    simp [spec_ok]
+  · rw [if_neg hle]
+    step with find_wire_id_lower_bound_total pending { client, clock := start } as ⟨lo⟩
+    step with find_wire_id_lower_bound_total pending { client, clock := «end» } as ⟨hiBound⟩
+    by_cases hlohi : lo < hiBound
+    · rw [if_pos hlohi]
+      by_cases hloLen : lo < Slice.len max_hi
+      · rw [if_pos hloLen]
+        have hLoLt : lo.val < max_hi.length := by scalar_tac
+        step as ⟨i1, _⟩
+        by_cases hgt : hiBound > i1
+        · rw [if_pos hgt]
+          step*
+        · rw [if_neg hgt]
+          simp [spec_ok]
+      · rw [if_neg hloLen]
+        simp [spec_ok]
+    · rw [if_neg hlohi]
+      simp [spec_ok]
+
+theorem noop_sink_v1sink_total :
+    V1SinkTotal decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink (fun _ => True) :=
+  { core_validates_utf8 := by
+      intro s; simp [decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink, decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.core_validates_utf8, spec_ok]
+    validate_utf8_early := by
+      intro s _ _ _; simp [decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink, decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.validate_utf8_early, spec_ok]
+    on_decode_error := by
+      intro s _ _ _ _; simp [decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink, decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.on_decode_error, spec_ok]
+    record_client := by
+      intro s _ _; simp [decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink, decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.record_client, spec_ok]
+    begin_client := by
+      intro s _ _ _; simp [decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink, decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.begin_client, spec_ok]
+    on_gc := by
+      intro s _ _ _; simp [decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink, decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.on_gc, spec_ok]
+    on_skip := by
+      intro s _ _ _; simp [decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink, decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.on_skip, spec_ok]
+    on_item := by
+      intro s _ _ _ _; simp [decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink, decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.on_item, spec_ok]
+    on_skipped_zero_origin := by
+      intro s _ _; simp [decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink, decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.on_skipped_zero_origin, spec_ok]
+    on_deleted := by
+      intro s _ _; simp [decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink, decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.on_deleted, spec_ok]
+    on_json_start := by
+      intro s _ _; simp [decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink, decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.on_json_start, spec_ok]
+    on_json_value := by
+      intro s _ _; simp [decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink, decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.on_json_value, spec_ok]
+    on_json_finish := by
+      intro s _; simp [decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink, decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.on_json_finish, spec_ok]
+    on_binary := by
+      intro s _ _; simp [decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink, decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.on_binary, spec_ok]
+    on_string := by
+      intro s _ _; simp [decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink, decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.on_string, spec_ok]
+    on_embed := by
+      intro s _ _; simp [decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink, decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.on_embed, spec_ok]
+    on_format := by
+      intro s _ _ _; simp [decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink, decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.on_format, spec_ok]
+    on_type := by
+      intro s _ _ _; simp [decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink, decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.on_type, spec_ok]
+    on_any_content_start := by
+      intro s _ _; simp [decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink, decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.on_any_content_start, spec_ok]
+    on_any_content_value := by
+      intro s _; simp [decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink, decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.on_any_content_value, spec_ok]
+    on_any_content_finish := by
+      intro s _; simp [decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink, decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.on_any_content_finish, spec_ok]
+    on_doc := by
+      intro s _ _; simp [decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink, decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.on_doc, spec_ok]
+    on_any_start := by
+      intro s _; simp [decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink, decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.on_any_start, spec_ok]
+    on_any_undefined := by
+      intro s _; simp [decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink, decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.on_any_undefined, spec_ok]
+    on_any_null := by
+      intro s _; simp [decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink, decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.on_any_null, spec_ok]
+    on_any_i32 := by
+      intro s _ _; simp [decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink, decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.on_any_i32, spec_ok]
+    on_any_f32_bits := by
+      intro s _ _; simp [decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink, decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.on_any_f32_bits, spec_ok]
+    on_any_f64_bits := by
+      intro s _ _; simp [decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink, decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.on_any_f64_bits, spec_ok]
+    on_any_i64_bits := by
+      intro s _ _; simp [decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink, decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.on_any_i64_bits, spec_ok]
+    on_any_bool := by
+      intro s _ _; simp [decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink, decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.on_any_bool, spec_ok]
+    on_any_str := by
+      intro s _ _; simp [decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink, decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.on_any_str, spec_ok]
+    on_any_bytes := by
+      intro s _ _; simp [decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink, decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.on_any_bytes, spec_ok]
+    on_any_begin_object := by
+      intro s _ _; simp [decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink, decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.on_any_begin_object, spec_ok]
+    on_any_object_key := by
+      intro s _ _; simp [decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink, decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.on_any_object_key, spec_ok]
+    on_any_begin_array := by
+      intro s _ _; simp [decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink, decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.on_any_begin_array, spec_ok]
+    on_any_end_container := by
+      intro s _; simp [decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink, decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.on_any_end_container, spec_ok]
+    on_any_finish := by
+      intro s _ _; simp [decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink, decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.on_any_finish, spec_ok]
+    begin_delete_client := by
+      intro s _ _ _; simp [decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink, decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.begin_delete_client, spec_ok]
+    on_delete_range := by
+      intro s _ _ _ _; simp [decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink, decoder_v1.NoopSink.Insts.Y_octo_coreDecoder_v1V1Sink.on_delete_range, spec_ok] }
+
+@[local step]
+theorem replay_client_seq_state_total
+    (input : Slice Std.U8) (start_pos : Std.Usize) (start_id : decoder_v1.WireId)
+    (target_idx : Std.Usize) (limits : decoder_v1.DecodeLimitsCore)
+    (state : decoder_v1.ClientSeqState) :
+    decoder_v1.replay_client_seq_state input start_pos start_id target_idx limits state
+      ⦃ _ => True ⦄ := by
+  unfold decoder_v1.replay_client_seq_state
+  have hNoop := noop_sink_v1sink_total.toSpanSafe input
+  have hLoop :
+      decoder_v1.replay_client_seq_state_loop input start_id.client target_idx limits state ()
+        start_pos start_id.clock 0#usize none ⦃ _ => True ⦄ := by
+    unfold decoder_v1.replay_client_seq_state_loop
+    let inv : decoder_v1.ClientSeqState × decoder_v1.NoopSink × Std.Usize × Std.U64 ×
+        Std.Usize × Option CodecError → Prop :=
+      fun (_, _, _, _, idx, _) => idx.val ≤ target_idx.val
+    refine loop.spec_decr_nat
+      (fun (_, _, _, _, idx, err) => errFlag err + (target_idx.val - idx.val))
+      inv (fun _ => True) _ (state, (), start_pos, start_id.clock, 0#usize, none) ?_ (by scalar_tac)
+    intro ⟨st1, noop1, cur1, clk1, idx1, err1⟩ hIdxLe
+    unfold decoder_v1.replay_client_seq_state_loop.body
+    dsimp only
+    split_ifs with hlt hnone
+    · have herr : err1 = none := (is_none_eq_true_iff err1).1 hnone
+      subst herr
+      step with read_u8_at_total input cur1 as ⟨r, _⟩
+      cases r with
+      | Ok p =>
+        rcases p with ⟨info, after_info⟩
+        step as ⟨tag, _⟩
+        split_ifs with h0 h10
+        · step with read_var_u64_sink_spec _ (fun _ => True) input hNoop after_info noop1 trivial as ⟨r1, _⟩
+          cases r1 with
+          | Ok p1 =>
+            rcases p1 with ⟨len, next_cur⟩
+            step with advance_clock_sink_spec _ (fun _ => True) input hNoop clk1 len () trivial as ⟨r2, _⟩
+            cases r2 with
+            | Ok next_clk =>
+              step as ⟨idx2, hidx2⟩
+              try simp only [spec_ok]
+              exact ⟨by scalar_tac, by simp [hidx2]; scalar_tac⟩
+            | Err e => try simp only [spec_ok]; exact ⟨hIdxLe, by simp⟩
+          | Err e => try simp only [spec_ok]; exact ⟨hIdxLe, by simp⟩
+        · step with read_var_u64_sink_spec _ (fun _ => True) input hNoop after_info noop1 trivial as ⟨r1, _⟩
+          cases r1 with
+          | Ok p1 =>
+            rcases p1 with ⟨len, next_cur⟩
+            step with advance_clock_sink_spec _ (fun _ => True) input hNoop clk1 len () trivial as ⟨r2, _⟩
+            cases r2 with
+            | Ok next_clk =>
+              step as ⟨idx2, hidx2⟩
+              try simp only [spec_ok]
+              exact ⟨by scalar_tac, by simp [hidx2]; scalar_tac⟩
+            | Err e => try simp only [spec_ok]; exact ⟨hIdxLe, by simp⟩
+          | Err e => try simp only [spec_ok]; exact ⟨hIdxLe, by simp⟩
+        · step with decode_item_header_spec _ (fun _ => True) input hNoop after_info info noop1 trivial as ⟨r1, _⟩
+          cases r1 with
+          | Ok p1 =>
+            rcases p1 with ⟨hdr, content_start⟩
+            step with decode_item_content_spec _ (fun _ => True) input hNoop content_start tag limits 0#usize () trivial
+              as ⟨r2, _⟩
+            cases r2 with
+            | Ok t =>
+              rcases t with ⟨len, content_end, _⟩
+              step with advance_clock_sink_spec _ (fun _ => True) input hNoop clk1 len () trivial as ⟨r3, _⟩
+              cases r3 with
+              | Ok next_clk =>
+                step with classify_item_seq_provenance_total { client := start_id.client, clock := clk1 } info tag len hdr
+                  (alloc.vec.Vec.deref st1.ytext_types) (alloc.vec.Vec.deref st1.seq_ranges) as ⟨_, is_proven_seq⟩
+                step with is_ytext_content_total input content_start content_end tag as ⟨b1⟩
+                have hV0 :
+                    (if b1 = true then decoder_v1.seq_ranges_push st1.ytext_types clk1 next_clk else ok st1.ytext_types)
+                    ⦃ _ => True ⦄ := by
+                  by_cases hb1 : b1 = true
+                  · simp only [hb1, ↓reduceIte]; exact seq_ranges_push_total st1.ytext_types clk1 next_clk
+                  · simp only [hb1, Bool.false_eq_true, ↓reduceIte, spec_ok]
+                step with hV0 as ⟨v0⟩
+                have hV1 :
+                    (if is_proven_seq = true then decoder_v1.seq_ranges_push st1.seq_ranges clk1 next_clk else ok st1.seq_ranges)
+                    ⦃ _ => True ⦄ := by
+                  by_cases hp : is_proven_seq = true
+                  · simp only [hp, ↓reduceIte]; exact seq_ranges_push_total st1.seq_ranges clk1 next_clk
+                  · simp only [hp, Bool.false_eq_true, ↓reduceIte, spec_ok]
+                step with hV1 as ⟨v1⟩
+                step as ⟨idx2, hidx2⟩
+                try simp only [spec_ok]
+                exact ⟨by scalar_tac, by simp [hidx2]; scalar_tac⟩
+              | Err e => try simp only [spec_ok]; exact ⟨hIdxLe, by simp⟩
+            | Err e => try simp only [spec_ok]; exact ⟨hIdxLe, by simp⟩
+          | Err e => try simp only [spec_ok]; exact ⟨hIdxLe, by simp⟩
+      | Err e => try simp only [spec_ok]; exact ⟨hIdxLe, by simp⟩
+    · simp [spec_ok]
+    · simp [spec_ok]
+  step with hLoop as ⟨st1, err⟩
+  cases err <;> simp [spec_ok]
+
+theorem emit_tracked_item_spec
+    {S : Type _} (V : decoder_v1.V1Sink S) (Inv : S → Prop)
+    (input : Slice Std.U8) (hV : V1SinkSpanSafe input V Inv)
+    (pos : Std.Usize) (id : decoder_v1.WireId) (tag : Std.U8)
+    (hdr : decoder_v1.ItemHeader) (content_start : Std.Usize) (len : Std.U64)
+    (content_end entries content_bytes : Std.Usize)
+    (acc : decoder_v1.DecodeAcc) (is_proven_seq : Bool)
+    (state : decoder_v1.ClientSeqState) (sink : S) (hSink : Inv sink)
+    (hPos : pos.val ≤ content_end.val ∧ content_end.val ≤ input.length)
+    (hHdr : WireParentOk input hdr.parent ∧ OptSpanOk input hdr.parent_sub) :
+    decoder_v1.emit_tracked_item V input pos id tag hdr content_start len content_end
+      entries content_bytes acc is_proven_seq state sink
+      ⦃ (r, _, sink') =>
+        Inv sink' ∧
+        match r with
+        | .Ok (nc, nxt, _, _, _) => id.clock.val ≤ nc.val ∧ pos.val ≤ nxt.val ∧ nxt.val ≤ input.length
+        | .Err _ => True ⦄ := by
+  unfold decoder_v1.emit_tracked_item
+  step with same_wire_id_opt_total state.just_skipped_ol hdr.origin_left as ⟨b⟩
+  by_cases hb : b = true
+  · simp only [hb, ↓reduceIte]
+    step with fail_with_spec V Inv input hV sink CodecError.ZeroLengthStruct 0#usize 0#u64 hSink
+      as ⟨ce, sink1, hInv1⟩
+    simp [spec_ok, hInv1]
+  · simp only [hb, Bool.false_eq_true, ↓reduceIte]
+    step with advance_clock_sink_spec V Inv input hV id.clock len sink hSink as ⟨r, sink1, hInv1, hr⟩
+    cases r with
+    | Ok val =>
+      simp only [core_ops_try_branch_ok, bind_ok]
+      dsimp only at hr
+      have hMeta : ItemMetaOk input
+          { origin_left := hdr.origin_left,
+            origin_right := hdr.origin_right,
+            parent := hdr.parent,
+            parent_sub := hdr.parent_sub,
+            raw_range := { start := pos, «end» := content_end } } :=
+        ⟨hHdr.1, hHdr.2, hPos.1, hPos.2⟩
+      step with hV.on_item sink1 id len _ hInv1 hMeta as ⟨r1, sink2, hInv2⟩
+      cases r1 with
+      | Ok _ =>
+        simp only [core_ops_try_branch_ok, bind_ok]
+        step with is_ytext_content_total input content_start content_end tag as ⟨b1⟩
+        have hV0 :
+            (if b1 = true then decoder_v1.seq_ranges_push state.ytext_types id.clock val
+             else ok state.ytext_types) ⦃ _ => True ⦄ := by
+          by_cases hb1 : b1 = true
+          · simp only [hb1, ↓reduceIte]; exact seq_ranges_push_total state.ytext_types id.clock val
+          · simp only [hb1, Bool.false_eq_true, ↓reduceIte, spec_ok]
+        step with hV0 as ⟨v⟩
+        by_cases hp : is_proven_seq = true
+        · simp only [hp, ↓reduceIte]
+          step with seq_ranges_push_total state.seq_ranges id.clock val as ⟨v1⟩
+          exact ⟨hInv2, by omega, hPos.1, hPos.2⟩
+        · simp only [hp, Bool.false_eq_true, ↓reduceIte, spec_ok]
+          exact ⟨hInv2, by omega, hPos.1, hPos.2⟩
+      | Err e =>
+        simp only [core_ops_try_branch_err, bind_ok, core_ops_try_from_residual_err, spec_ok]
+        exact ⟨hInv2, trivial⟩
+    | Err e =>
+      simp only [core_ops_try_branch_err, bind_ok, core_ops_try_from_residual_err, spec_ok]
+      exact ⟨hInv1, trivial⟩
+
+theorem decode_struct_frame_tracked_spec
+    {S : Type _} (V : decoder_v1.V1Sink S) (Inv : S → Prop)
+    (input : Slice Std.U8) (hV : V1SinkSpanSafe input V Inv)
+    (pos : Std.Usize) (id : decoder_v1.WireId) (info tag : Std.U8)
+    (hdr : decoder_v1.ItemHeader) (content_start : Std.Usize) (len : Std.U64)
+    (content_end entries content_bytes : Std.Usize)
+    (acc : decoder_v1.DecodeAcc)
+    (state : decoder_v1.ClientSeqState) (sink : S) (hSink : Inv sink)
+    (hPos : pos.val ≤ content_end.val ∧ content_end.val ≤ input.length)
+    (hHdr : WireParentOk input hdr.parent ∧ OptSpanOk input hdr.parent_sub) :
+    decoder_v1.decode_struct_frame_tracked V input pos id info tag hdr content_start len
+      content_end entries content_bytes acc state sink
+      ⦃ (r, _, sink') =>
+        Inv sink' ∧
+        match r with
+        | .Ok (nc, nxt, _, _, _) => id.clock.val ≤ nc.val ∧ pos.val ≤ nxt.val ∧ nxt.val ≤ input.length
+        | .Err _ => True ⦄ := by
+  unfold decoder_v1.decode_struct_frame_tracked
+  step with classify_item_seq_provenance_total id info tag len hdr
+    (alloc.vec.Vec.deref state.ytext_types) (alloc.vec.Vec.deref state.seq_ranges)
+    as ⟨skip_zero, is_proven_seq⟩
+  apply ite_wp_split <;> intro _
+  · apply ite_wp_split <;> intro _
+    · simp only [spec_ok]
+      exact ⟨hSink, Nat.le_refl _, hPos.1, hPos.2⟩
+    · exact emit_tracked_item_spec V Inv input hV pos id tag hdr content_start len content_end
+        entries content_bytes acc is_proven_seq state sink hSink hPos hHdr
+  · exact emit_tracked_item_spec V Inv input hV pos id tag hdr content_start len content_end
+      entries content_bytes acc is_proven_seq state sink hSink hPos hHdr
+
+theorem decode_struct_frame_slow_spec
+    {S : Type _} (V : decoder_v1.V1Sink S) (Inv : S → Prop)
+    (input : Slice Std.U8) (hV : V1SinkSpanSafe input V Inv)
+    (pos client_start_pos : Std.Usize) (client_start_clock : Std.U64)
+    (s_idx : Std.Usize) (id : decoder_v1.WireId) (info tag : Std.U8)
+    (hdr : decoder_v1.ItemHeader) (content_start : Std.Usize) (len : Std.U64)
+    (content_end entries content_bytes : Std.Usize)
+    (limits : decoder_v1.DecodeLimitsCore) (acc : decoder_v1.DecodeAcc)
+    (state : decoder_v1.ClientSeqState) (sink : S) (hSink : Inv sink)
+    (hPos : pos.val ≤ content_end.val ∧ content_end.val ≤ input.length)
+    (hHdr : WireParentOk input hdr.parent ∧ OptSpanOk input hdr.parent_sub) :
+    decoder_v1.decode_struct_frame_slow V input pos client_start_pos client_start_clock s_idx id
+      info tag hdr content_start len content_end entries content_bytes limits acc state sink
+      ⦃ (r, _, sink') =>
+        Inv sink' ∧
+        match r with
+        | .Ok (nc, nxt, _, _, _) => id.clock.val ≤ nc.val ∧ pos.val ≤ nxt.val ∧ nxt.val ≤ input.length
+        | .Err _ => True ⦄ := by
+  unfold decoder_v1.decode_struct_frame_slow
+  by_cases hact : state.active = true
+  · simp only [hact, ↓reduceIte]
+    exact decode_struct_frame_tracked_spec V Inv input hV pos id info tag hdr content_start len
+      content_end entries content_bytes acc state sink hSink hPos hHdr
+  · simp only [hact, Bool.false_eq_true, ↓reduceIte]
+    step with replay_client_seq_state_total input client_start_pos
+      { id with clock := client_start_clock } s_idx limits state as ⟨r, state1⟩
+    cases r with
+    | Ok _ =>
+      simp only [core_ops_try_branch_ok, bind_ok]
+      exact decode_struct_frame_tracked_spec V Inv input hV pos id info tag hdr content_start len
+        content_end entries content_bytes acc state1 sink hSink hPos hHdr
+    | Err e =>
+      simp only [core_ops_try_branch_err, bind_ok, core_ops_try_from_residual_err, spec_ok]
+      exact ⟨hSink, trivial⟩
+
+@[local step]
+theorem collect_colliding_in_client_total
+    (input : Slice Std.U8) (start_pos : Std.Usize) (start_id : decoder_v1.WireId)
+    (count : Std.Usize) (limits : decoder_v1.DecodeLimitsCore)
+    (skipped_ols : Slice decoder_v1.WireId)
+    (colliding_ids pending_colliding : alloc.vec.Vec decoder_v1.WireId) :
+    decoder_v1.collect_colliding_in_client input start_pos start_id count limits
+      skipped_ols colliding_ids pending_colliding ⦃ _ => True ⦄ := by
+  unfold decoder_v1.collect_colliding_in_client
+  have hNoop := noop_sink_v1sink_total.toSpanSafe input
+  have hLoop :
+      decoder_v1.collect_colliding_in_client_loop input start_id.client count limits skipped_ols
+        colliding_ids pending_colliding () start_pos start_id.clock 0#usize none ⦃ _ => True ⦄ := by
+    unfold decoder_v1.collect_colliding_in_client_loop
+    let inv : (alloc.vec.Vec decoder_v1.WireId) × (alloc.vec.Vec decoder_v1.WireId) ×
+        decoder_v1.NoopSink × Std.Usize × Std.U64 × Std.Usize × Option CodecError → Prop :=
+      fun (_, _, _, _, _, sIdx, _) => sIdx.val ≤ count.val
+    refine loop.spec_decr_nat
+      (fun (_, _, _, _, _, sIdx, err) => errFlag err + (count.val - sIdx.val))
+      inv (fun _ => True) _ (colliding_ids, pending_colliding, (), start_pos, start_id.clock, 0#usize, none)
+      ?_ (by scalar_tac)
+    intro ⟨cids1, pcoll1, noop1, cur1, clk1, sIdx, err1⟩ hsLe
+    unfold decoder_v1.collect_colliding_in_client_loop.body
+    dsimp only
+    split_ifs with hlt hnone
+    · have herr : err1 = none := (is_none_eq_true_iff err1).1 hnone
+      subst herr
+      step with read_u8_at_total input cur1 as ⟨r, _⟩
+      cases r with
+      | Ok p =>
+        rcases p with ⟨info, after_info⟩
+        step as ⟨tag, _⟩
+        apply ite_wp_split <;> intro _
+        · step with read_var_u64_sink_spec _ (fun _ => True) input hNoop after_info noop1 trivial as ⟨r1, _⟩
+          cases r1 with
+          | Ok p1 =>
+            rcases p1 with ⟨len, next_cur⟩
+            step with advance_clock_sink_spec _ (fun _ => True) input hNoop clk1 len () trivial as ⟨r2, _⟩
+            cases r2 with
+            | Ok next_clk =>
+              step as ⟨sIdx1, hsIdx1⟩
+              try simp only [spec_ok]
+              exact ⟨by scalar_tac, by simp [hsIdx1]; scalar_tac⟩
+            | Err e => try simp only [spec_ok]; exact ⟨hsLe, by simp⟩
+          | Err e => try simp only [spec_ok]; exact ⟨hsLe, by simp⟩
+        · apply ite_wp_split <;> intro _
+          · step with read_var_u64_sink_spec _ (fun _ => True) input hNoop after_info noop1 trivial as ⟨r1, _⟩
+            cases r1 with
+            | Ok p1 =>
+              rcases p1 with ⟨len, next_cur⟩
+              step with advance_clock_sink_spec _ (fun _ => True) input hNoop clk1 len () trivial as ⟨r2, _⟩
+              cases r2 with
+              | Ok next_clk =>
+                step as ⟨sIdx1, hsIdx1⟩
+                try simp only [spec_ok]
+                exact ⟨by scalar_tac, by simp [hsIdx1]; scalar_tac⟩
+              | Err e => try simp only [spec_ok]; exact ⟨hsLe, by simp⟩
+            | Err e => try simp only [spec_ok]; exact ⟨hsLe, by simp⟩
+          · step with decode_item_header_spec _ (fun _ => True) input hNoop after_info info noop1 trivial as ⟨r1, _⟩
+            cases r1 with
+            | Ok p1 =>
+              rcases p1 with ⟨hdr, content_start⟩
+              step with decode_item_content_spec _ (fun _ => True) input hNoop content_start tag limits 0#usize () trivial
+                as ⟨r2, _⟩
+              cases r2 with
+              | Ok t =>
+                rcases t with ⟨len, content_end, _⟩
+                apply ite_wp_split <;> intro _
+                · step as ⟨sIdx1, hsIdx1⟩
+                  try simp only [spec_ok]
+                  exact ⟨by scalar_tac, by simp [hsIdx1]; scalar_tac⟩
+                · step with advance_clock_sink_spec _ (fun _ => True) input hNoop clk1 len () trivial as ⟨r3, _⟩
+                  cases r3 with
+                  | Ok next_clk =>
+                    step with opt_wire_id_in_sorted_total skipped_ols hdr.origin_left as ⟨b1⟩
+                    have hUpd :
+                        (if b1 = true then
+                          if (len != 1#u64) = true then ok (cids1, pcoll1, some CodecError.ZeroLengthStruct, ())
+                          else do
+                            let cids2 ← decoder_v1.push_wire_id cids1 { client := start_id.client, clock := clk1 }
+                            let v ← if (tag != 1#u8) = true then decoder_v1.push_wire_id pcoll1 { client := start_id.client, clock := clk1 } else ok pcoll1
+                            ok (cids2, v, none, ())
+                         else ok (cids1, pcoll1, none, ())) ⦃ _ => True ⦄ := by
+                      apply ite_wp_split <;> intro _
+                      · apply ite_wp_split <;> intro _
+                        · simp [spec_ok]
+                        · step with push_wire_id_total cids1 { client := start_id.client, clock := clk1 } as ⟨cids2⟩
+                          have hP :
+                              (if (tag != 1#u8) = true then decoder_v1.push_wire_id pcoll1 { client := start_id.client, clock := clk1 }
+                               else ok pcoll1) ⦃ _ => True ⦄ := by
+                            apply ite_wp_split <;> intro _
+                            · exact push_wire_id_total pcoll1 { client := start_id.client, clock := clk1 }
+                            · simp [spec_ok]
+                          step with hP as ⟨v⟩
+                      · simp [spec_ok]
+                    step with hUpd as ⟨cids2, pcoll2, err2⟩
+                    step as ⟨sIdx1, hsIdx1⟩
+                    try simp only [spec_ok]
+                    have hLt : (sIdx : Nat) < (count : Nat) := by scalar_tac
+                    have hErr2 : errFlag err2 ≤ 1 := by cases err2 <;> simp
+                    exact ⟨by scalar_tac, by simp [hsIdx1]; omega⟩
+                  | Err e => try simp only [spec_ok]; exact ⟨hsLe, by simp⟩
+              | Err e => try simp only [spec_ok]; exact ⟨hsLe, by simp⟩
+            | Err e => try simp only [spec_ok]; exact ⟨hsLe, by simp⟩
+      | Err e => try simp only [spec_ok]; exact ⟨hsLe, by simp⟩
+    · simp [spec_ok]
+    · simp [spec_ok]
+  step with hLoop as ⟨cids, pcoll, cur, err⟩
+  cases err <;> simp [spec_ok]
+
+@[local step]
+theorem collect_colliding_origin_items_total
+    (input : Slice Std.U8) (clients_start clients : Std.Usize)
+    (limits : decoder_v1.DecodeLimitsCore) (skipped_ols : Slice decoder_v1.WireId) :
+    decoder_v1.collect_colliding_origin_items input clients_start clients limits skipped_ols
+      ⦃ _ => True ⦄ := by
+  unfold decoder_v1.collect_colliding_origin_items
+  have hNoop := noop_sink_v1sink_total.toSpanSafe input
+  have hLoop :
+      decoder_v1.collect_colliding_origin_items_loop input clients limits skipped_ols ()
+        clients_start (alloc.vec.Vec.new decoder_v1.WireId) (alloc.vec.Vec.new decoder_v1.WireId)
+        0#usize none ⦃ _ => True ⦄ := by
+    unfold decoder_v1.collect_colliding_origin_items_loop
+    let inv : decoder_v1.NoopSink × Std.Usize × (alloc.vec.Vec decoder_v1.WireId) ×
+        (alloc.vec.Vec decoder_v1.WireId) × Std.Usize × Option CodecError → Prop :=
+      fun (_, _, _, _, cIdx, _) => cIdx.val ≤ clients.val
+    refine loop.spec_decr_nat
+      (fun (_, _, _, _, cIdx, err) => errFlag err + (clients.val - cIdx.val))
+      inv (fun _ => True) _
+      ((), clients_start, alloc.vec.Vec.new decoder_v1.WireId, alloc.vec.Vec.new decoder_v1.WireId, 0#usize, none)
+      ?_ (by scalar_tac)
+    intro ⟨noop1, cur1, cids1, pcoll1, cIdx, err1⟩ hcLe
+    unfold decoder_v1.collect_colliding_origin_items_loop.body
+    dsimp only
+    split_ifs with hlt hnone
+    · have herr : err1 = none := (is_none_eq_true_iff err1).1 hnone
+      subst herr
+      step with read_var_u64_sink_spec _ (fun _ => True) input hNoop cur1 noop1 trivial as ⟨r, _⟩
+      cases r with
+      | Ok p =>
+        rcases p with ⟨count_u64, p1⟩
+        step with checked_usize_limit_total count_u64 LimitKind.Structs as ⟨r1⟩
+        cases r1 with
+        | Ok cnt =>
+          step with read_var_u64_sink_spec _ (fun _ => True) input hNoop p1 () trivial as ⟨r2, _⟩
+          cases r2 with
+          | Ok p2 =>
+            rcases p2 with ⟨client, p21⟩
+            step with read_var_u64_sink_spec _ (fun _ => True) input hNoop p21 () trivial as ⟨r3, _⟩
+            cases r3 with
+            | Ok p3 =>
+              rcases p3 with ⟨clock, p31⟩
+              step with collect_colliding_in_client_total input p31 { client, clock } cnt limits
+                skipped_ols cids1 pcoll1 as ⟨r4, cids2, pcoll2⟩
+              cases r4 with
+              | Ok next_cur =>
+                step as ⟨cIdx1, hcIdx1⟩
+                try simp only [spec_ok]
+                exact ⟨by scalar_tac, by simp [hcIdx1]; scalar_tac⟩
+              | Err e => try simp only [spec_ok]; exact ⟨hcLe, by simp⟩
+            | Err e => try simp only [spec_ok]; exact ⟨hcLe, by simp⟩
+          | Err e => try simp only [spec_ok]; exact ⟨hcLe, by simp⟩
+        | Err e => try simp only [spec_ok]; exact ⟨hcLe, by simp⟩
+      | Err e => try simp only [spec_ok]; exact ⟨hcLe, by simp⟩
+    · simp [spec_ok]
+    · simp [spec_ok]
+  step with hLoop as ⟨cids, pcoll, err⟩
+  cases err <;> simp [spec_ok]
+
+@[local step]
+theorem client_has_origin_in_total
+    (input : Slice Std.U8) (start_pos count : Std.Usize)
+    (limits : decoder_v1.DecodeLimitsCore) (target_ids : Slice decoder_v1.WireId) :
+    decoder_v1.client_has_origin_in input start_pos count limits target_ids ⦃ _ => True ⦄ := by
+  unfold decoder_v1.client_has_origin_in
+  have hNoop := noop_sink_v1sink_total.toSpanSafe input
+  have hLoop :
+      decoder_v1.client_has_origin_in_loop input count limits target_ids () start_pos 0#usize false none
+        ⦃ _ => True ⦄ := by
+    unfold decoder_v1.client_has_origin_in_loop
+    let inv : decoder_v1.NoopSink × Std.Usize × Std.Usize × Bool × Option CodecError → Prop :=
+      fun (_, _, sIdx, _, _) => sIdx.val ≤ count.val
+    refine loop.spec_decr_nat
+      (fun (_, _, sIdx, found, err) => errFlag err + (if found = true then 0 else 1) + (count.val - sIdx.val))
+      inv (fun _ => True) _ ((), start_pos, 0#usize, false, none) ?_ (by scalar_tac)
+    intro ⟨noop1, cur1, sIdx, found1, err1⟩ hsLe
+    unfold decoder_v1.client_has_origin_in_loop.body
+    dsimp only
+    by_cases hlt : sIdx < count
+    · rw [if_pos hlt]
+      by_cases hfound : found1 = true
+      · simp only [hfound, ↓reduceIte, spec_ok]
+      · simp only [hfound, Bool.false_eq_true, ↓reduceIte]
+        by_cases hnone : core.option.Option.is_none err1 = true
+        · simp only [hnone, ↓reduceIte]
+          have herr : err1 = none := (is_none_eq_true_iff err1).1 hnone
+          subst herr
+          step with read_u8_at_total input cur1 as ⟨r, _⟩
+          cases r with
+          | Ok p =>
+            rcases p with ⟨info, after_info⟩
+            step as ⟨tag, _⟩
+            split_ifs with h0 h10
+            · step with read_var_u64_sink_spec _ (fun _ => True) input hNoop after_info noop1 trivial as ⟨r1, _⟩
+              cases r1 with
+              | Ok p1 =>
+                rcases p1 with ⟨_, next_cur⟩
+                step as ⟨sIdx1, hsIdx1⟩
+                try simp only [spec_ok]
+                exact ⟨by scalar_tac, by simp [hsIdx1, hfound]; scalar_tac⟩
+              | Err e => try simp only [spec_ok]; exact ⟨hsLe, by simp [hfound]⟩
+            · step with read_var_u64_sink_spec _ (fun _ => True) input hNoop after_info noop1 trivial as ⟨r1, _⟩
+              cases r1 with
+              | Ok p1 =>
+                rcases p1 with ⟨_, next_cur⟩
+                step as ⟨sIdx1, hsIdx1⟩
+                try simp only [spec_ok]
+                exact ⟨by scalar_tac, by simp [hsIdx1, hfound]; scalar_tac⟩
+              | Err e => try simp only [spec_ok]; exact ⟨hsLe, by simp [hfound]⟩
+            · step with decode_item_header_spec _ (fun _ => True) input hNoop after_info info noop1 trivial as ⟨r1, _⟩
+              cases r1 with
+              | Ok p1 =>
+                rcases p1 with ⟨hdr, content_start⟩
+                step with opt_wire_id_in_sorted_total target_ids hdr.origin_left as ⟨b1⟩
+                by_cases hb1 : b1 = true
+                · simp only [hb1, ↓reduceIte, spec_ok]
+                  exact ⟨hsLe, by simp [hfound]⟩
+                · simp only [hb1, Bool.false_eq_true, ↓reduceIte]
+                  step with opt_wire_id_in_sorted_total target_ids hdr.origin_right as ⟨b2⟩
+                  by_cases hb2 : b2 = true
+                  · simp only [hb2, ↓reduceIte, spec_ok]
+                    exact ⟨hsLe, by simp [hfound]⟩
+                  · simp only [hb2, Bool.false_eq_true, ↓reduceIte]
+                    step with parent_item_in_sorted_total target_ids hdr.parent as ⟨b3⟩
+                    by_cases hb3 : b3 = true
+                    · simp only [hb3, ↓reduceIte, spec_ok]
+                      exact ⟨hsLe, by simp [hfound]⟩
+                    · simp only [hb3, Bool.false_eq_true, ↓reduceIte]
+                      step with decode_item_content_spec _ (fun _ => True) input hNoop content_start tag limits 0#usize () trivial
+                        as ⟨r2, _⟩
+                      cases r2 with
+                      | Ok t =>
+                        rcases t with ⟨_, content_end, _⟩
+                        step as ⟨sIdx1, hsIdx1⟩
+                        try simp only [spec_ok]
+                        exact ⟨by scalar_tac, by simp [hsIdx1, hfound]; scalar_tac⟩
+                      | Err e => try simp only [spec_ok]; exact ⟨hsLe, by simp [hfound]⟩
+              | Err e => try simp only [spec_ok]; exact ⟨hsLe, by simp [hfound]⟩
+          | Err e => try simp only [spec_ok]; exact ⟨hsLe, by simp [hfound]⟩
+        · simp only [hnone, Bool.false_eq_true, ↓reduceIte, spec_ok]
+    · rw [if_neg hlt]
+      simp [spec_ok]
+  step with hLoop as ⟨cur, found, err⟩
+  cases err <;> simp [spec_ok]
+
+@[local step]
+theorem has_origin_referencing_total
+    (input : Slice Std.U8) (clients_start clients : Std.Usize)
+    (limits : decoder_v1.DecodeLimitsCore) (target_ids : Slice decoder_v1.WireId) :
+    decoder_v1.has_origin_referencing input clients_start clients limits target_ids ⦃ _ => True ⦄ := by
+  unfold decoder_v1.has_origin_referencing
+  have hNoop := noop_sink_v1sink_total.toSpanSafe input
+  have hLoop :
+      decoder_v1.has_origin_referencing_loop input clients limits target_ids () clients_start 0#usize false none
+        ⦃ _ => True ⦄ := by
+    unfold decoder_v1.has_origin_referencing_loop
+    let inv : decoder_v1.NoopSink × Std.Usize × Std.Usize × Bool × Option CodecError → Prop :=
+      fun (_, _, cIdx, _, _) => cIdx.val ≤ clients.val
+    refine loop.spec_decr_nat
+      (fun (_, _, cIdx, found, err) => errFlag err + (if found = true then 0 else 1) + (clients.val - cIdx.val))
+      inv (fun _ => True) _ ((), clients_start, 0#usize, false, none) ?_ (by scalar_tac)
+    intro ⟨noop1, cur1, cIdx, found1, err1⟩ hcLe
+    unfold decoder_v1.has_origin_referencing_loop.body
+    dsimp only
+    by_cases hlt : cIdx < clients
+    · rw [if_pos hlt]
+      by_cases hfound : found1 = true
+      · simp only [hfound, ↓reduceIte, spec_ok]
+      · simp only [hfound, Bool.false_eq_true, ↓reduceIte]
+        by_cases hnone : core.option.Option.is_none err1 = true
+        · simp only [hnone, ↓reduceIte]
+          have herr : err1 = none := (is_none_eq_true_iff err1).1 hnone
+          subst herr
+          step with read_var_u64_sink_spec _ (fun _ => True) input hNoop cur1 noop1 trivial as ⟨r, _⟩
+          cases r with
+          | Ok p =>
+            rcases p with ⟨count_u64, p1⟩
+            step with checked_usize_limit_total count_u64 LimitKind.Structs as ⟨r1⟩
+            cases r1 with
+            | Ok cnt =>
+              step with read_var_u64_sink_spec _ (fun _ => True) input hNoop p1 () trivial as ⟨r2, _⟩
+              cases r2 with
+              | Ok p2 =>
+                rcases p2 with ⟨_, p21⟩
+                step with read_var_u64_sink_spec _ (fun _ => True) input hNoop p21 () trivial as ⟨r3, _⟩
+                cases r3 with
+                | Ok p3 =>
+                  rcases p3 with ⟨_, p31⟩
+                  step with client_has_origin_in_total input p31 cnt limits target_ids as ⟨r4⟩
+                  cases r4 with
+                  | Ok p4 =>
+                    rcases p4 with ⟨next_cur, hit⟩
+                    step as ⟨cIdx1, hcIdx1⟩
+                    try simp only [spec_ok]
+                    refine ⟨by scalar_tac, ?_⟩
+                    cases hit <;> simp [hcIdx1, hfound] <;> scalar_tac
+                  | Err e => try simp only [spec_ok]; exact ⟨hcLe, by simp [hfound]⟩
+                | Err e => try simp only [spec_ok]; exact ⟨hcLe, by simp [hfound]⟩
+              | Err e => try simp only [spec_ok]; exact ⟨hcLe, by simp [hfound]⟩
+            | Err e => try simp only [spec_ok]; exact ⟨hcLe, by simp [hfound]⟩
+          | Err e => try simp only [spec_ok]; exact ⟨hcLe, by simp [hfound]⟩
+        · simp only [hnone, Bool.false_eq_true, ↓reduceIte, spec_ok]
+    · rw [if_neg hlt]
+      simp [spec_ok]
+  step with hLoop as ⟨found, err⟩
+  cases err <;> simp [spec_ok]
+
+@[local step]
+theorem scan_delete_ranges_coverage_total
+    (input : Slice Std.U8) (start_pos : Std.Usize) (client : Std.U64) (range_count : Std.Usize)
+    (pending_zeros : Slice decoder_v1.WireId) (zero_max_hi : Slice Std.Usize)
+    (pending_colliding : Slice decoder_v1.WireId) (coll_max_hi : Slice Std.Usize) :
+    decoder_v1.scan_delete_ranges_coverage input start_pos client range_count
+      pending_zeros zero_max_hi pending_colliding coll_max_hi ⦃ _ => True ⦄ := by
+  unfold decoder_v1.scan_delete_ranges_coverage
+  have hNoop := noop_sink_v1sink_total.toSpanSafe input
+  have hLoop :
+      decoder_v1.scan_delete_ranges_coverage_loop input client range_count
+        pending_zeros zero_max_hi pending_colliding coll_max_hi () start_pos 0#usize none
+        ⦃ _ => True ⦄ := by
+    unfold decoder_v1.scan_delete_ranges_coverage_loop
+    let inv : (Slice Std.Usize) × (Slice Std.Usize) × decoder_v1.NoopSink ×
+        Std.Usize × Std.Usize × Option CodecError → Prop :=
+      fun (_, _, _, _, rIdx, _) => rIdx.val ≤ range_count.val
+    refine loop.spec_decr_nat
+      (fun (_, _, _, _, rIdx, err) => errFlag err + (range_count.val - rIdx.val))
+      inv (fun _ => True) _ (zero_max_hi, coll_max_hi, (), start_pos, 0#usize, none) ?_ (by scalar_tac)
+    intro ⟨zmh1, cmh1, noop1, cur1, rIdx, err1⟩ hrLe
+    unfold decoder_v1.scan_delete_ranges_coverage_loop.body
+    dsimp only
+    split_ifs with hlt hnone
+    · have herr : err1 = none := (is_none_eq_true_iff err1).1 hnone
+      subst herr
+      step with read_one_delete_range_sink_spec _ (fun _ => True) input hNoop cur1 noop1 trivial as ⟨r, _⟩
+      cases r with
+      | Ok t =>
+        rcases t with ⟨start, «end», q2⟩
+        have hUpd :
+            (if (start != «end») = true then do
+              let b1 ← core.slice.Slice.is_empty pending_zeros
+              let zmh2 ← if b1 = true then ok zmh1 else decoder_v1.mark_zero_strings_covered pending_zeros zmh1 client start «end»
+              let b2 ← core.slice.Slice.is_empty pending_colliding
+              let s ← if b2 = true then ok cmh1 else decoder_v1.mark_point_ids_covered pending_colliding cmh1 client start «end»
+              ok (zmh2, s, ())
+             else ok (zmh1, cmh1, ())) ⦃ _ => True ⦄ := by
+          by_cases hne : (start != «end») = true
+          · simp only [hne, ↓reduceIte, core.slice.Slice.is_empty, bind_ok]
+            have hM1 :
+                (if decide (pending_zeros.length = 0) = true then ok zmh1
+                 else decoder_v1.mark_zero_strings_covered pending_zeros zmh1 client start «end») ⦃ _ => True ⦄ := by
+              by_cases hz : pending_zeros.length = 0
+              · simp [hz, spec_ok]
+              · simp only [hz, decide_false, Bool.false_eq_true, ↓reduceIte]
+                exact mark_zero_strings_covered_total pending_zeros zmh1 client start «end»
+            step with hM1 as ⟨zmh2⟩
+            have hM2 :
+                (if decide (pending_colliding.length = 0) = true then ok cmh1
+                 else decoder_v1.mark_point_ids_covered pending_colliding cmh1 client start «end») ⦃ _ => True ⦄ := by
+              by_cases hc : pending_colliding.length = 0
+              · simp [hc, spec_ok]
+              · simp only [hc, decide_false, Bool.false_eq_true, ↓reduceIte]
+                exact mark_point_ids_covered_total pending_colliding cmh1 client start «end»
+            step with hM2 as ⟨cmh2⟩
+          · simp only [hne, Bool.false_eq_true, ↓reduceIte, spec_ok]
+        step with hUpd as ⟨zmh2, cmh2⟩
+        step as ⟨rIdx1, hrIdx1⟩
+        try simp only [spec_ok]
+        exact ⟨by scalar_tac, by simp [hrIdx1]; scalar_tac⟩
+      | Err e => try simp only [spec_ok]; exact ⟨hrLe, by simp⟩
+    · simp [spec_ok]
+    · simp [spec_ok]
+  step with hLoop as ⟨zmh, cmh, cur, err⟩
+  cases err <;> simp [spec_ok]
+
+@[local step]
+theorem scan_delete_set_coverage_total
+    (input : Slice Std.U8) (ds_start : Std.Usize)
+    (pending_zeros : Slice decoder_v1.WireId) (zero_max_hi : Slice Std.Usize)
+    (pending_colliding : Slice decoder_v1.WireId) (coll_max_hi : Slice Std.Usize) :
+    decoder_v1.scan_delete_set_coverage input ds_start
+      pending_zeros zero_max_hi pending_colliding coll_max_hi ⦃ _ => True ⦄ := by
+  unfold decoder_v1.scan_delete_set_coverage
+  have hNoop := noop_sink_v1sink_total.toSpanSafe input
+  step with read_var_u64_sink_spec _ (fun _ => True) input hNoop ds_start () trivial as ⟨r, _⟩
+  cases r with
+  | Ok val =>
+    simp only [core_ops_try_branch_ok, bind_ok]; try dsimp only
+    rcases val with ⟨clients_u64, cur⟩
+    step with checked_usize_limit_total clients_u64 LimitKind.DeleteClients as ⟨r1⟩
+    cases r1 with
+    | Ok val1 =>
+      simp only [core_ops_try_branch_ok, bind_ok]; try dsimp only
+      have hLoop :
+          decoder_v1.scan_delete_set_coverage_loop input pending_zeros zero_max_hi
+            pending_colliding coll_max_hi () cur val1 0#usize none ⦃ _ => True ⦄ := by
+        unfold decoder_v1.scan_delete_set_coverage_loop
+        let inv : (Slice Std.Usize) × (Slice Std.Usize) × decoder_v1.NoopSink ×
+            Std.Usize × Std.Usize × Option CodecError → Prop :=
+          fun (_, _, _, _, cIdx, _) => cIdx.val ≤ val1.val
+        refine loop.spec_decr_nat
+          (fun (_, _, _, _, cIdx, err) => errFlag err + (val1.val - cIdx.val))
+          inv (fun _ => True) _ (zero_max_hi, coll_max_hi, (), cur, 0#usize, none) ?_ (by scalar_tac)
+        intro ⟨zmh1, cmh1, noop2, cur1, cIdx, err1⟩ hcLe
+        unfold decoder_v1.scan_delete_set_coverage_loop.body
+        dsimp only
+        split_ifs with hlt hnone
+        · have herr : err1 = none := (is_none_eq_true_iff err1).1 hnone
+          subst herr
+          step with read_var_u64_sink_spec _ (fun _ => True) input hNoop cur1 noop2 trivial as ⟨r2, _⟩
+          cases r2 with
+          | Ok p =>
+            rcases p with ⟨client, p1⟩
+            step with read_var_u64_sink_spec _ (fun _ => True) input hNoop p1 () trivial as ⟨r3, _⟩
+            cases r3 with
+            | Ok p2 =>
+              rcases p2 with ⟨ranges_u64, p21⟩
+              step with checked_usize_limit_total ranges_u64 LimitKind.DeleteRanges as ⟨r4⟩
+              cases r4 with
+              | Ok rc =>
+                step with scan_delete_ranges_coverage_total input p21 client rc
+                  pending_zeros zmh1 pending_colliding cmh1 as ⟨r5, zmh2, cmh2⟩
+                cases r5 with
+                | Ok next_cur =>
+                  step as ⟨cIdx1, hcIdx1⟩
+                  try simp only [spec_ok]
+                  exact ⟨by scalar_tac, by simp [hcIdx1]; scalar_tac⟩
+                | Err e => try simp only [spec_ok]; exact ⟨hcLe, by simp⟩
+              | Err e => try simp only [spec_ok]; exact ⟨hcLe, by simp⟩
+            | Err e => try simp only [spec_ok]; exact ⟨hcLe, by simp⟩
+          | Err e => try simp only [spec_ok]; exact ⟨hcLe, by simp⟩
+        · simp [spec_ok]
+        · simp [spec_ok]
+      step with hLoop as ⟨zmh, cmh, err⟩
+      cases err <;> simp [spec_ok]
+    | Err e => simp only [core_ops_try_branch_err, bind_ok, core_ops_try_from_residual_err, spec_ok]
+  | Err e => simp only [core_ops_try_branch_err, bind_ok, core_ops_try_from_residual_err, spec_ok]
+
+private theorem finish_coverage_check_total
+    (pz pc : Slice decoder_v1.WireId)
+    (s2 s3 : Slice Std.Usize)
+    (backZ backC : Slice Std.Usize → alloc.vec.Vec Std.Usize) :
+    (do
+      let b2 ← core.slice.Slice.is_empty pz
+      if b2 = true then
+        let b3 ← core.slice.Slice.is_empty pc
+        if b3 = true then ok (core.result.Result.Ok (), pz, pc)
+        else
+          let coll_max_hi1 := backC s3
+          let s4 := alloc.vec.Vec.deref coll_max_hi1
+          let b4 ← decoder_v1.all_zero_strings_covered s4
+          if b4 = true then ok (core.result.Result.Ok (), pz, pc)
+          else ok (core.result.Result.Err CodecError.ZeroLengthStruct, pz, pc)
+      else
+        let zero_max_hi1 := backZ s2
+        let s4 := alloc.vec.Vec.deref zero_max_hi1
+        let b3 ← decoder_v1.all_zero_strings_covered s4
+        if b3 = true then
+          let b4 ← core.slice.Slice.is_empty pc
+          if b4 = true then ok (core.result.Result.Ok (), pz, pc)
+          else
+            let coll_max_hi1 := backC s3
+            let s5 := alloc.vec.Vec.deref coll_max_hi1
+            let b5 ← decoder_v1.all_zero_strings_covered s5
+            if b5 = true then ok (core.result.Result.Ok (), pz, pc)
+            else ok (core.result.Result.Err CodecError.ZeroLengthStruct, pz, pc)
+        else ok (core.result.Result.Err CodecError.ZeroLengthStruct, pz, pc)) ⦃ _ => True ⦄ := by
+  step as ⟨b2, _⟩
+  by_cases hb2 : b2 = true
+  · simp only [hb2, ↓reduceIte]
+    step as ⟨b3, _⟩
+    by_cases hb3 : b3 = true
+    · simp only [hb3, ↓reduceIte, spec_ok]
+    · simp only [hb3, Bool.false_eq_true, ↓reduceIte]
+      step with all_zero_strings_covered_total (alloc.vec.Vec.deref (backC s3)) as ⟨b4⟩
+      split_ifs <;> simp [spec_ok]
+  · simp only [hb2, Bool.false_eq_true, ↓reduceIte]
+    step with all_zero_strings_covered_total (alloc.vec.Vec.deref (backZ s2)) as ⟨b3⟩
+    by_cases hb3 : b3 = true
+    · simp only [hb3, ↓reduceIte]
+      step as ⟨b4, _⟩
+      by_cases hb4 : b4 = true
+      · simp only [hb4, ↓reduceIte, spec_ok]
+      · simp only [hb4, Bool.false_eq_true, ↓reduceIte]
+        step with all_zero_strings_covered_total (alloc.vec.Vec.deref (backC s3)) as ⟨b5⟩
+        split_ifs <;> simp [spec_ok]
+    · simp only [hb3, Bool.false_eq_true, ↓reduceIte, spec_ok]
+
+@[local step]
+theorem verify_delete_set_coverage_total
+    (input : Slice Std.U8) (ds_start : Std.Usize)
+    (pending_zero_strings pending_colliding : Slice decoder_v1.WireId) :
+    decoder_v1.verify_delete_set_coverage input ds_start pending_zero_strings pending_colliding
+      ⦃ _ => True ⦄ := by
+  unfold decoder_v1.verify_delete_set_coverage
+  step as ⟨b, _⟩
+  by_cases hb : b = true
+  · simp only [hb, ↓reduceIte]
+    step as ⟨b1, _⟩
+    by_cases hb1 : b1 = true
+    · simp only [hb1, ↓reduceIte, spec_ok]
+    · simp only [hb1, Bool.false_eq_true, ↓reduceIte]
+      step with sort_wire_ids_total pending_colliding as ⟨pc1⟩
+      step with alloc_zero_max_hi_total (Slice.len pc1) as ⟨cmh⟩
+      simp only [lift, bind_ok, alloc.vec.Vec.deref_mut]
+      step with scan_delete_set_coverage_total input ds_start pending_zero_strings _ pc1 _ as ⟨r, s2, s3⟩
+      cases r with
+      | Ok _ =>
+        simp only [core_ops_try_branch_ok, bind_ok]
+        exact finish_coverage_check_total pending_zero_strings pc1 s2 s3 _ _
+      | Err e =>
+        simp only [core_ops_try_branch_err, bind_ok, core_ops_try_from_residual_err, spec_ok]
+  · simp only [hb, Bool.false_eq_true, ↓reduceIte]
+    step with sort_wire_ids_total pending_zero_strings as ⟨pz1⟩
+    step with alloc_zero_max_hi_total (Slice.len pz1) as ⟨zmh⟩
+    step as ⟨b1, _⟩
+    have hPrepC :
+        (if b1 = true then ok (pending_colliding, alloc.vec.Vec.new Std.Usize)
+         else do
+           let pending_colliding2 ← decoder_v1.sort_wire_ids pending_colliding
+           let i := Slice.len pending_colliding2
+           let coll_max_hi1 ← decoder_v1.alloc_zero_max_hi i
+           ok (pending_colliding2, coll_max_hi1)) ⦃ _ => True ⦄ := by
+      by_cases hb1 : b1 = true
+      · simp only [hb1, ↓reduceIte, spec_ok]
+      · simp only [hb1, Bool.false_eq_true, ↓reduceIte]
+        step with sort_wire_ids_total pending_colliding as ⟨pc2⟩
+        step with alloc_zero_max_hi_total (Slice.len pc2) as ⟨cmh2⟩
+    step with hPrepC as ⟨pc1, cmh⟩
+    simp only [lift, bind_ok, alloc.vec.Vec.deref_mut]
+    step with scan_delete_set_coverage_total input ds_start pz1 _ pc1 _ as ⟨r, s2, s3⟩
+    cases r with
+    | Ok _ =>
+      simp only [core_ops_try_branch_ok, bind_ok]
+      exact finish_coverage_check_total pz1 pc1 s2 s3 _ _
+    | Err e =>
+      simp only [core_ops_try_branch_err, bind_ok, core_ops_try_from_residual_err, spec_ok]
+
+@[local step]
+theorem verify_skipped_zero_items_total
+    (input : Slice Std.U8) (clients_start clients ds_start : Std.Usize)
+    (limits : decoder_v1.DecodeLimitsCore)
+    (skipped_ols pending_zero_strings : Slice decoder_v1.WireId) :
+    decoder_v1.verify_skipped_zero_items input clients_start clients ds_start limits
+      skipped_ols pending_zero_strings ⦃ _ => True ⦄ := by
+  unfold decoder_v1.verify_skipped_zero_items
+  step with sort_wire_ids_total skipped_ols as ⟨skipped_ols1⟩
+  step with collect_colliding_origin_items_total input clients_start clients limits skipped_ols1 as ⟨r⟩
+  cases r with
+  | Ok val =>
+    simp only [core_ops_try_branch_ok, bind_ok]
+    rcases val with ⟨colliding_ids, pending_colliding⟩
+    step as ⟨b, _⟩
+    by_cases hb : b = true
+    · simp only [hb, ↓reduceIte, lift, bind_ok, alloc.vec.Vec.deref_mut]
+      step with verify_delete_set_coverage_total input ds_start pending_zero_strings _ as ⟨r1, pz1, _⟩
+    · simp only [hb, Bool.false_eq_true, ↓reduceIte, lift, bind_ok, alloc.vec.Vec.deref_mut]
+      step with sort_wire_ids_total _ as ⟨s1⟩
+      step with has_origin_referencing_total input clients_start clients limits _ as ⟨r1⟩
+      cases r1 with
+      | Ok val1 =>
+        simp only [core_ops_try_branch_ok, bind_ok]
+        by_cases hv : val1 = true
+        · simp only [hv, ↓reduceIte, spec_ok]
+        · simp only [hv, Bool.false_eq_true, ↓reduceIte, lift, bind_ok, alloc.vec.Vec.deref_mut]
+          step with verify_delete_set_coverage_total input ds_start pending_zero_strings _ as ⟨r2, pz1, _⟩
+      | Err e =>
+        simp only [core_ops_try_branch_err, bind_ok, core_ops_try_from_residual_err, spec_ok]
+  | Err e =>
+    simp only [core_ops_try_branch_err, bind_ok, core_ops_try_from_residual_err, spec_ok]
+
 theorem decode_struct_frame_spec
     {S : Type _} (V : decoder_v1.V1Sink S) (Inv : S → Prop)
     (input : Slice Std.U8) (hV : V1SinkSpanSafe input V Inv)
-    (pos : Std.Usize) (id : decoder_v1.WireId)
+    (pos client_start_pos : Std.Usize) (client_start_clock : Std.U64)
+    (s_idx : Std.Usize) (id : decoder_v1.WireId)
     (limits : decoder_v1.DecodeLimitsCore) (acc : decoder_v1.DecodeAcc)
+    (state : decoder_v1.ClientSeqState)
     (sink : S) (hSink : Inv sink) :
-    decoder_v1.decode_struct_frame V input pos id limits acc sink ⦃ (r, sink') =>
+    decoder_v1.decode_struct_frame V input pos client_start_pos client_start_clock s_idx id limits acc state sink ⦃ (r, _, sink') =>
       Inv sink' ∧
       match r with
-      | .Ok (_, nxt, _) => pos.val ≤ nxt.val ∧ nxt.val ≤ input.length
+      | .Ok (nc, nxt, _, _, _) => id.clock.val ≤ nc.val ∧ pos.val ≤ nxt.val ∧ nxt.val ≤ input.length
       | .Err _ => True ⦄ := by
   unfold decoder_v1.decode_struct_frame
-  try dsimp only; try simp only [Aeneas.Std.uncurry]
-  repeat (any_goals (
-    first
-    | (simp only [spec_ok, Aeneas.Std.uncurry]; (try dsimp only at *); (try simp only [SpanOk] at *);
-        (first
-        | done
-        | (exact ⟨by assumption, by omega, by omega⟩)
-        | (exact ⟨by assumption, trivial⟩)
-        | (scalar_tac; done)
-        | (omega; done)))
-    | (apply ite_wp_split <;> intro _)
-    | (split_ifs <;> try dsimp only at * <;> try simp only [Aeneas.Std.uncurry])
-    | (cases_prod_hyp <;> try dsimp only at * <;> try simp only [Aeneas.Std.uncurry])
-    | (cases_result_err <;>
-        simp only [core_ops_try_branch_ok, core_ops_try_branch_err, bind_ok,
-          core_ops_try_from_residual_err, Aeneas.Std.uncurry] <;>
-        try dsimp only at *)
-    | (step with (sat_sub_usize_total))
-    | (step with (read_var_u64_sink_spec V Inv input hV))
-    | (step with (advance_clock_sink_spec V Inv input hV))
-    | (step with (decode_item_header_spec V Inv input hV))
-    | (step with (decode_item_content_spec V Inv input hV))
-    | (step with (hV.on_gc))
-    | (step with (hV.on_skip))
-    | (step with (hV.on_item))
-    | step
-    | ((try dsimp only at *); (try simp only [ItemMetaOk, WireParentOk, OptSpanOk, SpanOk, Slice.length] at *);
-        (try dsimp);
-        cases_and_hyps;
-        (first
-        | done
-        | (assumption; done)
-        | (trivial; done)
-        | (exact ⟨by omega, by omega⟩; done)
-        | (refine ⟨by assumption, by assumption, by omega, by omega⟩; done)
-        | (omega; done)))
-  ))
-  all_goals try simp only [spec_ok, Aeneas.Std.uncurry]
-  all_goals try (simp only [SpanOk] at *; exact ⟨by assumption, by omega, by omega⟩)
-  all_goals try exact ⟨by assumption, trivial⟩
+  step with read_u8_at_total input pos as ⟨r, hr⟩
+  cases r with
+  | Ok val =>
+    simp only [core_ops_try_branch_ok, bind_ok]
+    rcases val with ⟨info, cur⟩
+    dsimp only at hr
+    step as ⟨tag, _⟩
+    by_cases h0 : tag = 0#u8
+    · simp only [h0, ↓reduceIte]
+      step with read_var_u64_sink_spec V Inv input hV cur sink hSink as ⟨r1, sink1, hInv1, hr1⟩
+      cases r1 with
+      | Ok val1 =>
+        simp only [core_ops_try_branch_ok, bind_ok]
+        rcases val1 with ⟨len, p⟩
+        dsimp only at hr1
+        step with advance_clock_sink_spec V Inv input hV id.clock len sink1 hInv1 as ⟨r2, sink2, hInv2, hr2⟩
+        cases r2 with
+        | Ok val2 =>
+          simp only [core_ops_try_branch_ok, bind_ok]
+          dsimp only at hr2
+          step with hV.on_gc sink2 id len hInv2 as ⟨r3, sink3, hInv3⟩
+          cases r3 with
+          | Ok _ =>
+            simp only [core_ops_try_branch_ok, bind_ok]
+            split_ifs <;> (simp only [spec_ok]; exact ⟨hInv3, by omega, by omega, hr1.2⟩)
+          | Err e =>
+            simp only [core_ops_try_branch_err, bind_ok, core_ops_try_from_residual_err, spec_ok]
+            exact ⟨hInv3, trivial⟩
+        | Err e =>
+          simp only [core_ops_try_branch_err, bind_ok, core_ops_try_from_residual_err, spec_ok]
+          exact ⟨hInv2, trivial⟩
+      | Err e =>
+        simp only [core_ops_try_branch_err, bind_ok, core_ops_try_from_residual_err, spec_ok]
+        exact ⟨hInv1, trivial⟩
+    · simp only [h0, ↓reduceIte]
+      by_cases h10 : tag = 10#u8
+      · simp only [h10, ↓reduceIte]
+        step with read_var_u64_sink_spec V Inv input hV cur sink hSink as ⟨r1, sink1, hInv1, hr1⟩
+        cases r1 with
+        | Ok val1 =>
+          simp only [core_ops_try_branch_ok, bind_ok]
+          rcases val1 with ⟨len, p⟩
+          dsimp only at hr1
+          step with advance_clock_sink_spec V Inv input hV id.clock len sink1 hInv1 as ⟨r2, sink2, hInv2, hr2⟩
+          cases r2 with
+          | Ok val2 =>
+            simp only [core_ops_try_branch_ok, bind_ok]
+            dsimp only at hr2
+            step with hV.on_skip sink2 id len hInv2 as ⟨r3, sink3, hInv3⟩
+            cases r3 with
+            | Ok _ =>
+              simp only [core_ops_try_branch_ok, bind_ok]
+              split_ifs <;> (simp only [spec_ok]; exact ⟨hInv3, by omega, by omega, hr1.2⟩)
+            | Err e =>
+              simp only [core_ops_try_branch_err, bind_ok, core_ops_try_from_residual_err, spec_ok]
+              exact ⟨hInv3, trivial⟩
+          | Err e =>
+            simp only [core_ops_try_branch_err, bind_ok, core_ops_try_from_residual_err, spec_ok]
+            exact ⟨hInv2, trivial⟩
+        | Err e =>
+          simp only [core_ops_try_branch_err, bind_ok, core_ops_try_from_residual_err, spec_ok]
+          exact ⟨hInv1, trivial⟩
+      · simp only [h10, ↓reduceIte]
+        step with decode_item_header_spec V Inv input hV cur info sink hSink as ⟨r1, sink1, hInv1, hr1⟩
+        cases r1 with
+        | Ok val1 =>
+          simp only [core_ops_try_branch_ok, bind_ok]
+          rcases val1 with ⟨hdr, content_start⟩
+          dsimp only at hr1
+          step with decode_item_content_spec V Inv input hV content_start tag limits acc.entries sink1 hInv1
+            as ⟨r2, sink2, hInv2, hr2⟩
+          cases r2 with
+          | Ok val2 =>
+            simp only [core_ops_try_branch_ok, bind_ok]
+            rcases val2 with ⟨len, content_end, entries⟩
+            dsimp only at hr2
+            have hDelta :
+                (if content_end ≥ content_start then content_end - content_start else ok 0#usize)
+                ⦃ _ => True ⦄ := by
+              by_cases hge : content_end ≥ content_start
+              · rw [if_pos hge]; step*
+              · rw [if_neg hge]; simp [spec_ok]
+            step with hDelta as ⟨delta⟩
+            step with checked_add_limit_total acc.content_bytes delta LimitKind.ContentBytes as ⟨r3⟩
+            cases r3 with
+            | Ok val3 =>
+              simp only [core_ops_try_branch_ok, bind_ok]
+              by_cases hlim : val3 > limits.max_content_bytes
+              · rw [if_pos hlim]; simp [spec_ok, hInv2]
+              · rw [if_neg hlim]
+                have hPosCe : pos.val ≤ content_end.val ∧ content_end.val ≤ input.length :=
+                  ⟨by omega, hr2.2⟩
+                have hHdrOk : WireParentOk input hdr.parent ∧ OptSpanOk input hdr.parent_sub :=
+                  ⟨hr1.2.2.1, hr1.2.2.2⟩
+                by_cases hzero : len = 0#u64
+                · rw [if_pos hzero]
+                  exact decode_struct_frame_slow_spec V Inv input hV pos client_start_pos client_start_clock
+                    s_idx id info tag hdr content_start len content_end entries val3 limits acc state sink2
+                    hInv2 hPosCe hHdrOk
+                · rw [if_neg hzero]
+                  by_cases hact : state.active = true
+                  · simp only [hact, ↓reduceIte]
+                    exact decode_struct_frame_slow_spec V Inv input hV pos client_start_pos client_start_clock
+                      s_idx id info tag hdr content_start len content_end entries val3 limits acc state sink2
+                      hInv2 hPosCe hHdrOk
+                  · simp only [hact, Bool.false_eq_true, ↓reduceIte]
+                    step with advance_clock_sink_spec V Inv input hV id.clock len sink2 hInv2
+                      as ⟨r4, sink3, hInv3, hr4⟩
+                    cases r4 with
+                    | Ok val4 =>
+                      simp only [core_ops_try_branch_ok, bind_ok]
+                      dsimp only at hr4
+                      have hMeta : ItemMetaOk input
+                          { origin_left := hdr.origin_left,
+                            origin_right := hdr.origin_right,
+                            parent := hdr.parent,
+                            parent_sub := hdr.parent_sub,
+                            raw_range := { start := pos, «end» := content_end } } :=
+                        ⟨hHdrOk.1, hHdrOk.2, hPosCe.1, hPosCe.2⟩
+                      step with hV.on_item sink3 id len _ hInv3 hMeta as ⟨r5, sink4, hInv4⟩
+                      cases r5 with
+                      | Ok _ =>
+                        simp only [core_ops_try_branch_ok, bind_ok, spec_ok]
+                        exact ⟨hInv4, by omega, hPosCe.1, hPosCe.2⟩
+                      | Err e =>
+                        simp only [core_ops_try_branch_err, bind_ok, core_ops_try_from_residual_err, spec_ok]
+                        exact ⟨hInv4, trivial⟩
+                    | Err e =>
+                      simp only [core_ops_try_branch_err, bind_ok, core_ops_try_from_residual_err, spec_ok]
+                      exact ⟨hInv3, trivial⟩
+            | Err e =>
+              simp only [core_ops_try_branch_err, bind_ok, core_ops_try_from_residual_err, spec_ok]
+              exact ⟨hInv2, trivial⟩
+          | Err e =>
+            simp only [core_ops_try_branch_err, bind_ok, core_ops_try_from_residual_err, spec_ok]
+            exact ⟨hInv2, trivial⟩
+        | Err e =>
+          simp only [core_ops_try_branch_err, bind_ok, core_ops_try_from_residual_err, spec_ok]
+          exact ⟨hInv1, trivial⟩
+  | Err e =>
+    simp only [core_ops_try_branch_err, bind_ok, core_ops_try_from_residual_err, spec_ok]
+    exact ⟨hSink, trivial⟩
 
 theorem decode_struct_frame_total
     {S : Type _} (V : decoder_v1.V1Sink S) (Inv : S → Prop)
     (input : Slice Std.U8) (hV : V1SinkTotal V Inv)
-    (pos : Std.Usize) (id : decoder_v1.WireId)
+    (pos client_start_pos : Std.Usize) (client_start_clock : Std.U64)
+    (s_idx : Std.Usize) (id : decoder_v1.WireId)
     (limits : decoder_v1.DecodeLimitsCore) (acc : decoder_v1.DecodeAcc)
+    (state : decoder_v1.ClientSeqState)
     (sink : S) (hSink : Inv sink) :
-    decoder_v1.decode_struct_frame V input pos id limits acc sink ⦃ (_, sink') => Inv sink' ⦄ := by
-  step with decode_struct_frame_spec V Inv input (hV.toSpanSafe input) pos id limits acc sink hSink
-    as ⟨_, sink', hInv, _⟩
+    decoder_v1.decode_struct_frame V input pos client_start_pos client_start_clock s_idx id limits acc state sink ⦃ (_, _, sink') => Inv sink' ⦄ := by
+  step with decode_struct_frame_spec V Inv input (hV.toSpanSafe input) pos client_start_pos client_start_clock s_idx id limits acc state sink hSink
+    as ⟨_, _, sink', hInv, _⟩
   exact hInv
 
 theorem decode_client_structs_spec
@@ -2454,38 +4023,69 @@ theorem decode_client_structs_spec
     decoder_v1.decode_client_structs V input start_pos start_id count limits start_acc sink
       ⦃ (_, sink') => Inv sink' ⦄ := by
   unfold decoder_v1.decode_client_structs
-  let inv : S × Std.Usize × Std.U64 × decoder_v1.DecodeAcc × Std.Usize × Option CodecError → Prop :=
-    fun (sink1, _, _, _, sIdx, _) => Inv sink1 ∧ sIdx.val ≤ count.val
+  let inv : S × Std.Usize × Std.U64 × decoder_v1.DecodeAcc ×
+      decoder_v1.ClientSeqState × alloc.vec.Vec decoder_v1.WireId ×
+      alloc.vec.Vec decoder_v1.WireId × Std.Usize × Option CodecError → Prop :=
+    fun (sink1, _, _, _, _, _, _, sIdx, _) => Inv sink1 ∧ sIdx.val ≤ count.val
   have hLoop :
-      decoder_v1.decode_client_structs_loop V input start_id.client count limits sink
-        start_pos start_id.clock start_acc 0#usize none ⦃ (sink1, _, _, _) => Inv sink1 ⦄ := by
+      decoder_v1.decode_client_structs_loop V input start_pos start_id.client start_id.clock count limits sink
+        start_pos start_id.clock start_acc
+        { active := false,
+          ytext_types := alloc.vec.Vec.new order_range.ClockRange,
+          seq_ranges := alloc.vec.Vec.new order_range.ClockRange,
+          just_skipped_ol := none }
+        (alloc.vec.Vec.new decoder_v1.WireId) (alloc.vec.Vec.new decoder_v1.WireId) 0#usize none
+        ⦃ (sink1, _, _, _, _, _) => Inv sink1 ⦄ := by
     unfold decoder_v1.decode_client_structs_loop
     refine loop.spec_decr_nat
-      (fun (_, _, _, _, sIdx, err) => errFlag err + (count.val - sIdx.val))
+      (fun (_, _, _, _, _, _, _, sIdx, err) => errFlag err + (count.val - sIdx.val))
       inv _ _
-      (sink, start_pos, start_id.clock, start_acc, 0#usize, none) ?_ ⟨hSink, by scalar_tac⟩
-    intro ⟨sink1, cur1, clk1, acc1, sIdx, err1⟩ ⟨hInv1, hs⟩
+      (sink, start_pos, start_id.clock, start_acc,
+        { active := false,
+          ytext_types := alloc.vec.Vec.new order_range.ClockRange,
+          seq_ranges := alloc.vec.Vec.new order_range.ClockRange,
+          just_skipped_ol := none },
+        alloc.vec.Vec.new decoder_v1.WireId, alloc.vec.Vec.new decoder_v1.WireId, 0#usize, none) ?_
+      ⟨hSink, by scalar_tac⟩
+    intro ⟨sink1, cur1, clk1, acc1, state1, skippedOls1, pendingZeros1, sIdx, err1⟩ ⟨hInv1, hs⟩
     unfold decoder_v1.decode_client_structs_loop.body
     dsimp only
     split_ifs with hlt hnone
     · have herr : err1 = none := (is_none_eq_true_iff err1).1 hnone
       subst herr
-      step with decode_struct_frame_spec V Inv input hV cur1
-        { client := start_id.client, clock := clk1 } limits acc1 sink1 hInv1
-        as ⟨r, sink2, hInv2, _⟩
+      step with decode_struct_frame_spec V Inv input hV cur1 start_pos start_id.clock sIdx
+        { client := start_id.client, clock := clk1 } limits acc1 state1 sink1 hInv1
+        as ⟨r, state2, sink2, hInv2, _⟩
       cases r with
       | Ok t =>
-        rcases t with ⟨next_clk, next_cur, next_acc⟩
-        dsimp
-        step as ⟨sIdx1, hsIdx1⟩
-        try simp only [spec_ok]
-        exact ⟨⟨hInv2, by scalar_tac⟩, by simp [hsIdx1]; scalar_tac⟩
+        rcases t with ⟨next_clk, next_cur, next_acc, skipped_ol, needs_del⟩
+        dsimp only
+        have hPush :
+            (if needs_del = true then decoder_v1.push_wire_id pendingZeros1 { client := start_id.client, clock := clk1 }
+             else ok pendingZeros1) ⦃ _ => True ⦄ := by
+          by_cases hdel : needs_del = true
+          · simp only [hdel, ↓reduceIte]
+            exact push_wire_id_total pendingZeros1 { client := start_id.client, clock := clk1 }
+          · simp only [hdel, Bool.false_eq_true, ↓reduceIte, spec_ok]
+        cases skipped_ol with
+        | none =>
+          step with hPush as ⟨pz2⟩
+          step as ⟨sIdx1, hsIdx1⟩
+          try simp only [spec_ok]
+          exact ⟨⟨hInv2, by scalar_tac⟩, by simp [hsIdx1]; scalar_tac⟩
+        | some ol =>
+          step with hV.on_skipped_zero_origin sink2 ol hInv2 as ⟨sink3, hInv3⟩
+          step with push_wire_id_total skippedOls1 ol as ⟨ols2⟩
+          step with hPush as ⟨pz2⟩
+          step as ⟨sIdx1, hsIdx1⟩
+          try simp only [spec_ok]
+          exact ⟨⟨hInv3, by scalar_tac⟩, by simp [hsIdx1]; scalar_tac⟩
       | Err e =>
         try simp only [spec_ok]
         exact ⟨⟨hInv2, hs⟩, by simp⟩
     · simp [spec_ok, hInv1]
     · simp [spec_ok, hInv1]
-  step with hLoop as ⟨sink1, cur, acc, err, hInv1⟩
+  step with hLoop as ⟨sink1, cur, acc, ols, pz, err, hInv1⟩
   cases err <;> simp [spec_ok, hInv1]
 
 theorem decode_client_structs_total
@@ -2617,7 +4217,7 @@ theorem decode_update_v1_spec
   cases r with
   | Ok val =>
     simp only [core_ops_try_branch_ok, bind_ok]; try dsimp only
-    rcases val with ⟨clients_u64, cur⟩
+    rcases val with ⟨clients_u64, clients_start⟩
     dsimp only at hr
     step with checked_usize_limit_total clients_u64 LimitKind.Clients as ⟨r1⟩
     cases r1 with
@@ -2635,18 +4235,20 @@ theorem decode_update_v1_spec
           have hLoop :
               decoder_v1.decode_update_v1_loop V input sink0 limits.max_structs limits.max_clients
                 limits.max_collection_entries limits.max_any_depth limits.max_content_bytes
-                cur val1 { structs := 0#usize, entries := 0#usize, content_bytes := 0#usize }
-                0#usize none ⦃ (sink1, _, _, _) => Inv sink1 ⦄ := by
+                clients_start val1 { structs := 0#usize, entries := 0#usize, content_bytes := 0#usize }
+                (alloc.vec.Vec.new decoder_v1.WireId) (alloc.vec.Vec.new decoder_v1.WireId) 0#usize none
+                ⦃ (sink1, _, _, _, _, _) => Inv sink1 ⦄ := by
             unfold decoder_v1.decode_update_v1_loop
-            let inv : S × Std.Usize × decoder_v1.DecodeAcc × Std.Usize × Option CodecError → Prop :=
-              fun (sink1, _, _, cIdx, _) => Inv sink1 ∧ cIdx.val ≤ val1.val
+            let inv : S × Std.Usize × decoder_v1.DecodeAcc × alloc.vec.Vec decoder_v1.WireId ×
+                alloc.vec.Vec decoder_v1.WireId × Std.Usize × Option CodecError → Prop :=
+              fun (sink1, _, _, _, _, cIdx, _) => Inv sink1 ∧ cIdx.val ≤ val1.val
             refine loop.spec_decr_nat
-              (fun (_, _, _, cIdx, err) => errFlag err + (val1.val - cIdx.val))
+              (fun (_, _, _, _, _, cIdx, err) => errFlag err + (val1.val - cIdx.val))
               inv _ _
-              (sink0, cur, { structs := 0#usize, entries := 0#usize, content_bytes := 0#usize },
-                0#usize, none) ?_
+              (sink0, clients_start, { structs := 0#usize, entries := 0#usize, content_bytes := 0#usize },
+                alloc.vec.Vec.new decoder_v1.WireId, alloc.vec.Vec.new decoder_v1.WireId, 0#usize, none) ?_
               ⟨hSink0, by scalar_tac⟩
-            intro ⟨sink1, cur1, acc1, cIdx, err1⟩ ⟨hInv1, hcLe⟩
+            intro ⟨sink1, cur1, acc1, skippedOls1, pendingZeros1, cIdx, err1⟩ ⟨hInv1, hcLe⟩
             unfold decoder_v1.decode_update_v1_loop.body
             dsimp only
             split_ifs with hlt hnone
@@ -2658,8 +4260,26 @@ theorem decode_update_v1_spec
                 acc1 sink1 hInv1 as ⟨rBlock, sink2, hInv2⟩
               cases rBlock with
               | Ok p =>
-                rcases p with ⟨nc, na⟩
+                rcases p with ⟨nc, na, cols, cz⟩
                 dsimp only
+                step as ⟨b1, _⟩
+                have hExt1 :
+                    (if b1 = true then ok skippedOls1
+                     else decoder_v1.extend_wire_ids skippedOls1 (alloc.vec.Vec.deref cols)) ⦃ _ => True ⦄ := by
+                  by_cases hb1 : b1 = true
+                  · simp only [hb1, ↓reduceIte, spec_ok]
+                  · simp only [hb1, Bool.false_eq_true, ↓reduceIte]
+                    exact extend_wire_ids_total skippedOls1 (alloc.vec.Vec.deref cols)
+                step with hExt1 as ⟨ols2⟩
+                step as ⟨b2, _⟩
+                have hExt2 :
+                    (if b2 = true then ok pendingZeros1
+                     else decoder_v1.extend_wire_ids pendingZeros1 (alloc.vec.Vec.deref cz)) ⦃ _ => True ⦄ := by
+                  by_cases hb2 : b2 = true
+                  · simp only [hb2, ↓reduceIte, spec_ok]
+                  · simp only [hb2, Bool.false_eq_true, ↓reduceIte]
+                    exact extend_wire_ids_total pendingZeros1 (alloc.vec.Vec.deref cz)
+                step with hExt2 as ⟨pz2⟩
                 step as ⟨cIdx1, hcIdx1⟩
                 try simp only [spec_ok]
                 exact ⟨⟨hInv2, by scalar_tac⟩, by simp [hcIdx1]; scalar_tac⟩
@@ -2668,10 +4288,10 @@ theorem decode_update_v1_spec
                 exact ⟨⟨hInv2, hcLe⟩, by simp⟩
             · simp [spec_ok, hInv1]
             · simp [spec_ok, hInv1]
-          step with hLoop as ⟨sink1, cur1, acc1, err, hInv1⟩
+          step with hLoop as ⟨sink1, ds_start, acc1, skippedOls, pendingZeros, err, hInv1⟩
           cases err with
           | none =>
-            step with decode_delete_set_v1_spec V Inv input hV cur1 limits acc1.entries sink1 hInv1
+            step with decode_delete_set_v1_spec V Inv input hV ds_start limits acc1.entries sink1 hInv1
               as ⟨r3, sink2, hInv2, hNxt2⟩
             cases r3 with
             | Ok val2 =>
@@ -2682,7 +4302,19 @@ theorem decode_update_v1_spec
                 step with fail_with_spec V Inv input hV sink2 CodecError.TrailingBytes rem 0#u64 hInv2
                   as ⟨ce, sink3, hInv3⟩
                 simp [spec_ok, hInv3]
-              · simp [spec_ok, hInv2]
+              · step as ⟨b, _⟩
+                by_cases hb : b = true
+                · simp only [hb, ↓reduceIte, spec_ok]
+                  exact hInv2
+                · simp only [hb, Bool.false_eq_true, ↓reduceIte, lift, bind_ok, alloc.vec.Vec.deref_mut]
+                  step with verify_skipped_zero_items_total input clients_start val1 ds_start limits _ _ as ⟨r4, _, _⟩
+                  cases r4 with
+                  | Ok _ =>
+                    simp [spec_ok, hInv2]
+                  | Err e =>
+                    step with fail_with_spec V Inv input hV sink2 e 0#usize 0#u64 hInv2
+                      as ⟨ce, sink3, hInv3⟩
+                    simp [spec_ok, hInv3]
             | Err e =>
               simp only [core_ops_try_branch_err, bind_ok, core_ops_try_from_residual_err, spec_ok]
               exact hInv2
@@ -2794,6 +4426,8 @@ theorem summary_sink_v1sink_total :
       simp only [decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink]
       unfold decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.on_item
       dsimp only; split_ifs <;> step*
+    on_skipped_zero_origin := by
+      intro s _ _; simp [decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink, decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.on_skipped_zero_origin, spec_ok]
     on_deleted := by
       intro s _ _; simp [decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink, decoder_v1.SummarySink.Insts.Y_octo_coreDecoder_v1V1Sink.on_deleted, spec_ok]
     on_json_start := by

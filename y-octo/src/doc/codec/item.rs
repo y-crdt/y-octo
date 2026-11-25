@@ -210,8 +210,7 @@ impl Item {
     pub fn last_id(&self) -> Id {
         let Id { client, clock } = self.id;
 
-        // degenerate zero-length structs are accepted on decode; avoid
-        // underflowing when computing their last id
+        // Avoid underflowing if an item is ever constructed with zero length.
         Id::new(client, clock + self.len().saturating_sub(1))
     }
 
