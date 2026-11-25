@@ -1,0 +1,106 @@
+name: Rust extraction and Lean
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.head_ref || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  lean:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      CI: "1"
+      MATHLIB_NO_CACHE_ON_UPDATE: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check relevant changes
+        id: changes
+        run: |
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          BASE_SHA="${{ github.event.pull_request.base.sha }}"
+          git fetch --no-tags --depth=1 origin "$BASE_SHA"
+          CHANGED="$(git diff --no-renames --name-only "$BASE_SHA"...HEAD 2>/dev/null || git diff --no-renames --name-only "$BASE_SHA" HEAD)"
+          if printf '%s\n' "$CHANGED" | grep -qE '^(y-octo-core/|proofs/|proofs-yata/|rust-toolchain.*|Cargo\.|\.github/actions/|\.github/workflows/lean\.yml$)'; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No Lean/core proof files changed; skipping Lean build and audit."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+      # `proofs` builds on `YoctoSpec` (a path dependency): its sources are
+      # audited before the first of them is built, since a source could run
+      # code at build time.
+      - name: Audit the sources of YoctoSpec before they are built
+        if: steps.changes.outputs.run == 'true'
+        run: bash proofs-yata/scripts/audit.sh --static
+      - name: Restore Lean cache
+        id: lean-cache
+        if: steps.changes.outputs.run == 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            .proof-tools
+            proofs/.lake
+            proofs-yata/.lake
+            ~/.elan
+            ~/.rustup/toolchains/nightly-2026-09-17-x86_64-unknown-linux-gnu
+            ~/.cache/mathlib
+          key: lean-linux-x64-${{ hashFiles('proofs/toolchain-lock.json', 'proofs/lean-toolchain', 'proofs/lake-manifest.json', 'proofs-yata/lean-toolchain', 'proofs-yata/lake-manifest.json') }}-${{ hashFiles('proofs/**/*.lean', 'proofs-yata/**/*.lean') }}
+          restore-keys: |
+            lean-linux-x64-${{ hashFiles('proofs/toolchain-lock.json', 'proofs/lean-toolchain', 'proofs/lake-manifest.json', 'proofs-yata/lean-toolchain', 'proofs-yata/lake-manifest.json') }}-
+      - name: Install pinned binary toolchain and Lean dependencies
+        if: steps.changes.outputs.run == 'true'
+        run: |
+          timeout 540 bash proofs/scripts/bootstrap.sh
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - name: Extract y-octo-core to Lean 4 and verify zero drift
+        if: steps.changes.outputs.run == 'true'
+        run: timeout 180 bash proofs/scripts/extract.sh --check
+      - name: Reject external stubs, holes and stale generated output
+        if: steps.changes.outputs.run == 'true'
+        run: |
+          python3 proofs/scripts/audit.py
+          git diff --exit-code -- proofs/YoctoCore/Code
+          test -z "$(git status --porcelain -- proofs/YoctoCore/Code)"
+      # `proofs` builds on the YATA model of `proofs-yata` (a path dependency),
+      # so this also builds `YoctoSpec`.
+      - name: Check all Lean proof modules
+        if: steps.changes.outputs.run == 'true'
+        run: cd proofs && timeout 1500 lake build
+      # The compiled modules of `YoctoCore` and of the `YoctoSpec` it imports
+      # are read by `proofs-yata/scripts/check_olean.lean`, which imports `Lean`
+      # only: every constant goes to the kernel again, and its axioms are
+      # computed from the `.olean` files.
+      - name: Audit the compiled modules (kernel replay, axioms), with the self-test of the audit
+        if: steps.changes.outputs.run == 'true'
+        run: python3 proofs/scripts/audit.py --all
+      - name: Save Lean cache on main
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.changes.outputs.run == 'true' && steps.lean-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            .proof-tools
+            proofs/.lake
+            proofs-yata/.lake
+            ~/.elan
+            ~/.rustup/toolchains/nightly-2026-09-17-x86_64-unknown-linux-gnu
+            ~/.cache/mathlib
+          key: ${{ steps.lean-cache.outputs.cache-primary-key }}
+      - name: Preserve diagnostics
+        if: failure() && steps.changes.outputs.run == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: extraction-diagnostics
+          path: proofs/logs

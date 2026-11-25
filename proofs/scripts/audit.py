@@ -25,6 +25,7 @@ program imports) and is told where the modules are.
 """
 from __future__ import annotations
 
+import concurrent.futures
 import json
 import os
 import re
@@ -982,18 +983,23 @@ def self_test() -> None:
     absent = f"{PROBE_ROOT}.absent"
     with tempfile.TemporaryDirectory() as tmp_name:
         tmp = Path(tmp_name)
-        probes = {
-            PROBE_MODULE: PROBE_SOURCE,
-            CLEAN_MODULE: CLEAN_SOURCE,
-            UNCHECKED_MODULE: UNCHECKED_SOURCE,
-            FORGED_MODULE: FORGED_SOURCE,
-            LINE_MODULE: LINE_SOURCE,
-            FAKE_DEPENDENCY_MODULE: FAKE_DEPENDENCY_SOURCE,
-            TRUSTING_MODULE: TRUSTING_SOURCE,
-            PARTS_MODULE: PARTS_SOURCE,
-        }
-        for module, text in probes.items():
-            compile_probe(tmp, module, text)
+        # Independent probes can compile in parallel; `TRUSTING_MODULE` imports
+        # `FAKE_DEPENDENCY_MODULE` so it compiles in a second wave.
+        independent_probes = [
+            (PROBE_MODULE, PROBE_SOURCE),
+            (CLEAN_MODULE, CLEAN_SOURCE),
+            (UNCHECKED_MODULE, UNCHECKED_SOURCE),
+            (FORGED_MODULE, FORGED_SOURCE),
+            (LINE_MODULE, LINE_SOURCE),
+            (FAKE_DEPENDENCY_MODULE, FAKE_DEPENDENCY_SOURCE),
+            (PARTS_MODULE, PARTS_SOURCE),
+        ]
+        max_workers = min(4, os.cpu_count() or 2)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
+            futures = [pool.submit(compile_probe, tmp, module, text) for module, text in independent_probes]
+            for fut in futures:
+                fut.result()
+        compile_probe(tmp, TRUSTING_MODULE, TRUSTING_SOURCE)
         parts = olean_of(tmp, PARTS_MODULE)
         sides = [parts.with_name(parts.name + suffix) for suffix in (".server", ".private")]
         if not all(side.exists() for side in sides):

@@ -60,6 +60,29 @@ if ! elan toolchain list | grep -q "^${LEAN_TC}"; then
   elan toolchain install "$LEAN_TC"
 fi
 
+STAMP_FILE="$TOOLS_DIR/.bootstrap-stamp"
+EXPECTED_STAMP="$(
+  sha256sum \
+    "$0" \
+    "$LOCK_FILE" \
+    "$PROOFS_DIR/lean-toolchain" \
+    "$PROOFS_DIR/lakefile.lean" \
+    "$PROOFS_DIR/lake-manifest.json" \
+    "$REPO_ROOT/proofs-yata/lean-toolchain" \
+    "$REPO_ROOT/proofs-yata/lakefile.toml" \
+    "$REPO_ROOT/proofs-yata/lake-manifest.json" \
+    | sha256sum | awk '{print $1}'
+)"
+
+if [ "${FORCE_LAKE_UPDATE:-0}" != "1" ] \
+  && [ -f "$STAMP_FILE" ] \
+  && [ "$(cat "$STAMP_FILE")" = "$EXPECTED_STAMP" ] \
+  && [ -d "$TOOLS_DIR/backends/lean/.lake/packages/mathlib" ] \
+  && [ -e "$PROOFS_DIR/.lake/packages" ]; then
+  echo "Lean packages and mathlib cache already up to date (stamp $EXPECTED_STAMP); skipping lake update."
+  exit 0
+fi
+
 (
   cd "$TOOLS_DIR/backends/lean"
   lake update
@@ -87,3 +110,5 @@ fi
   cd "$PROOFS_DIR"
   lake update
 )
+
+printf '%s\n' "$EXPECTED_STAMP" > "$STAMP_FILE"

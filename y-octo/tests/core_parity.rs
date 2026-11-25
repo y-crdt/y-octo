@@ -164,7 +164,8 @@ fn parity_order_range_and_delete_set() {
 
     let mut octo = OrderRange::default();
     let mut core = CoreOrderRange::new();
-    for _ in 0..80 {
+    let rounds = if cfg!(miri) { 16 } else { 80 };
+    for _ in 0..rounds {
         let start = next() % 200;
         let len = next() % 15;
         let end = start + len;
@@ -1146,7 +1147,12 @@ impl SeqScenario {
 #[test]
 fn parity_yata_store_conflict_scan_branches() {
     // every replica inserts at the same places before it hears of the others
-    for order in [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]] {
+    let orders: &[[usize; 3]] = if cfg!(miri) {
+        &[[0, 1, 2], [2, 1, 0]]
+    } else {
+        &[[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]]
+    };
+    for &order in orders {
         let mut s = SeqScenario::new(&[(5, false), (2, false), (9, false)]);
         s.insert(0, 0, "ab");
         s.deliver(0, 1, 0);
@@ -1353,7 +1359,7 @@ fn parity_yata_store_many_concurrent_writers() {
 fn parity_yata_store_random_updates_in_any_order() {
     const ALPHABET: [&str; 10] = ["a", "b", "c", "d", "x", "y", "é", "ß", "中", "文"];
     // under Miri a few short runs: the same branches, hundreds of times slower
-    let (seeds, steps) = if cfg!(miri) { (2u64, 40) } else { (32, 160) };
+    let (seeds, steps) = if cfg!(miri) { (2u64, 16) } else { (32, 160) };
     for seed in 0..seeds {
         let replicas: &[(u64, bool)] = if seed % 2 == 0 {
             &[(1, false), (2, false)]
@@ -1638,7 +1644,7 @@ fn parity_item_space_of_a_document_that_collects_most_of_its_items() {
     // the arena behind a document: a subtree is collected, the arena moves the
     // items that are left, and the document reads, encodes and syncs as a
     // replica that never held the subtree's items in its arena
-    let count = if cfg!(miri) { 300 } else { 6_000 };
+    let count = if cfg!(miri) { 96 } else { 6_000 };
     let doc = Doc::with_client(7);
     let mut text = doc.get_or_create_text(SEQUENCE_ROOT).unwrap();
     for i in 0..count {
@@ -1853,19 +1859,34 @@ fn parity_pending_struct_decisions_with_the_iterator_they_replace() {
         client: id.client,
         clock: id.clock,
     };
-    let clocks = [0u64, 1, 2, 3, 4, 5, 6, 9];
-    let lens = [0u64, 1, 2, 3, 5];
-    let deps = [
-        None,
-        Some(Id::new(1, 0)),
-        Some(Id::new(1, 7)),
-        Some(Id::new(2, 0)),
-        Some(Id::new(2, 3)),
-        Some(Id::new(2, 4)),
-        Some(Id::new(3, 0)),
-        Some(Id::new(3, 1)),
-    ];
-    for held in [0u64, 1, 4, 5, 6, 12] {
+    let clocks: &[u64] = if cfg!(miri) {
+        &[0, 4, 9]
+    } else {
+        &[0, 1, 2, 3, 4, 5, 6, 9]
+    };
+    let lens: &[u64] = if cfg!(miri) { &[0, 1, 5] } else { &[0, 1, 2, 3, 5] };
+    let deps: &[Option<Id>] = if cfg!(miri) {
+        &[
+            None,
+            Some(Id::new(1, 0)),
+            Some(Id::new(2, 3)),
+            Some(Id::new(2, 4)),
+            Some(Id::new(3, 0)),
+        ]
+    } else {
+        &[
+            None,
+            Some(Id::new(1, 0)),
+            Some(Id::new(1, 7)),
+            Some(Id::new(2, 0)),
+            Some(Id::new(2, 3)),
+            Some(Id::new(2, 4)),
+            Some(Id::new(3, 0)),
+            Some(Id::new(3, 1)),
+        ]
+    };
+    let helds: &[u64] = if cfg!(miri) { &[0, 4] } else { &[0, 1, 4, 5, 6, 12] };
+    for &held in helds {
         let mut state = StateVector::default();
         let mut core_state = StateVectorCore::new();
         // client 3 is unknown to the document
@@ -1875,11 +1896,11 @@ fn parity_pending_struct_decisions_with_the_iterator_they_replace() {
                 core_state.set_max(client, clock);
             }
         }
-        for clock in clocks {
+        for &clock in clocks {
             let id = Id::new(1, clock);
-            for left in deps {
-                for right in deps {
-                    for parent in deps {
+            for &left in deps {
+                for &right in deps {
+                    for &parent in deps {
                         let expected = legacy_find_missing_dependency(id, left, right, parent, &state);
                         let (l, r, p) = (left.map(core), right.map(core), parent.map(core));
                         assert_eq!(find_missing_dependency(core(id), l, r, p, &core_state), expected);
@@ -1896,7 +1917,7 @@ fn parity_pending_struct_decisions_with_the_iterator_they_replace() {
                     }
                 }
             }
-            for len in lens {
+            for &len in lens {
                 for is_skip in [false, true] {
                     for missing in [None, Some(2), Some(3)] {
                         let expected = legacy_struct_step(id, len, is_skip, &state, missing);

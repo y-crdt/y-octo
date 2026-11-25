@@ -457,10 +457,12 @@ mod tests {
     fn the_search_agrees_with_the_core_on_every_clock() {
         // timelines in the order of their slots (`front == 0`) and ones a few
         // splits at the front turned into a ring of two slices
-        for front in [0usize, 1, 3, 40] {
+        let fronts: &[usize] = if cfg!(miri) { &[0, 1, 10] } else { &[0, 1, 3, 40] };
+        let blocks = if cfg!(miri) { 40u64 } else { 200 };
+        for &front in fronts {
             let mut timeline = ClientBlocks::default();
             let mut clock = 5;
-            for i in 0..200u64 {
+            for i in 0..blocks {
                 let len = 2 + i % 4;
                 let kind = if i % 3 == 0 { BlockKind::Gc } else { BlockKind::Skip };
                 timeline.append(BlockRef { clock, kind }, len).unwrap();

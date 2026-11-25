@@ -65,6 +65,7 @@ jobs:
         run: |
           set -o pipefail
           cargo +nightly clippy --all-features --message-format=json -- -D warnings | clippy-sarif | tee rust-clippy-results.sarif | sarif-fmt
+          RUSTFLAGS="-D warnings" cargo check --workspace --benches
           RUSTDOCFLAGS="-D rustdoc::broken-intra-doc-links" cargo doc --workspace --all-features --no-deps
         env:
           CARGO_TERM_COLOR: always
@@ -99,7 +100,7 @@ jobs:
         uses: taiki-e/install-action@cargo-llvm-cov
 
       - name: Collect coverage data
-        run: cargo llvm-cov nextest --all-targets --lcov --output-path lcov.info
+        run: cargo llvm-cov nextest --lib --tests --lcov --output-path lcov.info
       - name: Upload coverage data to codecov
         # uploads without a token are rate limited; coverage is informative,
         # the tests above are the gate
@@ -142,13 +143,13 @@ jobs:
         uses: ./.github/actions/setup-rust
         with:
           toolchain: ${{ env.nightly }}
-          components: miri
+          components: miri, rust-src
       - name: Install latest nextest release
         uses: taiki-e/install-action@nextest
 
       - name: Miri Code Check
         run: |
-          cargo +${{ env.nightly }} miri nextest run -p y-octo -j2
+          TOOLCHAIN="${{ env.nightly }}" bash .github/scripts/run-miri.sh
 
   asan:
     name: Address sanitizer
@@ -164,11 +165,13 @@ jobs:
         uses: ./.github/actions/setup-rust
         with:
           toolchain: ${{ env.nightly }}
+          components: rust-src
+      - name: Install latest nextest release
+        uses: taiki-e/install-action@nextest
 
       - name: Memory Check
         run: |
-          rustup component add rust-src --toolchain ${{ env.nightly }}
-          cargo +${{ env.nightly }} test -Zbuild-std --target x86_64-unknown-linux-gnu -p y-octo --lib
+          cargo +${{ env.nightly }} nextest run -Zbuild-std --target x86_64-unknown-linux-gnu -p y-octo --lib
 
   differential:
     name: bidirectional Yjs differential

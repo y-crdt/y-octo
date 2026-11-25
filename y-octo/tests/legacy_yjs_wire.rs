@@ -83,7 +83,12 @@ fn pinned_yjs_legacy_updates_remain_applicable() {
 fn signed_and_unsigned_codec_matches_pinned_lib0() {
     let integers = support::read_gzip_jsonl(include_bytes!("../src/fixtures/yjs-integers.jsonl.gz"));
     assert_eq!(integers["versions"], json!(["13.6.21", "13.6.33"]));
-    for v in integers["records"].as_array().unwrap() {
+    let records = integers["records"].as_array().unwrap();
+    let len = records.len();
+    for (idx, v) in records.iter().enumerate() {
+        if cfg!(miri) && idx >= 8 && idx + 8 < len && idx % 16 != 0 {
+            continue;
+        }
         let value = v[0].as_i64().unwrap();
         let signed = support::bytes(&v[1]);
         let unsigned = support::bytes(&v[2]);

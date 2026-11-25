@@ -68,20 +68,26 @@ pub const HASHMAP_SAFE_CAPACITY: usize = 1 << 10;
 
 #[cfg(test)]
 pub(crate) fn yjs_fixture(name: &str) -> Vec<u8> {
-    use std::io::Read;
-    let mut text = String::new();
-    flate2::read::GzDecoder::new(include_bytes!("../fixtures/yjs-legacy.jsonl.gz").as_slice())
-        .read_to_string(&mut text)
-        .unwrap();
-    let fixture = text
-        .lines()
-        .skip(1)
-        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
-        .find(|record| record["name"] == name)
-        .unwrap();
-    let hex = fixture["update"].as_str().unwrap();
-    (0..hex.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
-        .collect()
+    use std::{collections::HashMap, io::Read, sync::OnceLock};
+    static FIXTURES: OnceLock<HashMap<String, Vec<u8>>> = OnceLock::new();
+    let fixtures = FIXTURES.get_or_init(|| {
+        let mut text = String::new();
+        flate2::read::GzDecoder::new(include_bytes!("../fixtures/yjs-legacy.jsonl.gz").as_slice())
+            .read_to_string(&mut text)
+            .unwrap();
+        text.lines()
+            .skip(1)
+            .filter_map(|line| {
+                let record: serde_json::Value = serde_json::from_str(line).unwrap();
+                let name = record["name"].as_str()?.to_owned();
+                let hex = record["update"].as_str()?;
+                let bytes = (0..hex.len())
+                    .step_by(2)
+                    .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
+                    .collect();
+                Some((name, bytes))
+            })
+            .collect()
+    });
+    fixtures.get(name).unwrap().clone()
 }
